@@ -1,0 +1,30 @@
+- Make blockstate random choice selection based on hash of world position
+
+Optimisation:
+- Optimise multipart block models when they get generated:
+  - If a face is completely occluded, remove it
+  - Combine planar touching faces that have touching UVs
+- WE CAN DO GREEDY MESHING WITH BLOCK ALTERNATION:
+  - Just make a greedy meshed square 16 squares, store Y rotation as 2 bits per subsquare
+  - Do some magic in the shader to pluck out the bits and rotate UVs accordingly
+  - Worth comparing performance of different square mesh sizes
+- Combine chunk meshes together with some kind of quadtree:
+  - Reduces draw calls
+  - Allows for larger faces with greedy meshing
+- Some kind of occlusion culling:
+  - Idea 1 - Occlusion Volume:
+    - Find nearest fully opaque block, could be sped up with signed distance fields or something:
+      - 16 bits per block for each block in subchunk, 5 bits signed for X, Y and Z
+      - Gives axis distance to nearest block on that axis
+    - Generate occlusion volume, cull subchunks when making render calls
+    - Could combine multiple opaque blocks together to make a larger occlusion volume
+  - Idea 2 - Visibility Trees:
+    - Sort of like idea 1, but we precompute occlusion data for chunks/subchunks
+  - Realtime methods could be used while generating precomputation data
+
+Bugfixes (check this whenever there's a weird bug):
+- Default blockstates for blocks are currently wrong:
+  - Make it so the default one is the one with everything in "default state"
+  - Bools are true then false, but default state is false
+  - Enums seem to have first one as default state
+  - Haven't checked ints
