@@ -22,6 +22,14 @@ macro_rules! byte_enum_parser {
     }}
 }
 
+// Unit
+
+impl Deserialize for () {
+    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+        Ok((input, ()))
+    }
+}
+
 // Boolean
 
 impl Deserialize for bool {
@@ -58,6 +66,18 @@ impl Deserialize for i8 {
             .map(|slice: &[u8]| slice[0] as i8)
             .context("i8")
             .parse(input)
+    }
+}
+
+impl Serialize for u8 {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&[*self])
+    }
+}
+
+impl Serialize for i8 {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&[*self as u8])
     }
 }
 
@@ -117,7 +137,7 @@ impl_number_deserialize!(f64, nom::number::complete::be_f64);
 
 // Variable sized i32s
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
 #[repr(transparent)]
 pub struct VarInt(pub i32);
 
@@ -575,6 +595,43 @@ macro_rules! var_int_tagged_parser {
     }}
 }
 
+// Slice serialization
+
+impl<T: Serialize> Serialize for &[T] {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        for element in *self {
+            element.serialize_to(writer)?;
+        }
+        Ok(())
+    }
+}
+
+// Array serialization
+
+impl<T: Serialize, const N: usize> Serialize for [T; N] {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        for element in self {
+            element.serialize_to(writer)?;
+        }
+        Ok(())
+    }
+
+    fn serialize_into<W: std::io::Write>(self, writer: &mut W) -> std::io::Result<()> {
+        for element in self {
+            element.serialize_into(writer)?;
+        }
+        Ok(())
+    }
+}
+
+// Reference serialization
+
+impl<T: Serialize> Serialize for &T {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        (*self).serialize_to(writer)
+    }
+}
+
 // Position
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -657,17 +714,9 @@ pub type BitVec = Vec<u64>;
 #[repr(transparent)]
 pub struct Angle(u8);
 
-// AxisDirection (Direction on wiki.vg)
+// Direction on wiki.vg
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AxisDirection {
-    Down = 0,
-    Up = 1,
-    North = 2,
-    South = 3,
-    West = 4,
-    East = 5,
-}
+pub use crate::basic_types::AxisDirection;
 
 impl Deserialize for AxisDirection {
     fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {

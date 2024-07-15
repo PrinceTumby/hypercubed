@@ -2,17 +2,21 @@ use super::model::{CombinedModelPart, ModelCache, ModelType};
 use super::RightAngleRotation;
 use super::{texture, Identifier};
 use crate::resource::manager::{get_resource_file, ResourceType};
+use crate::resource::RegistryIndex;
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, ensure, Context};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::fmt::Write;
 use std::rc::Rc;
 use string_cache::DefaultAtom as Atom;
 
 pub fn load_blockstates(
+    block_index: RegistryIndex,
     identifier: &Identifier,
     custom_properties: Option<&[(&str, CustomPropertyType)]>,
+    replacement_properties: Option<&[(&str, CustomPropertyType)]>,
     model_cache: &mut ModelCache,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
@@ -20,32 +24,42 @@ pub fn load_blockstates(
         .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
     let file: File = serde_json::from_slice(&blockstate_json_bytes)
         .with_context(|| format!("Failed to parse blockstate JSON data for {identifier:?}"))?;
-    // println!("{file:?}");
     match file {
         File::Variants(variants) => load_blockstate_variants(
+            block_index,
             identifier,
             variants,
             custom_properties.unwrap_or(&[]),
+            replacement_properties,
             model_cache,
             texture_atlas,
         )
         .context("Failed to load blockstate variants"),
-        File::Multipart(cases) => load_blockstate_multipart_cases(
-            identifier,
-            cases,
-            custom_properties
-                .expect("properties must be specified manually for multipart blockstates"),
-            model_cache,
-            texture_atlas,
-        )
-        .context("Failed to load blockstate variants"),
+        File::Multipart(cases) => {
+            assert!(
+                replacement_properties.is_none(),
+                "replacement properties not valid for multipart blockstates"
+            );
+            load_blockstate_multipart_cases(
+                block_index,
+                identifier,
+                cases,
+                custom_properties
+                    .expect("properties must be specified manually for multipart blockstates"),
+                model_cache,
+                texture_atlas,
+            )
+            .context("Failed to load blockstate variants")
+        }
     }
 }
 
 fn load_blockstate_variants(
+    block_index: RegistryIndex,
     identifier: &Identifier,
     variants: IndexMap<String, Variant>,
     custom_properties: &[(&str, CustomPropertyType)],
+    replacement_properties: Option<&[(&str, CustomPropertyType)]>,
     model_cache: &mut ModelCache,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
@@ -68,36 +82,84 @@ fn load_blockstate_variants(
             .find(|variant_name| variant_name == custom_property_name)
         {
             bail!(
-                "Custom variant {:?} found in both blockstate file and variants file",
+                "Custom variant {:?} also found in blockstate file",
                 overlapping_variant,
             );
         }
     }
-    let num_custom_properties = match custom_properties.len() {
-        0 => 1,
-        _ => custom_properties
-            .iter()
-            .map(|(_, variant_type)| match variant_type {
-                CustomPropertyType::Bool => 2,
-                CustomPropertyType::Int(range) => (range.end() - range.start()) + 1,
-                CustomPropertyType::Enum(variants) => variants.len().try_into().unwrap(),
-            })
-            .product(),
-    } as usize;
-    Ok(variants
-        .into_iter()
-        .map(|(condition_set, variant)| {
-            if !is_valid_condition_set(&condition_set) {
-                bail!("Invalid condition set {condition_set}");
-            }
-            let _conditions: AHashMap<Atom, Atom> = condition_set
-                .split(',')
-                .filter(|condition| condition != &"")
-                .map(|condition| {
-                    let (condition, value) = condition.split_once('=').unwrap();
-                    (Atom::from(condition), Atom::from(value))
+    let mut custom_property_iters: Vec<_> = custom_properties
+        .iter()
+        .map(|(name, ty)| (*name, ty.iter()))
+        .collect();
+    let mut current_custom_property_states: Vec<_> = custom_property_iters
+        .iter_mut()
+        .map(|(_name, iter)| iter.next().0)
+        .collect();
+    let mut is_final_custom_state = false;
+    if let Some(replacement_properties) = replacement_properties {
+        // Check every replacement property is replacing something in the blockstate file.
+        // Doesn't check if they're the same type.
+        for (property_name, _) in replacement_properties {
+            if variants
+                .keys()
+                .flat_map(|condition_set| {
+                    condition_set
+                        .split(',')
+                        .filter(|condition| condition != &"")
+                        .map(|condition| condition.split_once('=').unwrap().0)
                 })
+                .find(|variant_name| variant_name == property_name)
+                .is_none()
+            {
+                bail!(
+                    "Replacement property {:?} not found in blockstate file",
+                    replacement_properties
+                );
+            }
+        }
+        let mut property_iters: Vec<_> = replacement_properties
+            .iter()
+            .map(|(name, ty)| (*name, ty.iter()))
+            .collect();
+        let mut current_property_states: Vec<_> = property_iters
+            .iter_mut()
+            .map(|(_name, iter)| iter.next().0)
+            .collect();
+        let mut is_final_state = false;
+        let mut blockstates = Vec::new();
+        while !is_final_state {
+            // Get current state
+            let state: Vec<_> = property_iters
+                .iter()
+                .zip(current_property_states.iter())
+                .map(|((name, _iter), value)| (*name, value.clone()))
                 .collect();
+            // Generate next state
+            for (i, ((_name, property_iter), state)) in property_iters
+                .iter_mut()
+                .zip(current_property_states.iter_mut())
+                .enumerate()
+                .rev()
+            {
+                let (new_state, iter_reset) = property_iter.next();
+                *state = new_state;
+                if !iter_reset {
+                    break;
+                } else if i == 0 {
+                    is_final_state = true;
+                }
+            }
+            // Generate condition set string (for finding entry), and map (stored as extra info)
+            let mut condition_set = String::new();
+            let mut condition_map = AHashMap::new();
+            for (i, (name, value)) in state.into_iter().enumerate() {
+                if i > 0 {
+                    write!(&mut condition_set, ",").unwrap();
+                }
+                write!(&mut condition_set, "{name}={value}").unwrap();
+                condition_map.insert(Atom::from(name), Atom::from(value));
+            }
+            let variant = &variants[&condition_set];
             match variant {
                 Variant::Single(model_info) => {
                     let model_location =
@@ -107,14 +169,46 @@ fn load_blockstate_variants(
                     let model = model_cache
                         .load_model(&model_location, texture_atlas)
                         .with_context(|| format!("Failed to load model {model_location:?}"))?;
-                    Ok(Blockstate {
-                        identifier: identifier.clone(),
-                        model_data: ModelData::Single(Model {
-                            model,
-                            x_rotation: model_info.x_rotation,
-                            y_rotation: model_info.y_rotation,
-                        }),
-                    })
+                    while !is_final_custom_state {
+                        if custom_properties.is_empty() {
+                            is_final_custom_state = true;
+                        }
+                        // Get current custom state
+                        let custom_state: Vec<_> = custom_property_iters
+                            .iter()
+                            .zip(current_custom_property_states.iter())
+                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .collect();
+                        // Generate next custom state
+                        for (i, ((_name, property_iter), state)) in custom_property_iters
+                            .iter_mut()
+                            .zip(current_custom_property_states.iter_mut())
+                            .enumerate()
+                            .rev()
+                        {
+                            let (new_state, iter_reset) = property_iter.next();
+                            *state = new_state;
+                            if !iter_reset {
+                                break;
+                            } else if i == 0 {
+                                is_final_custom_state = true;
+                            }
+                        }
+                        let mut condition_map = condition_map.clone();
+                        for (name, value) in custom_state.into_iter() {
+                            condition_map.insert(Atom::from(name), Atom::from(value));
+                        }
+                        blockstates.push(Blockstate {
+                            block_index,
+                            properties: condition_map,
+                            model_data: ModelData::Single(Model {
+                                model: model.clone(),
+                                x_rotation: model_info.x_rotation,
+                                y_rotation: model_info.y_rotation,
+                            }),
+                        });
+                    }
+                    is_final_custom_state = false;
                 }
                 Variant::List(models) => {
                     let mut models = models
@@ -137,24 +231,177 @@ fn load_blockstate_variants(
                             model.weight /= total_weight;
                         }
                     }
-                    Ok(Blockstate {
-                        identifier: identifier.clone(),
-                        model_data: ModelData::RandomChoice(models),
-                    })
+                    while !is_final_custom_state {
+                        if custom_properties.is_empty() {
+                            is_final_custom_state = true;
+                        }
+                        // Get current custom state
+                        let custom_state: Vec<_> = custom_property_iters
+                            .iter()
+                            .zip(current_custom_property_states.iter())
+                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .collect();
+                        // Generate next custom state
+                        for (i, ((_name, property_iter), state)) in custom_property_iters
+                            .iter_mut()
+                            .zip(current_custom_property_states.iter_mut())
+                            .enumerate()
+                            .rev()
+                        {
+                            let (new_state, iter_reset) = property_iter.next();
+                            *state = new_state;
+                            if !iter_reset {
+                                break;
+                            } else if i == 0 {
+                                is_final_custom_state = true;
+                            }
+                        }
+                        let mut condition_map = condition_map.clone();
+                        for (name, value) in custom_state.into_iter() {
+                            condition_map.insert(Atom::from(name), Atom::from(value));
+                        }
+                        blockstates.push(Blockstate {
+                            block_index,
+                            properties: condition_map,
+                            model_data: ModelData::RandomChoice(models.clone()),
+                        });
+                    }
+                    is_final_custom_state = false;
                 }
             }
-        })
-        .collect::<anyhow::Result<Vec<Blockstate>>>()?
-        // Repeat each blockstate for each extra blockstate.
-        // Ideally we'd do this before collecting the first time, but the Result can't be
-        // cloned, so we can't use `std::iter::repeat`.
-        .into_iter()
-        .flat_map(|blockstate| std::iter::repeat(blockstate).take(num_custom_properties))
-        .collect::<Vec<Blockstate>>())
+        }
+        Ok(blockstates)
+    } else {
+        let mut blockstates = Vec::new();
+        for (condition_set, variant) in variants {
+            if !is_valid_condition_set(&condition_set) {
+                bail!("Invalid condition set {condition_set}");
+            }
+            let condition_map: AHashMap<Atom, Atom> = condition_set
+                .split(',')
+                .filter(|condition| condition != &"")
+                .map(|condition| {
+                    let (condition, value) = condition.split_once('=').unwrap();
+                    (Atom::from(condition), Atom::from(value))
+                })
+                .collect();
+            match variant {
+                Variant::Single(model_info) => {
+                    let model_location =
+                        Identifier::parse(&model_info.model).with_context(|| {
+                            format!("Failed to parse {:?} as identifier", &model_info.model)
+                        })?;
+                    let model = model_cache
+                        .load_model(&model_location, texture_atlas)
+                        .with_context(|| format!("Failed to load model {model_location:?}"))?;
+                    while !is_final_custom_state {
+                        if custom_properties.is_empty() {
+                            is_final_custom_state = true;
+                        }
+                        // Get current custom state
+                        let custom_state: Vec<_> = custom_property_iters
+                            .iter()
+                            .zip(current_custom_property_states.iter())
+                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .collect();
+                        // Generate next custom state
+                        for (i, ((_name, property_iter), state)) in custom_property_iters
+                            .iter_mut()
+                            .zip(current_custom_property_states.iter_mut())
+                            .enumerate()
+                            .rev()
+                        {
+                            let (new_state, iter_reset) = property_iter.next();
+                            *state = new_state;
+                            if !iter_reset {
+                                break;
+                            } else if i == 0 {
+                                is_final_custom_state = true;
+                            }
+                        }
+                        let mut condition_map = condition_map.clone();
+                        for (name, value) in custom_state.into_iter() {
+                            condition_map.insert(Atom::from(name), Atom::from(value));
+                        }
+                        blockstates.push(Blockstate {
+                            block_index,
+                            properties: condition_map,
+                            model_data: ModelData::Single(Model {
+                                model: model.clone(),
+                                x_rotation: model_info.x_rotation,
+                                y_rotation: model_info.y_rotation,
+                            }),
+                        });
+                    }
+                    is_final_custom_state = false;
+                }
+                Variant::List(models) => {
+                    let mut models = models
+                        .into_iter()
+                        .map(|model_info| {
+                            let model_location = Identifier::parse(&model_info.model)?;
+                            let model = model_cache.load_model(&model_location, texture_atlas)?;
+                            Ok(WeightedModel {
+                                model,
+                                x_rotation: model_info.x_rotation,
+                                y_rotation: model_info.y_rotation,
+                                weight: model_info.weight,
+                            })
+                        })
+                        .collect::<anyhow::Result<Box<[WeightedModel]>>>()?;
+                    // Rescale weights so all sum to 1.0
+                    {
+                        let total_weight: f32 = models.iter().map(|variant| variant.weight).sum();
+                        for model in models.iter_mut() {
+                            model.weight /= total_weight;
+                        }
+                    }
+                    while !is_final_custom_state {
+                        if custom_properties.is_empty() {
+                            is_final_custom_state = true;
+                        }
+                        // Get current custom state
+                        let custom_state: Vec<_> = custom_property_iters
+                            .iter()
+                            .zip(current_custom_property_states.iter())
+                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .collect();
+                        // Generate next custom state
+                        for (i, ((_name, property_iter), state)) in custom_property_iters
+                            .iter_mut()
+                            .zip(current_custom_property_states.iter_mut())
+                            .enumerate()
+                            .rev()
+                        {
+                            let (new_state, iter_reset) = property_iter.next();
+                            *state = new_state;
+                            if !iter_reset {
+                                break;
+                            } else if i == 0 {
+                                is_final_custom_state = true;
+                            }
+                        }
+                        let mut condition_map = condition_map.clone();
+                        for (name, value) in custom_state.into_iter() {
+                            condition_map.insert(Atom::from(name), Atom::from(value));
+                        }
+                        blockstates.push(Blockstate {
+                            block_index,
+                            properties: condition_map,
+                            model_data: ModelData::RandomChoice(models.clone()),
+                        });
+                    }
+                    is_final_custom_state = false;
+                }
+            }
+        }
+        Ok(blockstates)
+    }
 }
 
 #[tracing::instrument(skip(cases, properties, model_cache, texture_atlas))]
 fn load_blockstate_multipart_cases(
+    block_index: RegistryIndex,
     identifier: &Identifier,
     mut cases: Vec<MultipartCase>,
     properties: &[(&str, CustomPropertyType)],
@@ -182,7 +429,7 @@ fn load_blockstate_multipart_cases(
     let mut blockstates = Vec::new();
     while !is_final_state {
         // Get current state
-        let state = property_iters
+        let state: AHashMap<_, _> = property_iters
             .iter()
             .zip(current_property_states.iter())
             .map(|((name, _iter), value)| (*name, value.clone()))
@@ -202,6 +449,10 @@ fn load_blockstate_multipart_cases(
                 is_final_state = true;
             }
         }
+        let condition_map: AHashMap<Atom, Atom> = state
+            .iter()
+            .map(|(&k, v)| (Atom::from(k), Atom::from(v.as_ref())))
+            .collect();
         // Some blockstate files use a multipart with only one variant (useful for generating
         // models with randomised parts)
         if properties.len() == 0 {
@@ -286,7 +537,8 @@ fn load_blockstate_multipart_cases(
                 .load_combined_model(&model_parts.parts, texture_atlas)
                 .with_context(|| format!("Error combining model list {:?}", &model_parts.parts))?;
             blockstates.push(Blockstate {
-                identifier: identifier.clone(),
+                block_index,
+                properties: condition_map,
                 model_data: ModelData::Single(Model {
                     model,
                     x_rotation: RightAngleRotation::Zero,
@@ -312,7 +564,8 @@ fn load_blockstate_multipart_cases(
                 })
                 .collect::<anyhow::Result<_>>()?;
             blockstates.push(Blockstate {
-                identifier: identifier.clone(),
+                block_index,
+                properties: condition_map,
                 model_data: ModelData::RandomChoice(models),
             })
         }
@@ -342,7 +595,148 @@ fn is_multipart_condition_group_satisfied(
     true
 }
 
+/// `custom_properties` is each property that defines the blockstates, in order.
+/// `skip_properties` is a list of property names from `properties` that do not appear in the
+/// blockstates file.
+pub fn load_full_custom_blockstates(
+    block_index: RegistryIndex,
+    identifier: &Identifier,
+    properties: &[(&str, CustomPropertyType)],
+    skip_properties: &[&str],
+    model_cache: &mut ModelCache,
+    texture_atlas: &mut texture::AtlasBuilder,
+) -> anyhow::Result<Vec<Blockstate>> {
+    // Check all skip properties are actually also properties
+    for skip_prop in skip_properties {
+        assert!(
+            properties
+                .iter()
+                .find(|(prop_name, _)| prop_name == skip_prop)
+                .is_some(),
+            "Skip property '{skip_prop}' not found in properties"
+        );
+    }
+    let skip_properties: AHashSet<_> = skip_properties
+        .into_iter()
+        .map(|p| Atom::from(*p))
+        .collect();
+    let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
+        .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
+    let file: File = serde_json::from_slice(&blockstate_json_bytes)
+        .with_context(|| format!("Failed to parse blockstate JSON data for {identifier:?}"))?;
+    match file {
+        File::Variants(variants) => {
+            // Check condition sets
+            for condition_set in variants.keys() {
+                if !is_valid_condition_set(condition_set) {
+                    bail!("Invalid condition set {condition_set}");
+                }
+            }
+            let mut property_iters: Vec<_> = properties
+                .iter()
+                .map(|(name, ty)| (Atom::from(*name), ty.iter()))
+                .collect();
+            let mut current_property_states: Vec<_> = property_iters
+                .iter_mut()
+                .map(|(_name, iter)| iter.next().0)
+                .collect();
+            let mut is_final_state = false;
+            let mut blockstates = Vec::new();
+            while !is_final_state {
+                // Get current state
+                let state: Vec<_> = property_iters
+                    .iter()
+                    .zip(current_property_states.iter())
+                    .map(|((name, _iter), value)| (name.clone(), value.clone()))
+                    .collect();
+                // Generate next state
+                for (i, ((_name, property_iter), state)) in property_iters
+                    .iter_mut()
+                    .zip(current_property_states.iter_mut())
+                    .enumerate()
+                    .rev()
+                {
+                    let (new_state, iter_reset) = property_iter.next();
+                    *state = new_state;
+                    if !iter_reset {
+                        break;
+                    } else if i == 0 {
+                        is_final_state = true;
+                    }
+                }
+                // Generate condition set string (for finding entry), and map (stored as extra info)
+                let mut condition_strings = Vec::new();
+                let mut condition_map = AHashMap::new();
+                for (name, value) in state {
+                    if !skip_properties.contains(&name) {
+                        condition_strings.push(format!("{name}={value}"));
+                    }
+                    condition_map.insert(Atom::from(name), Atom::from(value));
+                }
+                condition_strings.sort_unstable();
+                let condition_set = condition_strings.join(",");
+                if !variants.contains_key(&condition_set) {
+                    dbg!(&condition_set);
+                }
+                let variant = &variants[&condition_set];
+                match variant {
+                    Variant::Single(model_info) => {
+                        let model_location =
+                            Identifier::parse(&model_info.model).with_context(|| {
+                                format!("Failed to parse {:?} as identifier", &model_info.model)
+                            })?;
+                        let model = model_cache
+                            .load_model(&model_location, texture_atlas)
+                            .with_context(|| format!("Failed to load model {model_location:?}"))?;
+                        blockstates.push(Blockstate {
+                            block_index,
+                            properties: condition_map,
+                            model_data: ModelData::Single(Model {
+                                model: model,
+                                x_rotation: model_info.x_rotation,
+                                y_rotation: model_info.y_rotation,
+                            }),
+                        });
+                    }
+                    Variant::List(models) => {
+                        let mut models = models
+                            .into_iter()
+                            .map(|model_info| {
+                                let model_location = Identifier::parse(&model_info.model)?;
+                                let model =
+                                    model_cache.load_model(&model_location, texture_atlas)?;
+                                Ok(WeightedModel {
+                                    model,
+                                    x_rotation: model_info.x_rotation,
+                                    y_rotation: model_info.y_rotation,
+                                    weight: model_info.weight,
+                                })
+                            })
+                            .collect::<anyhow::Result<Box<[WeightedModel]>>>()?;
+                        // Rescale weights so all sum to 1.0
+                        {
+                            let total_weight: f32 =
+                                models.iter().map(|variant| variant.weight).sum();
+                            for model in models.iter_mut() {
+                                model.weight /= total_weight;
+                            }
+                        }
+                        blockstates.push(Blockstate {
+                            block_index,
+                            properties: condition_map,
+                            model_data: ModelData::RandomChoice(models.clone()),
+                        });
+                    }
+                }
+            }
+            Ok(blockstates)
+        }
+        File::Multipart(_cases) => unimplemented!(),
+    }
+}
+
 pub fn load_liquid_blockstates(
+    block_index: RegistryIndex,
     identifier: &Identifier,
     model_cache: &mut ModelCache,
     texture_atlas: &mut texture::AtlasBuilder,
@@ -361,7 +755,7 @@ pub fn load_liquid_blockstates(
         variants.len() == 1 && variants.contains_key(""),
         "Liquid {identifier:?} must only contain an empty variant"
     );
-    let Variant::Single(variant_model) = variants.remove("").unwrap() else {
+    let Variant::Single(variant_model) = variants.swap_remove("").unwrap() else {
         return Err(anyhow!(
             "Invalid liquid variant {variants:?} for {identifier:?}"
         ));
@@ -379,16 +773,22 @@ pub fn load_liquid_blockstates(
     let model = model_cache
         .load_liquid(&model_location, texture_atlas)
         .with_context(|| format!("Failed to load liquid model for {model_location:?}"))?;
-    let blockstate = Blockstate {
-        identifier: identifier.clone(),
-        model_data: ModelData::Single(Model {
-            model,
-            x_rotation: RightAngleRotation::Zero,
-            y_rotation: RightAngleRotation::Zero,
-        }),
-    };
+    let mut blockstates = Vec::new();
     // Liquids have blockstates for levels 0-15
-    Ok(vec![blockstate; 16])
+    for i in 0..16 {
+        blockstates.push(Blockstate {
+            block_index,
+            properties: [(Atom::from("level"), Atom::from(format!("{i}")))]
+                .into_iter()
+                .collect(),
+            model_data: ModelData::Single(Model {
+                model: model.clone(),
+                x_rotation: RightAngleRotation::Zero,
+                y_rotation: RightAngleRotation::Zero,
+            }),
+        });
+    }
+    Ok(blockstates)
 }
 
 fn is_valid_condition_set(set: &str) -> bool {
@@ -521,7 +921,8 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
 
 #[derive(Clone, Debug)]
 pub struct Blockstate {
-    pub identifier: Identifier,
+    pub block_index: RegistryIndex,
+    pub properties: AHashMap<Atom, Atom>,
     pub model_data: ModelData,
 }
 

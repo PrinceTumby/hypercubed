@@ -15,7 +15,7 @@ pub fn get_resource_file(
     let set = match resource_type {
         &ResourceType::Blockstate => &overlay_set.blockstates,
         &ResourceType::Model => &overlay_set.models,
-        &ResourceType::Texture => &overlay_set.textures,
+        &ResourceType::Texture | &ResourceType::TextureMeta => &overlay_set.textures,
     };
     if let Some(&filesystem_index) = set.get(identifier) {
         let filesystem = &overlay_set.filesystems[filesystem_index];
@@ -27,7 +27,7 @@ pub fn get_resource_file(
         path.push(match resource_type {
             &ResourceType::Blockstate => "blockstates",
             &ResourceType::Model => "models",
-            &ResourceType::Texture => "textures",
+            &ResourceType::Texture | &ResourceType::TextureMeta => "textures",
         });
         for segment in &identifier.path_prefix_segments {
             path.push(segment.as_ref());
@@ -36,6 +36,7 @@ pub fn get_resource_file(
         path.set_extension(match resource_type {
             &ResourceType::Blockstate | &ResourceType::Model => "json",
             &ResourceType::Texture => "png",
+            &ResourceType::TextureMeta => "png.mcmeta",
         });
         Ok(Cow::Owned(std::fs::read(&path)?))
     }
@@ -46,6 +47,7 @@ pub enum ResourceType {
     Blockstate,
     Model,
     Texture,
+    TextureMeta,
 }
 
 lazy_static! {

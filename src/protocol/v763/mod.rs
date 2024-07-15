@@ -6,13 +6,13 @@ pub mod prelude {
     pub use super::super::prelude::*;
     pub use super::basic_types::*;
     pub use super::packet::{PacketRead, PacketWrite};
-    pub use super::{login, request_status, PlayConnection};
+    pub use super::{login, PlayConnection};
 }
 
+use super::OFFLINE_PLAYER_NAMESPACE;
 use std::collections::VecDeque;
 use std::io::prelude::*;
 use std::net::TcpStream;
-use super::OFFLINE_PLAYER_NAMESPACE;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -62,22 +62,6 @@ impl PlayConnection {
     }
 }
 
-pub fn request_status() -> std::io::Result<String> {
-    use prelude::*;
-    let mut stream = TcpStream::connect("localhost:25565")?;
-    // Send handshake packet
-    packet::handshaking::Handshake {
-        protocol_version: 763,
-        address: "localhost",
-        server_port: 25565,
-        next_state: packet::handshaking::HandshakeNextState::Status,
-    }
-    .write_uncompressed_into(&mut stream)?;
-    packet::status::StatusRequest.write_uncompressed_into(&mut stream)?;
-    stream.flush()?;
-    Ok(packet::status::StatusResponse::read_uncompressed_from(&mut stream)?.0)
-}
-
 pub fn login() -> std::io::Result<(PlayConnection, packet::login::LoginSuccess)> {
     use prelude::*;
     let mut stream = TcpStream::connect("localhost:25565")?;
@@ -88,12 +72,12 @@ pub fn login() -> std::io::Result<(PlayConnection, packet::login::LoginSuccess)>
         server_port: 25565,
         next_state: packet::handshaking::HandshakeNextState::Login,
     }
-    .write_uncompressed_into(&mut stream)?;
+    .write_packet_into(&mut stream, None)?;
     packet::login::LoginStart {
         username: "Sleepman",
         player_uuid: Some(Uuid::new_v3(&OFFLINE_PLAYER_NAMESPACE, b"Sleepman")),
     }
-    .write_uncompressed_into(&mut stream)?;
+    .write_packet_into(&mut stream, None)?;
     stream.flush()?;
     let mut compression_threshold = None;
     loop {

@@ -1,7 +1,8 @@
 pub mod crafting;
 pub mod entity_metadata;
 
-use super::super::super::prelude::*;
+use super::super::prelude::*;
+use super::PluginMessage;
 use nom::branch::alt;
 use nom::bytes::complete::take;
 use nom::combinator::{cond, value, verify};
@@ -342,26 +343,6 @@ pub struct SetContainerContent {
     pub state_id: VarInt,
     pub slot_data: Vec<crafting::Slot>,
     pub carried_item: crafting::Slot,
-}
-
-#[derive(Clone, Debug)]
-pub struct PluginMessage {
-    // TODO Make identifier
-    pub channel: String,
-    pub data: Vec<u8>,
-}
-
-impl Deserialize for PluginMessage {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        let (rest, channel) = String::deserialize(input)?;
-        Ok((
-            &[],
-            Self {
-                channel,
-                data: rest.to_vec(),
-            },
-        ))
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

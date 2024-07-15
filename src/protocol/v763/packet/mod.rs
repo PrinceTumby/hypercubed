@@ -6,42 +6,101 @@ pub mod status;
 use super::prelude::*;
 use bytebuffer::ByteBuffer;
 use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 use nom::{Compare, InputLength, InputTake};
 #[cfg(feature = "protocol_verbose")]
 use nom_supreme::final_parser::final_parser;
 use std::io::prelude::*;
 
+pub fn write_uncompressed_buffer<W: std::io::Write>(
+    buffer: &mut ByteBuffer,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    // Uncompressed packet format, write packet length followed by packet
+    VarInt(
+        buffer
+            .len()
+            .try_into()
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
+    )
+    .serialize_into(writer)?;
+    std::io::copy(buffer, writer)?;
+    Ok(())
+}
+
+pub fn write_compressed_buffer<W: std::io::Write>(
+    buffer: &mut ByteBuffer,
+    writer: &mut W,
+    compression_threshold: usize,
+) -> std::io::Result<()> {
+    if buffer.len() >= compression_threshold {
+        // Compressed packet format, write compressed packet length + length of
+        // uncompressed packet length varint, then uncompressed packet length, then the
+        // compressed packet
+        let mut compressed_buffer = ByteBuffer::new();
+        VarInt(
+            buffer
+                .len()
+                .try_into()
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
+        )
+        .serialize_into(&mut compressed_buffer)?;
+        let mut compressor = ZlibEncoder::new(buffer, Compression::fast());
+        std::io::copy(&mut compressor, &mut compressed_buffer)?;
+        VarInt(
+            compressed_buffer
+                .len()
+                .try_into()
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
+        )
+        .serialize_into(writer)?;
+        std::io::copy(&mut compressed_buffer, writer)?;
+    } else {
+        // Compression enabled but packet below threshold, write packet_length + 1 (for
+        // size of 0 varint), then write 0 for the uncompressed length, then the
+        // uncompressed packet
+        VarInt(
+            (buffer.len() + 1)
+                .try_into()
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
+        )
+        .serialize_into(writer)?;
+        VarInt(0).serialize_into(writer)?;
+        std::io::copy(buffer, writer)?;
+    }
+    Ok(())
+}
+
 pub trait PacketWrite: Serialize {
     const ID: i32;
 
-    fn write_uncompressed_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn write_packet_to<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+        compression_threshold: Option<usize>,
+    ) -> std::io::Result<()> {
         let mut buffer = ByteBuffer::new();
         VarInt(Self::ID).serialize_to(&mut buffer)?;
         self.serialize_to(&mut buffer)?;
-        VarInt(
-            buffer
-                .len()
-                .try_into()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
-        )
-        .serialize_into(writer)?;
-        std::io::copy(&mut buffer, writer)?;
-        Ok(())
+        match compression_threshold {
+            None => write_uncompressed_buffer(&mut buffer, writer),
+            Some(threshold) => write_compressed_buffer(&mut buffer, writer, threshold),
+        }
     }
 
-    fn write_uncompressed_into<W: std::io::Write>(self, writer: &mut W) -> std::io::Result<()> {
+    fn write_packet_into<W: std::io::Write>(
+        self,
+        writer: &mut W,
+        compression_threshold: Option<usize>,
+    ) -> std::io::Result<()> {
         let mut buffer = ByteBuffer::new();
-        VarInt(Self::ID).serialize_into(&mut buffer)?;
+        VarInt(Self::ID).serialize_to(&mut buffer)?;
         self.serialize_into(&mut buffer)?;
-        VarInt(
-            buffer
-                .len()
-                .try_into()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
-        )
-        .serialize_into(writer)?;
-        std::io::copy(&mut buffer, writer)?;
-        Ok(())
+        match compression_threshold {
+            None => write_uncompressed_buffer(&mut buffer, writer),
+            Some(threshold) => write_compressed_buffer(&mut buffer, writer, threshold),
+        }
     }
 }
 
@@ -301,5 +360,24 @@ impl std::fmt::Display for ByteView<'_> {
         //     list.entry(&std::str::from_utf8(rendered_chunk.as_slice()).unwrap());
         // }
         // list.finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginMessage {
+    pub channel: Identifier,
+    pub data: Vec<u8>,
+}
+
+impl Deserialize for PluginMessage {
+    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+        let (rest, channel) = String::deserialize(input)?;
+        Ok((
+            &[],
+            Self {
+                channel,
+                data: rest.to_vec(),
+            },
+        ))
     }
 }

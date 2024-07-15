@@ -24,18 +24,19 @@ struct VertexInput {
 }
 
 struct InstanceInput {
-    @location(10) pos: vec3<f32>,
-    @location(11) uvs: vec4<u32>,
-    @location(12) matrix_indices: vec4<u32>,
-    @location(13) tint_color: vec4<f32>,
+    @location(10) matrix_0: vec4<f32>,
+    @location(11) matrix_1: vec4<f32>,
+    @location(12) matrix_2: vec4<f32>,
+    @location(13) matrix_3: vec4<f32>,
+    @location(14) pos: vec3<f32>,
+    @location(15) uvs: vec4<u32>,
+    @location(16) matrix_indices: vec4<u32>,
 }
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uvs: vec2<f32>,
-    @interpolate(flat)
-    @location(2) tint_color: vec4<f32>,
 }
 
 @vertex
@@ -48,17 +49,24 @@ fn vs_main(
     let face_matrix = face_matrices[instance.matrix_indices[0]];
     let x_rotation_matrix = x_rotation_matrices[instance.matrix_indices[1]];
     let y_rotation_matrix = y_rotation_matrices[instance.matrix_indices[2]];
-    let combined_matrix = y_rotation_matrix * x_rotation_matrix * face_matrix;
-    let global_pos = combined_matrix * block_vertex.pos + instance.pos + vec3(0.5, 0.5, 0.5);
+    let instance_matrix = mat4x4(
+        instance.matrix_0,
+        instance.matrix_1,
+        instance.matrix_2,
+        instance.matrix_3,
+    );
+    let face_pos = face_matrix * block_vertex.pos;
+    let transformed_pos = instance_matrix * vec4(face_pos, 1.0);
+    let rotated_pos = y_rotation_matrix * x_rotation_matrix * transformed_pos.xyz;
+    let global_pos = rotated_pos + instance.pos + vec3(0.5, 0.5, 0.5);
     out.clip_pos = view_matrix * vec4(global_pos, 1.0);
     // UVs
     let start_uvs = vec2<f32>(instance.uvs.xy) / atlas_size;
     let end_uvs = vec2<f32>(instance.uvs.zw) / atlas_size;
     out.uvs = mix(start_uvs, end_uvs, block_vertex.uvs);
     // Normal
+    let face_normal = face_matrix * block_vertex.normal;
     out.normal = y_rotation_matrix * x_rotation_matrix * face_matrix * block_vertex.normal;
-    // Tint Color
-    out.tint_color = instance.tint_color;
     return out;
 }
 
@@ -68,7 +76,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if tex_sample.a < 1.0 {
         discard;
     }
-    tex_sample *= in.tint_color;
     let light_source_dir = normalize(vec3(2.0, 5.0, 1.0));
     let lighting = dot(in.normal, light_source_dir);
     let light_coef = fma(lighting, 0.3, 0.4);

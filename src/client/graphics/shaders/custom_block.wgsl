@@ -18,47 +18,60 @@ var<uniform> x_rotation_matrices: array<mat3x3<f32>, 4>;
 var<uniform> y_rotation_matrices: array<mat3x3<f32>, 4>;
 
 struct VertexInput {
-    @location(0) pos: vec3<f32>,
-    @location(1) uvs: vec2<f32>,
+    @location(0) local_pos: vec3<f32>,
+    @location(1) uvs: vec2<u32>,
     @location(2) normal: vec3<f32>,
+    @location(3) tint_percentage: f32,
 }
+
+// struct VertexInput {
+//     @location(0) pos: vec3<f32>,
+//     @location(1) uvs: vec2<u32>,
+//     @location(2) normal: vec3<f32>,
+//     @location(3) tint: vec4<u32>,
+// }
 
 struct InstanceInput {
     @location(10) pos: vec3<f32>,
-    @location(11) uvs: vec4<u32>,
-    @location(12) matrix_indices: vec4<u32>,
-    @location(13) tint_color: vec4<f32>,
+    @location(11) matrix_indices: vec4<u32>,
+    @location(12) tint_color: vec4<f32>,
 }
 
 struct VertexOutput {
+    @invariant
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uvs: vec2<f32>,
-    @interpolate(flat)
     @location(2) tint_color: vec4<f32>,
+    @location(3) tint_percentage: f32,
+}
+
+fn quantize_vec3_16k(vec: vec3<f32>) -> vec3<f32> {
+    let quantize_amount: f32 = 65536.0;
+    return round(vec * vec3(quantize_amount)) / vec3(quantize_amount);
 }
 
 @vertex
 fn vs_main(
-    block_vertex: VertexInput,
+    vertex: VertexInput,
     instance: InstanceInput,
 ) -> VertexOutput {
     var out: VertexOutput;
+    let x_rotation_matrix = x_rotation_matrices[instance.matrix_indices[0]];
+    let y_rotation_matrix = y_rotation_matrices[instance.matrix_indices[1]];
+    let rotation_matrix = y_rotation_matrix * x_rotation_matrix;
     // Position
-    let face_matrix = face_matrices[instance.matrix_indices[0]];
-    let x_rotation_matrix = x_rotation_matrices[instance.matrix_indices[1]];
-    let y_rotation_matrix = y_rotation_matrices[instance.matrix_indices[2]];
-    let combined_matrix = y_rotation_matrix * x_rotation_matrix * face_matrix;
-    let global_pos = combined_matrix * block_vertex.pos + instance.pos + vec3(0.5, 0.5, 0.5);
+    // let rotated_pos = rotation_matrix * quantize_vec3_16k(vertex.local_pos);
+    let rotated_pos = rotation_matrix * vertex.local_pos;
+    let global_pos = rotated_pos + instance.pos + vec3(0.5, 0.5, 0.5);
     out.clip_pos = view_matrix * vec4(global_pos, 1.0);
     // UVs
-    let start_uvs = vec2<f32>(instance.uvs.xy) / atlas_size;
-    let end_uvs = vec2<f32>(instance.uvs.zw) / atlas_size;
-    out.uvs = mix(start_uvs, end_uvs, block_vertex.uvs);
+    out.uvs = vec2<f32>(vertex.uvs) / atlas_size;
     // Normal
-    out.normal = y_rotation_matrix * x_rotation_matrix * face_matrix * block_vertex.normal;
-    // Tint Color
+    out.normal = rotation_matrix * vertex.normal;
+    // Tint
     out.tint_color = instance.tint_color;
+    out.tint_percentage = vertex.tint_percentage;
     return out;
 }
 
@@ -68,7 +81,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if tex_sample.a < 1.0 {
         discard;
     }
-    tex_sample *= in.tint_color;
+    tex_sample *= mix(vec4(1.0, 1.0, 1.0, 1.0), in.tint_color, in.tint_percentage);
     let light_source_dir = normalize(vec3(2.0, 5.0, 1.0));
     let lighting = dot(in.normal, light_source_dir);
     let light_coef = fma(lighting, 0.3, 0.4);

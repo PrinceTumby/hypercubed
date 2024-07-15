@@ -85,6 +85,7 @@ lazy_static! {
         map
     };
     pub static ref TEXTURES: AHashMap<Identifier, &'static [u8]> = AHashMap::new();
+    pub static ref TEXTURE_METAS: AHashMap<Identifier, &'static [u8]> = AHashMap::new();
 }
 
 pub struct InternalOverlayFilesystem;
@@ -96,18 +97,13 @@ impl Filesystem for InternalOverlayFilesystem {
         identifier: &Identifier,
     ) -> anyhow::Result<Cow<'static, [u8]>> {
         match resource_type {
-            &ResourceType::Blockstate => BLOCKSTATES
-                .get(identifier)
-                .map(|&file| Cow::Borrowed(file))
-                .ok_or_else(|| anyhow!("file not found in internal overlay filesystem")),
-            &ResourceType::Model => MODELS
-                .get(identifier)
-                .map(|&file| Cow::Borrowed(file))
-                .ok_or_else(|| anyhow!("file not found in internal overlay filesystem")),
-            &ResourceType::Texture => TEXTURES
-                .get(identifier)
-                .map(|&file| Cow::Borrowed(file))
-                .ok_or_else(|| anyhow!("file not found in internal overlay filesystem")),
+            &ResourceType::Blockstate => &*BLOCKSTATES,
+            &ResourceType::Model => &*MODELS,
+            &ResourceType::Texture => &*TEXTURES,
+            &ResourceType::TextureMeta => &*TEXTURE_METAS,
         }
+        .get(identifier)
+        .map(|&file| Cow::Borrowed(file))
+        .ok_or_else(|| anyhow!("file not found in internal overlay filesystem"))
     }
 }

@@ -73,8 +73,54 @@ impl AtlasBuilder {
                 .with_context(|| format!("Failed to parse image texture for {location:?}"))?
                 .into_rgba8();
             let texture_info = self.stitch_in(&texture)?;
-            self.stored_textures.insert(location.clone(), texture_info);
-            Ok(texture_info)
+            let animation_bytes = get_resource_file(&ResourceType::TextureMeta, location);
+            if let Ok(animation_bytes) = animation_bytes {
+                #[allow(unused)]
+                #[derive(Clone, serde::Deserialize)]
+                struct TextureMeta {
+                    pub animation: AnimationInfo,
+                }
+                #[allow(unused)]
+                #[derive(Clone, serde::Deserialize)]
+                struct AnimationInfo {
+                    #[serde(default = "default_frametime")]
+                    pub frametime: u16,
+                    #[serde(default)]
+                    pub interpolate: bool,
+                    pub frames: Option<Vec<u16>>,
+                }
+                fn default_frametime() -> u16 {
+                    20
+                }
+                let _info =
+                    serde_json::from_slice::<TextureMeta>(&animation_bytes).with_context(|| {
+                        format!("Failed to parse texture meta info for {location:?}")
+                    })?;
+                // TODO: Support texture animation
+                let old_dims = texture_info.space_dims;
+                let uvs = texture_info.uvs;
+                let new_texture_info = if old_dims[0] < old_dims[1] {
+                    let uv_diff = uvs[3] - uvs[1];
+                    let new_uv = uvs[1] + (uv_diff / (old_dims[1] / old_dims[0]));
+                    TextureInfo {
+                        uvs: [uvs[0], uvs[1], uvs[2], new_uv],
+                        space_dims: old_dims,
+                    }
+                } else {
+                    let uv_diff = uvs[2] - uvs[0];
+                    let new_uv = uvs[0] + (uv_diff / (old_dims[0] / old_dims[1]));
+                    TextureInfo {
+                        uvs: [uvs[0], uvs[1], new_uv, uvs[3]],
+                        space_dims: old_dims,
+                    }
+                };
+                self.stored_textures
+                    .insert(location.clone(), new_texture_info);
+                Ok(new_texture_info)
+            } else {
+                self.stored_textures.insert(location.clone(), texture_info);
+                Ok(texture_info)
+            }
         }
     }
 

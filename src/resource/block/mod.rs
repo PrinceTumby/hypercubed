@@ -3,10 +3,12 @@ pub mod model;
 
 use super::{texture, Identifier, RegistryData, RegistryIndex};
 use crate::client::graphics::chunk::block_face::rotation_matrices;
+use ahash::AHashMap;
 use anyhow::Context;
 use blockstate::CustomPropertyType;
 use model::ModelCache;
 use serde_repr::Deserialize_repr;
+use string_cache::DefaultAtom as Atom;
 
 #[derive(Debug)]
 pub struct Registry {
@@ -18,11 +20,46 @@ pub struct Registry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GlobalPaletteIndex(u16);
 
+impl GlobalPaletteIndex {
+    pub fn placeholder() -> Self {
+        Self(0xFFFF)
+    }
+
+    pub fn as_raw(&self) -> u16 {
+        self.0
+    }
+}
+
+impl Default for GlobalPaletteIndex {
+    fn default() -> Self {
+        Self::placeholder()
+    }
+}
+
 impl From<GlobalPaletteIndex> for usize {
     fn from(value: GlobalPaletteIndex) -> Self {
         value.as_usize()
     }
 }
+
+macro_rules! impl_palette_index_try_from {
+    ($from_type:ty) => {
+        impl TryFrom<$from_type> for GlobalPaletteIndex {
+            type Error = <u16 as TryFrom<$from_type>>::Error;
+
+            fn try_from(value: $from_type) -> Result<Self, Self::Error> {
+                u16::try_from(value).map(Self)
+            }
+        }
+    };
+}
+
+impl_palette_index_try_from!(u32);
+impl_palette_index_try_from!(u64);
+impl_palette_index_try_from!(usize);
+impl_palette_index_try_from!(i32);
+impl_palette_index_try_from!(i64);
+impl_palette_index_try_from!(isize);
 
 impl GlobalPaletteIndex {
     #[inline(always)]
@@ -44,13 +81,18 @@ impl Registry {
         &mut self,
         identifier: Identifier,
         custom_variant_properties: Option<&[(&str, CustomPropertyType)]>,
+        replacement_variant_properties: Option<&[(&str, CustomPropertyType)]>,
+        default_override: Option<&[(&str, &str)]>,
         properties: Properties,
         model_cache: &mut ModelCache,
         texture_atlas: &mut texture::AtlasBuilder,
     ) -> anyhow::Result<RegistryIndex> {
+        let block_index = self.data.register_default(identifier.clone());
         let mut blockstates = blockstate::load_blockstates(
+            block_index,
             &identifier,
             custom_variant_properties,
+            replacement_variant_properties,
             model_cache,
             texture_atlas,
         )
@@ -58,47 +100,131 @@ impl Registry {
         #[cfg(debug_assertions)]
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
-        // FIXME This isn't correct, see "todo.txt"
-        let default_index = self.global_palette.len();
+        let default_index = match default_override {
+            Some(default_override) => {
+                let override_map = default_override
+                    .into_iter()
+                    .map(|(k, v)| (Atom::from(*k), Atom::from(*v)))
+                    .collect();
+                self.global_palette.len()
+                    + blockstates
+                        .iter()
+                        .position(|blockstate| blockstate.properties == override_map)
+                        .expect("`default_override` should exist as a valid state")
+            }
+            None => self.global_palette.len(),
+        };
         self.global_palette.append(&mut blockstates);
-        let info = Info {
+        self.data[block_index] = Info {
             default_blockstate: GlobalPaletteIndex(default_index.try_into().unwrap()),
             properties,
             #[cfg(debug_assertions)]
             blockstate_id_range,
         };
-        // TODO Not all blockstates are getting generated, so tack on some extra debugging info for
-        // blockstate groups and conditions. Probably make those active when compiled as a debug
-        // build.
-        Ok(self.data.register(identifier, info))
+        Ok(block_index)
+    }
+
+    /// Panics if an entry is already registered with `identifier`.
+    /// `custom_properties` is each property that defines the blockstates, in order.
+    /// `skip_properties` is a list of property names from `properties` that do not appear in the
+    /// blockstates file.
+    pub fn register_full_custom(
+        &mut self,
+        identifier: Identifier,
+        custom_properties: &[(&str, CustomPropertyType)],
+        skip_properties: &[&str],
+        default_override: Option<&[(&str, &str)]>,
+        properties: Properties,
+        model_cache: &mut ModelCache,
+        texture_atlas: &mut texture::AtlasBuilder,
+    ) -> anyhow::Result<RegistryIndex> {
+        let block_index = self.data.register_default(identifier.clone());
+        let mut blockstates = blockstate::load_full_custom_blockstates(
+            block_index,
+            &identifier,
+            custom_properties,
+            skip_properties,
+            model_cache,
+            texture_atlas,
+        )
+        .with_context(|| format!("Failed to parse blockstates for {identifier:?}"))?;
+        #[cfg(debug_assertions)]
+        let blockstate_id_range =
+            self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
+        let default_index = match default_override {
+            Some(default_override) => {
+                let override_map = default_override
+                    .into_iter()
+                    .map(|(k, v)| (Atom::from(*k), Atom::from(*v)))
+                    .collect();
+                self.global_palette.len()
+                    + blockstates
+                        .iter()
+                        .position(|blockstate| blockstate.properties == override_map)
+                        .expect("`default_override` should exist as a valid state")
+            }
+            None => self.global_palette.len(),
+        };
+        self.global_palette.append(&mut blockstates);
+        self.data[block_index] = Info {
+            default_blockstate: GlobalPaletteIndex(default_index.try_into().unwrap()),
+            properties,
+            #[cfg(debug_assertions)]
+            blockstate_id_range,
+        };
+        Ok(block_index)
     }
 
     pub fn register_liquid(
         &mut self,
         identifier: Identifier,
-        properties: Properties,
+        mut properties: Properties,
         model_cache: &mut ModelCache,
         texture_atlas: &mut texture::AtlasBuilder,
     ) -> anyhow::Result<RegistryIndex> {
+        let block_index = self.data.register_default(identifier.clone());
+        properties.opaque = false;
         let mut blockstates =
-            blockstate::load_liquid_blockstates(&identifier, model_cache, texture_atlas)
+            blockstate::load_liquid_blockstates(block_index, &identifier, model_cache, texture_atlas)
                 .with_context(|| format!("while parsing liquid blockstates for {identifier:?}"))?;
         #[cfg(debug_assertions)]
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
         let default_index = self.global_palette.len();
         self.global_palette.append(&mut blockstates);
-        let info = Info {
+        self.data[block_index] = Info {
             default_blockstate: GlobalPaletteIndex(default_index.try_into().unwrap()),
             properties,
             #[cfg(debug_assertions)]
             blockstate_id_range,
         };
-        Ok(self.data.register(identifier, info))
+        Ok(block_index)
     }
 
-    pub fn get_entry_from_identifer(&self, identifier: &Identifier) -> Option<&Info> {
-        self.data.get_entry_from_identifer(identifier)
+    pub fn get_index_from_identifier(&self, identifier: &Identifier) -> Option<RegistryIndex> {
+        self.data.get_index_from_identifier(identifier)
+    }
+
+    pub fn get_entry_from_identifier(&self, identifier: &Identifier) -> Option<&Info> {
+        self.data.get_entry_from_identifier(identifier)
+    }
+
+    pub fn get_identifier_from_index(&self, index: RegistryIndex) -> Option<&Identifier> {
+        self.data.get_identifier_from_index(index)
+    }
+}
+
+impl std::ops::Index<RegistryIndex> for Registry {
+    type Output = Info;
+
+    fn index(&self, index: RegistryIndex) -> &Self::Output {
+        &self.data[index]
+    }
+}
+
+impl std::ops::IndexMut<RegistryIndex> for Registry {
+    fn index_mut(&mut self, index: RegistryIndex) -> &mut Self::Output {
+        &mut self.data[index]
     }
 }
 
@@ -108,6 +234,17 @@ pub struct Info {
     pub properties: Properties,
     #[cfg(debug_assertions)]
     pub blockstate_id_range: std::ops::RangeInclusive<usize>,
+}
+
+impl Default for Info {
+    fn default() -> Self {
+        Self {
+            default_blockstate: GlobalPaletteIndex::placeholder(),
+            properties: Properties::default(),
+            #[cfg(debug_assertions)]
+            blockstate_id_range: usize::MAX..=usize::MAX,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,7 +279,6 @@ impl RightAngleRotation {
     }
 }
 
-// TODO Write some `register_vanilla_blocks` function and just start importing a bunch
 // TODO Make model loading errors print out a warning and load missing texture block instead
 
 pub fn register_vanilla_blocks(
@@ -152,18 +288,12 @@ pub fn register_vanilla_blocks(
 ) -> anyhow::Result<()> {
     use CustomPropertyType::*;
     macro_rules! register {
-        ($identifier:expr) => {
-            registry.register(
-                Identifier::parse($identifier).unwrap(),
-                None,
-                Properties::default(),
-                model_cache,
-                texture_atlas_builder,
-            )
-        };
+        // Custom block properties
         ($identifier:expr, $( $key:ident = $value:expr ),+) => {
             registry.register(
                 Identifier::parse($identifier).unwrap(),
+                None,
+                None,
                 None,
                 Properties {
                     $( $key: $value ),+,
@@ -173,11 +303,20 @@ pub fn register_vanilla_blocks(
                 texture_atlas_builder,
             )
         };
-        ($identifier:expr, $custom_variants:expr) => {
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
             registry.register(
                 Identifier::parse($identifier).unwrap(),
-                Some($custom_variants),
-                Properties::default(),
+                None,
+                None,
+                Some($default_override),
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
                 model_cache,
                 texture_atlas_builder,
             )
@@ -186,10 +325,271 @@ pub fn register_vanilla_blocks(
             registry.register(
                 Identifier::parse($identifier).unwrap(),
                 Some($custom_variants),
+                None,
+                None,
                 Properties {
                     $( $key: $value ),+,
                     ..Default::default()
                 },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            $custom_variants:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                Some($custom_variants),
+                None,
+                Some($default_override),
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            replace: $replacement_variants:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                None,
+                Some($replacement_variants),
+                None,
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            replace: $replacement_variants:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                None,
+                Some($replacement_variants),
+                Some($default_override),
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            replace: $replacement_variants:expr,
+            $custom_variants:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                Some($custom_variants),
+                Some($replacement_variants),
+                None,
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            replace: $replacement_variants:expr,
+            $custom_variants:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                Some($custom_variants),
+                Some($replacement_variants),
+                Some($default_override),
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            full_custom: $properties:expr,
+            skips: $skips:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
+            registry.register_full_custom(
+                Identifier::parse($identifier).unwrap(),
+                $properties,
+                $skips,
+                None,
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            full_custom: $properties:expr,
+            skips: $skips:expr,
+            $( $key:ident = $value:expr ),+
+        ) => {
+            registry.register_full_custom(
+                Identifier::parse($identifier).unwrap(),
+                $properties,
+                $skips,
+                Some($default_override),
+                Properties {
+                    $( $key: $value ),+,
+                    ..Default::default()
+                },
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        // Default block properties
+        ($identifier:expr) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                None,
+                None,
+                None,
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        ($identifier:expr, override_default: $default_override:expr) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                None,
+                None,
+                Some($default_override),
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        ($identifier:expr, $custom_variants:expr) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                Some($custom_variants),
+                None,
+                None,
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        ($identifier:expr, override_default: $default_override:expr, $custom_variants:expr) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                Some($custom_variants),
+                None,
+                Some($default_override),
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        ($identifier:expr, replace: $replacement_variants:expr) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                None,
+                Some($replacement_variants),
+                None,
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            replace: $replacement_variants:expr
+        ) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                None,
+                Some($replacement_variants),
+                Some($default_override),
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        ($identifier:expr, replace: $replacement_variants:expr, $custom_variants:expr) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                Some($custom_variants),
+                Some($replacement_variants),
+                None,
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            replace: $replacement_variants:expr,
+            $custom_variants:expr
+        ) => {
+            registry.register(
+                Identifier::parse($identifier).unwrap(),
+                Some($custom_variants),
+                Some($replacement_variants),
+                Some($default_override),
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        ($identifier:expr, full_custom: $properties:expr, skips: $skips:expr) => {
+            registry.register_full_custom(
+                Identifier::parse($identifier).unwrap(),
+                $properties,
+                $skips,
+                None,
+                Properties::default(),
+                model_cache,
+                texture_atlas_builder,
+            )
+        };
+        (
+            $identifier:expr,
+            override_default: $default_override:expr,
+            full_custom: $properties:expr,
+            skips: $skips:expr
+        ) => {
+            registry.register_full_custom(
+                Identifier::parse($identifier).unwrap(),
+                $properties,
+                $skips,
+                Some($default_override),
+                Properties::default(),
                 model_cache,
                 texture_atlas_builder,
             )
@@ -226,6 +626,7 @@ pub fn register_vanilla_blocks(
     );
     const WATERLOGGED: (&str, blockstate::CustomPropertyType) = ("waterlogged", Bool);
     const POWERED: (&str, blockstate::CustomPropertyType) = ("powered", Bool);
+    const LIT: (&str, blockstate::CustomPropertyType) = ("lit", Bool);
     const AGE_0_15: (&str, blockstate::CustomPropertyType) = ("age", Int(0..=15));
     const AGE_0_25: (&str, blockstate::CustomPropertyType) = ("age", Int(0..=25));
     const ROTATION_0_15: (&str, blockstate::CustomPropertyType) = ("rotation", Int(0..=15));
@@ -237,37 +638,95 @@ pub fn register_vanilla_blocks(
     // Specialised registration macros for common block types
     macro_rules! register_slab {
         ($identifier:expr) => {
-            register!($identifier, &[WATERLOGGED])
+            register!(
+                $identifier,
+                override_default: &[("type", "bottom"), ("waterlogged", "false")],
+                replace: &[("type", Enum(&["top", "bottom", "double"]))],
+                &[WATERLOGGED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_stairs {
         ($identifier:expr) => {
-            register!($identifier, &[WATERLOGGED])
+            register!(
+                $identifier,
+                override_default: &[
+                    ("facing", "north"),
+                    ("half", "bottom"),
+                    ("shape", "straight"),
+                    ("waterlogged", "false")
+                ],
+                replace: &[
+                    FACING_NSWE,
+                    ("half", Enum(&["top", "bottom"])),
+                    ("shape", Enum(&[
+                        "straight",
+                        "inner_left",
+                        "inner_right",
+                        "outer_left",
+                        "outer_right",
+                    ])),
+                ],
+                &[WATERLOGGED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_fence {
         ($identifier:expr) => {
             register!(
                 $identifier,
+                override_default: &[
+                    ("east", "false"),
+                    ("north", "false"),
+                    ("south", "false"),
+                    ("west", "false"),
+                    ("waterlogged", "false"),
+                ],
                 &[
                     ("east", Bool),
                     ("north", Bool),
                     ("south", Bool),
                     WATERLOGGED,
                     ("west", Bool),
-                ]
+                ],
+                opaque = false
             )
         };
     }
     macro_rules! register_fence_gate {
         ($identifier:expr) => {
-            register!($identifier, &[POWERED])
+            register!(
+                $identifier,
+                override_default: &[
+                    ("facing", "north"),
+                    ("in_wall", "false"),
+                    ("open", "false"),
+                    ("powered", "false"),
+                ],
+                replace: &[
+                    FACING_NSWE,
+                    ("in_wall", Bool),
+                    ("open", Bool),
+                ],
+                &[POWERED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_wall {
         ($identifier:expr) => {
             register!(
                 $identifier,
+                override_default: &[
+                    ("east", "none"),
+                    ("north", "none"),
+                    ("south", "none"),
+                    ("west", "none"),
+                    ("up", "true"),
+                    ("waterlogged", "false"),
+                ],
                 &[
                     ("east", Enum(&["none", "low", "tall"])),
                     ("north", Enum(&["none", "low", "tall"])),
@@ -275,46 +734,110 @@ pub fn register_vanilla_blocks(
                     ("up", Bool),
                     WATERLOGGED,
                     ("west", Enum(&["none", "low", "tall"])),
-                ]
+                ],
+                opaque = false
             )
         };
     }
     macro_rules! register_door {
         ($identifier:expr) => {
-            register!($identifier, &[POWERED])
+            register!(
+                $identifier,
+                override_default: &[
+                    ("facing", "north"),
+                    ("half", "lower"),
+                    ("hinge", "left"),
+                    ("open", "false"),
+                    ("powered", "false"),
+                ],
+                replace: &[
+                    FACING_NSWE,
+                    ("half", Enum(&["upper", "lower"])),
+                    ("hinge", Enum(&["left", "right"])),
+                    ("open", Bool),
+                ],
+                &[POWERED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_trapdoor {
         ($identifier:expr) => {
-            register!($identifier, &[POWERED, WATERLOGGED])
+            register!(
+                $identifier,
+                override_default: &[
+                    ("facing", "north"),
+                    ("half", "bottom"),
+                    ("open", "false"),
+                    ("powered", "false"),
+                    ("waterlogged", "false"),
+                ],
+                replace: &[
+                    FACING_NSWE,
+                    ("half", Enum(&["top", "bottom"])),
+                    ("open", Bool),
+                ],
+                &[POWERED, WATERLOGGED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_chest {
         ($identifier:expr) => {
-            register!($identifier, &[CHEST_TYPE, FACING_NSWE, WATERLOGGED])
+            register!(
+                $identifier,
+                override_default: &[
+                    ("type", "single"),
+                    ("facing", "north"),
+                    ("waterlogged", "false")
+                ],
+                &[FACING_NSWE, CHEST_TYPE, WATERLOGGED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_sign {
         ($identifier:expr) => {
-            register!($identifier, &[ROTATION_0_15, WATERLOGGED,])
+            register!(
+                $identifier,
+                override_default: &[("rotation", "0"), ("waterlogged", "false")],
+                &[ROTATION_0_15, WATERLOGGED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_wall_sign {
         ($identifier:expr) => {
-            register!($identifier, &[FACING_NSWE, WATERLOGGED,])
+            register!(
+                $identifier,
+                override_default: &[("facing", "north"), ("waterlogged", "false")],
+                &[FACING_NSWE, WATERLOGGED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_hanging_sign {
         ($identifier:expr) => {
             register!(
                 $identifier,
-                &[("attached", Bool), ROTATION_0_15, WATERLOGGED,]
+                override_default: &[
+                    ("attached", "false"),
+                    ("rotation", "0"),
+                    ("waterlogged", "false"),
+                ],
+                &[("attached", Bool), ROTATION_0_15, WATERLOGGED],
+                opaque = false
             )
         };
     }
     macro_rules! register_wall_hanging_sign {
         ($identifier:expr) => {
-            register!($identifier, &[FACING_NSWE, WATERLOGGED,])
+            register!(
+                $identifier,
+                override_default: &[("facing", "north"), ("waterlogged", "false")],
+                &[FACING_NSWE, WATERLOGGED],
+                opaque = false
+            )
         };
     }
     macro_rules! register_stained_glass {
@@ -322,8 +845,42 @@ pub fn register_vanilla_blocks(
             register!($identifier, opaque = false)
         };
     }
+    macro_rules! register_grate {
+        ($identifier:expr) => {
+            register!(
+                $identifier,
+                override_default: &[("waterlogged", "false")],
+                &[WATERLOGGED],
+                opaque = false
+            )
+        };
+    }
+    macro_rules! register_pressure_plate {
+        ($identifier:expr) => {
+            register!(
+                $identifier,
+                override_default: &[("powered", "false")],
+                replace: &[POWERED],
+                opaque = false
+            )
+        };
+    }
+    macro_rules! register_button {
+        ($identifier:expr) => {
+            register!(
+                $identifier,
+                override_default: &[("face", "wall"), ("facing", "north"), ("powered", "false")],
+                replace: &[
+                    ("face", Enum(&["floor", "wall", "ceiling"])),
+                    FACING_NSWE,
+                    POWERED,
+                ],
+                opaque = false
+            )
+        };
+    }
 
-    register!("air")?;
+    register!("air", opaque = false)?;
     register!("stone")?;
     register!("granite")?;
     register!("polished_granite")?;
@@ -331,10 +888,10 @@ pub fn register_vanilla_blocks(
     register!("polished_diorite")?;
     register!("andesite")?;
     register!("polished_andesite")?;
-    register!("grass_block")?;
+    register!("grass_block", override_default: &[("snowy", "false")], replace: &[("snowy", Bool)])?;
     register!("dirt")?;
     register!("coarse_dirt")?;
-    register!("podzol")?;
+    register!("podzol", override_default: &[("snowy", "false")], replace: &[("snowy", Bool)])?;
     register!("cobblestone")?;
     register!("oak_planks")?;
     register!("spruce_planks")?;
@@ -346,14 +903,25 @@ pub fn register_vanilla_blocks(
     register!("mangrove_planks")?;
     register!("bamboo_planks")?;
     register!("bamboo_mosaic")?;
-    register!("oak_sapling", &[("stage", Int(0..=1))])?;
-    register!("spruce_sapling", &[("stage", Int(0..=1))])?;
-    register!("birch_sapling", &[("stage", Int(0..=1))])?;
-    register!("jungle_sapling", &[("stage", Int(0..=1))])?;
-    register!("acacia_sapling", &[("stage", Int(0..=1))])?;
-    register!("cherry_sapling", &[("stage", Int(0..=1))])?;
-    register!("dark_oak_sapling", &[("stage", Int(0..=1))])?;
-    register!("mangrove_propagule", &[("stage", Int(0..=1)), WATERLOGGED])?;
+    register!("oak_sapling", &[("stage", Int(0..=1))], opaque = false)?;
+    register!("spruce_sapling", &[("stage", Int(0..=1))], opaque = false)?;
+    register!("birch_sapling", &[("stage", Int(0..=1))], opaque = false)?;
+    register!("jungle_sapling", &[("stage", Int(0..=1))], opaque = false)?;
+    register!("acacia_sapling", &[("stage", Int(0..=1))], opaque = false)?;
+    register!("cherry_sapling", &[("stage", Int(0..=1))], opaque = false)?;
+    register!("dark_oak_sapling", &[("stage", Int(0..=1))], opaque = false)?;
+    register!(
+        "mangrove_propagule",
+        override_default: &[
+            ("age", "0"),
+            ("hanging", "false"),
+            ("stage", "0"),
+            ("waterlogged", "false"),
+        ],
+        replace: &[("age", Int(0..=4)), ("hanging", Bool)],
+        &[("stage", Int(0..=1)), WATERLOGGED],
+        opaque = false
+    )?;
     register!("bedrock")?;
     register_liquid!("water")?;
     register_liquid!("lava")?;
@@ -369,48 +937,68 @@ pub fn register_vanilla_blocks(
     register!("coal_ore")?;
     register!("deepslate_coal_ore")?;
     register!("nether_gold_ore")?;
-    register!("oak_log")?;
-    register!("spruce_log")?;
-    register!("birch_log")?;
-    register!("jungle_log")?;
-    register!("acacia_log")?;
-    register!("cherry_log")?;
-    register!("dark_oak_log")?;
-    register!("mangrove_log")?;
-    register!("mangrove_roots", &[WATERLOGGED])?;
-    register!("muddy_mangrove_roots")?;
-    register!("bamboo_block")?;
-    register!("stripped_spruce_log")?;
-    register!("stripped_birch_log")?;
-    register!("stripped_jungle_log")?;
-    register!("stripped_acacia_log")?;
-    register!("stripped_cherry_log")?;
-    register!("stripped_dark_oak_log")?;
-    register!("stripped_oak_log")?;
-    register!("stripped_mangrove_log")?;
-    register!("stripped_bamboo_block")?;
-    register!("oak_wood")?;
-    register!("spruce_wood")?;
-    register!("birch_wood")?;
-    register!("jungle_wood")?;
-    register!("acacia_wood")?;
-    register!("cherry_wood")?;
-    register!("dark_oak_wood")?;
-    register!("mangrove_wood")?;
-    register!("stripped_oak_wood")?;
-    register!("stripped_spruce_wood")?;
-    register!("stripped_birch_wood")?;
-    register!("stripped_jungle_wood")?;
-    register!("stripped_acacia_wood")?;
-    register!("stripped_cherry_wood")?;
-    register!("stripped_dark_oak_wood")?;
-    register!("stripped_mangrove_wood")?;
+    {
+        macro_rules! register_log {
+            ($identifier:expr) => {
+                register!($identifier, override_default: &[("axis", "y")])
+            };
+        }
+        register_log!("oak_log")?;
+        register_log!("spruce_log")?;
+        register_log!("birch_log")?;
+        register_log!("jungle_log")?;
+        register_log!("acacia_log")?;
+        register_log!("cherry_log")?;
+        register_log!("dark_oak_log")?;
+        register_log!("mangrove_log")?;
+        register!("mangrove_roots", override_default: &[("waterlogged", "false")], &[WATERLOGGED])?;
+        register_log!("muddy_mangrove_roots")?;
+        register_log!("bamboo_block")?;
+        register_log!("stripped_spruce_log")?;
+        register_log!("stripped_birch_log")?;
+        register_log!("stripped_jungle_log")?;
+        register_log!("stripped_acacia_log")?;
+        register_log!("stripped_cherry_log")?;
+        register_log!("stripped_dark_oak_log")?;
+        register_log!("stripped_oak_log")?;
+        register_log!("stripped_mangrove_log")?;
+        register_log!("stripped_bamboo_block")?;
+    }
+    {
+        macro_rules! register_wood {
+            ($identifier:expr) => {
+                register!($identifier, override_default: &[("axis", "y")])
+            };
+        }
+        register_wood!("oak_wood")?;
+        register_wood!("spruce_wood")?;
+        register_wood!("birch_wood")?;
+        register_wood!("jungle_wood")?;
+        register_wood!("acacia_wood")?;
+        register_wood!("cherry_wood")?;
+        register_wood!("dark_oak_wood")?;
+        register_wood!("mangrove_wood")?;
+        register_wood!("stripped_oak_wood")?;
+        register_wood!("stripped_spruce_wood")?;
+        register_wood!("stripped_birch_wood")?;
+        register_wood!("stripped_jungle_wood")?;
+        register_wood!("stripped_acacia_wood")?;
+        register_wood!("stripped_cherry_wood")?;
+        register_wood!("stripped_dark_oak_wood")?;
+        register_wood!("stripped_mangrove_wood")?;
+    }
     {
         macro_rules! register_leaves {
             ($identifier:expr) => {
                 register!(
                     $identifier,
-                    &[("distance", Int(1..=7)), ("persistent", Bool), WATERLOGGED,]
+                    override_default: &[
+                        ("distance", "7"),
+                        ("persistent", "false"),
+                        ("waterlogged", "false"),
+                    ],
+                    &[("distance", Int(1..=7)), ("persistent", Bool), WATERLOGGED],
+                    opaque = false
                 )
             };
         }
@@ -431,12 +1019,18 @@ pub fn register_vanilla_blocks(
     register!("lapis_ore")?;
     register!("deepslate_lapis_ore")?;
     register!("lapis_block")?;
-    register!("dispenser", &[("triggered", Bool)])?;
+    register!(
+        "dispenser",
+        override_default: &[("facing", "north"), ("triggered", "false")],
+        replace: &[FACING_NESWUD],
+        &[("triggered", Bool)]
+    )?;
     register!("sandstone")?;
     register!("chiseled_sandstone")?;
     register!("cut_sandstone")?;
     register!(
         "note_block",
+        override_default: &[("instrument", "harp"), ("note", "0"), ("powered", "false")],
         &[
             (
                 "instrument",
@@ -470,33 +1064,108 @@ pub fn register_vanilla_blocks(
             POWERED,
         ]
     )?;
-    register!("white_bed")?;
-    register!("orange_bed")?;
-    register!("magenta_bed")?;
-    register!("light_blue_bed")?;
-    register!("yellow_bed")?;
-    register!("lime_bed")?;
-    register!("pink_bed")?;
-    register!("gray_bed")?;
-    register!("light_gray_bed")?;
-    register!("cyan_bed")?;
-    register!("purple_bed")?;
-    register!("blue_bed")?;
-    register!("brown_bed")?;
-    register!("green_bed")?;
-    register!("red_bed")?;
-    register!("black_bed")?;
-    register!("powered_rail", &[WATERLOGGED])?;
-    register!("detector_rail", &[WATERLOGGED])?;
-    register!("sticky_piston")?;
-    register!("cobweb")?;
-    register!("grass")?;
-    register!("fern")?;
-    register!("dead_bush")?;
-    register!("seagrass")?;
-    register!("tall_seagrass")?;
-    register!("piston")?;
-    register!("piston_head")?;
+    {
+        macro_rules! register_bed {
+            ($identifier:expr) => {
+                register!(
+                    $identifier,
+                    override_default: &[
+                        ("facing", "north"),
+                        ("occupied", "false"),
+                        ("part", "foot"),
+                    ],
+                    opaque = false
+                )
+            };
+        }
+        register_bed!("white_bed")?;
+        register_bed!("orange_bed")?;
+        register_bed!("magenta_bed")?;
+        register_bed!("light_blue_bed")?;
+        register_bed!("yellow_bed")?;
+        register_bed!("lime_bed")?;
+        register_bed!("pink_bed")?;
+        register_bed!("gray_bed")?;
+        register_bed!("light_gray_bed")?;
+        register_bed!("cyan_bed")?;
+        register_bed!("purple_bed")?;
+        register_bed!("blue_bed")?;
+        register_bed!("brown_bed")?;
+        register_bed!("green_bed")?;
+        register_bed!("red_bed")?;
+        register_bed!("black_bed")?;
+    }
+    register!(
+        "powered_rail",
+        override_default: &[
+            ("powered", "false"),
+            ("shape", "north_south"),
+            ("waterlogged", "false"),
+        ],
+        replace: &[
+            POWERED,
+            ("shape", Enum(&[
+                "north_south",
+                "east_west",
+                "ascending_east",
+                "ascending_west",
+                "ascending_north",
+                "ascending_south",
+            ])),
+        ],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "detector_rail",
+        override_default: &[
+            ("powered", "false"),
+            ("shape", "north_south"),
+            ("waterlogged", "false"),
+        ],
+        replace: &[
+            POWERED,
+            ("shape", Enum(&[
+                "north_south",
+                "east_west",
+                "ascending_east",
+                "ascending_west",
+                "ascending_north",
+                "ascending_south",
+            ])),
+        ],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "sticky_piston",
+        override_default: &[("extended", "false"), ("facing", "north")],
+        replace: &[("extended", Bool), FACING_NESWUD],
+        opaque = false
+    )?;
+    register!("cobweb", opaque = false)?;
+    register!("short_grass", opaque = false)?;
+    register!("fern", opaque = false)?;
+    register!("dead_bush", opaque = false)?;
+    register!("seagrass", opaque = false)?;
+    register!(
+        "tall_seagrass",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!(
+        "piston",
+        override_default: &[("extended", "false"), ("facing", "north")],
+        replace: &[("extended", Bool), FACING_NESWUD],
+        opaque = false
+    )?;
+    register!(
+        "piston_head",
+        override_default: &[("type", "normal"), ("facing", "north"), ("short", "false")],
+        replace: &[FACING_NESWUD, ("short", Bool), ("type", Enum(&["normal", "sticky"]))],
+        opaque = false
+    )?;
     register!("white_wool")?;
     register!("orange_wool")?;
     register!("magenta_wool")?;
@@ -515,31 +1184,41 @@ pub fn register_vanilla_blocks(
     register!("black_wool")?;
     register!(
         "moving_piston",
-        &[("type", Enum(&["normal", "sticky"])), FACING_NESWUD,]
+        &[FACING_NESWUD, ("type", Enum(&["normal", "sticky"]))],
+        opaque = false
     )?;
-    register!("dandelion")?;
-    register!("torchflower")?;
-    register!("poppy")?;
-    register!("blue_orchid")?;
-    register!("allium")?;
-    register!("azure_bluet")?;
-    register!("red_tulip")?;
-    register!("orange_tulip")?;
-    register!("white_tulip")?;
-    register!("pink_tulip")?;
-    register!("oxeye_daisy")?;
-    register!("cornflower")?;
-    register!("wither_rose")?;
-    register!("lily_of_the_valley")?;
-    register!("brown_mushroom")?;
-    register!("red_mushroom")?;
+    register!("dandelion", opaque = false)?;
+    register!("torchflower", opaque = false)?;
+    register!("poppy", opaque = false)?;
+    register!("blue_orchid", opaque = false)?;
+    register!("allium", opaque = false)?;
+    register!("azure_bluet", opaque = false)?;
+    register!("red_tulip", opaque = false)?;
+    register!("orange_tulip", opaque = false)?;
+    register!("white_tulip", opaque = false)?;
+    register!("pink_tulip", opaque = false)?;
+    register!("oxeye_daisy", opaque = false)?;
+    register!("cornflower", opaque = false)?;
+    register!("wither_rose", opaque = false)?;
+    register!("lily_of_the_valley", opaque = false)?;
+    register!("brown_mushroom", opaque = false)?;
+    register!("red_mushroom", opaque = false)?;
     register!("gold_block")?;
     register!("iron_block")?;
     register!("bricks")?;
-    register!("tnt", &[("unstable", Bool)])?;
+    register!("tnt", override_default: &[("unstable", "false")], &[("unstable", Bool)])?;
     register!("bookshelf")?;
     register!(
         "chiseled_bookshelf",
+        override_default: &[
+            ("facing", "north"),
+            ("slot_0_occupied", "false"),
+            ("slot_1_occupied", "false"),
+            ("slot_2_occupied", "false"),
+            ("slot_3_occupied", "false"),
+            ("slot_4_occupied", "false"),
+            ("slot_5_occupied", "false"),
+        ],
         &[
             FACING_NSWE,
             ("slot_0_occupied", Bool),
@@ -552,10 +1231,18 @@ pub fn register_vanilla_blocks(
     )?;
     register!("mossy_cobblestone")?;
     register!("obsidian")?;
-    register!("torch")?;
-    register!("wall_torch")?;
+    register!("torch", opaque = false)?;
+    register!("wall_torch", replace: &[FACING_NSWE], opaque = false)?;
     register!(
         "fire",
+        override_default: &[
+            ("age", "0"),
+            ("east", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("up", "false"),
+            ("west", "false"),
+        ],
         &[
             AGE_0_15,
             ("east", Bool),
@@ -563,29 +1250,42 @@ pub fn register_vanilla_blocks(
             ("south", Bool),
             ("up", Bool),
             ("west", Bool),
-        ]
+        ],
+        opaque = false
     )?;
-    register!("soul_fire", &[])?;
+    register!("soul_fire", &[], opaque = false)?;
     register!("spawner", opaque = false)?;
     register_stairs!("oak_stairs")?;
     register_chest!("chest")?;
     register!(
         "redstone_wire",
+        override_default: &[
+            ("east", "none"),
+            ("north", "none"),
+            ("south", "none"),
+            ("west", "none"),
+            ("power", "0"),
+        ],
         &[
             ("east", Enum(&["up", "side", "none"])),
             ("north", Enum(&["up", "side", "none"])),
             ("power", Int(0..=15)),
             ("south", Enum(&["up", "side", "none"])),
             ("west", Enum(&["up", "side", "none"])),
-        ]
+        ],
+        opaque = false
     )?;
     register!("diamond_ore")?;
     register!("deepslate_diamond_ore")?;
     register!("diamond_block")?;
     register!("crafting_table")?;
-    register!("wheat")?;
-    register!("farmland")?;
-    register!("furnace")?;
+    register!("wheat", opaque = false)?;
+    register!("farmland", opaque = false)?;
+    register!(
+        "furnace",
+        override_default: &[("facing", "north"), ("lit", "false")],
+        replace: &[FACING_NSWE, LIT]
+    )?;
     register_sign!("oak_sign")?;
     register_sign!("spruce_sign")?;
     register_sign!("birch_sign")?;
@@ -595,9 +1295,32 @@ pub fn register_vanilla_blocks(
     register_sign!("dark_oak_sign")?;
     register_sign!("mangrove_sign")?;
     register_sign!("bamboo_sign")?;
-    register!("oak_door", &[POWERED])?;
-    register!("ladder", &[WATERLOGGED])?;
-    register!("rail", &[WATERLOGGED])?;
+    register_door!("oak_door")?;
+    register!(
+        "ladder",
+        override_default: &[("facing", "north"), ("waterlogged", "false")],
+        replace: &[FACING_NSWE],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "rail",
+        override_default: &[("shape", "north_south"), ("waterlogged", "false")],
+        replace: &[("shape", Enum(&[
+            "north_south",
+            "east_west",
+            "ascending_east",
+            "ascending_west",
+            "ascending_north",
+            "ascending_south",
+            "south_east",
+            "south_west",
+            "north_west",
+            "north_east",
+        ]))],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
     register_stairs!("cobblestone_stairs")?;
     register_wall_sign!("oak_wall_sign")?;
     register_wall_sign!("spruce_wall_sign")?;
@@ -630,54 +1353,76 @@ pub fn register_vanilla_blocks(
     register_wall_hanging_sign!("crimson_wall_hanging_sign")?;
     register_wall_hanging_sign!("warped_wall_hanging_sign")?;
     register_wall_hanging_sign!("bamboo_wall_hanging_sign")?;
-    register!("lever")?;
-    register!("stone_pressure_plate")?;
-    register!("iron_door", &[POWERED])?;
-    register!("oak_pressure_plate")?;
-    register!("spruce_pressure_plate")?;
-    register!("birch_pressure_plate")?;
-    register!("jungle_pressure_plate")?;
-    register!("acacia_pressure_plate")?;
-    register!("cherry_pressure_plate")?;
-    register!("dark_oak_pressure_plate")?;
-    register!("mangrove_pressure_plate")?;
-    register!("bamboo_pressure_plate")?;
-    register!("redstone_ore", &[("lit", Bool)])?;
-    register!("deepslate_redstone_ore", &[("lit", Bool)])?;
-    register!("redstone_torch")?;
-    register!("redstone_wall_torch")?;
-    register!("stone_button")?;
-    register!("snow")?;
-    register!("ice")?;
-    register!("snow_block")?;
-    register!("cactus", &[AGE_0_15])?;
-    register!("clay")?;
-    register!("sugar_cane", &[AGE_0_15])?;
-    register!("jukebox", &[("has_record", Bool)])?;
     register!(
-        "oak_fence",
-        &[
-            ("east", Bool),
-            ("north", Bool),
-            ("south", Bool),
-            WATERLOGGED,
-            ("west", Bool),
-        ]
+        "lever",
+        override_default: &[("face", "wall"), ("facing", "north"), ("powered", "false")],
+        replace: &[("face", Enum(&["floor", "wall", "ceiling"])), FACING_NSWE, POWERED],
+        opaque = false
     )?;
-    register!("pumpkin")?;
+    register_pressure_plate!("stone_pressure_plate")?;
+    register!(
+        "iron_door",
+        override_default: &[
+            ("facing", "north"),
+            ("half", "lower"),
+            ("hinge", "left"),
+            ("open", "false"),
+            ("powered", "false"),
+        ],
+        replace: &[
+            FACING_NSWE,
+            ("half", Enum(&["upper", "lower"])),
+            ("hinge", Enum(&["left", "right"])),
+            ("open", Bool),
+        ],
+        &[POWERED],
+        opaque = false
+    )?;
+    register_pressure_plate!("oak_pressure_plate")?;
+    register_pressure_plate!("spruce_pressure_plate")?;
+    register_pressure_plate!("birch_pressure_plate")?;
+    register_pressure_plate!("jungle_pressure_plate")?;
+    register_pressure_plate!("acacia_pressure_plate")?;
+    register_pressure_plate!("cherry_pressure_plate")?;
+    register_pressure_plate!("dark_oak_pressure_plate")?;
+    register_pressure_plate!("mangrove_pressure_plate")?;
+    register_pressure_plate!("bamboo_pressure_plate")?;
+    register!("redstone_ore", override_default: &[("lit", "false")], &[LIT])?;
+    register!("deepslate_redstone_ore", override_default: &[("lit", "false")], &[LIT])?;
+    register!("redstone_torch", replace: &[LIT], opaque = false)?;
+    register!("redstone_wall_torch", replace: &[FACING_NSWE, LIT], opaque = false)?;
+    register_button!("stone_button")?;
+    register!("snow", opaque = false)?;
+    register!("ice", opaque = false)?;
+    register!("snow_block")?;
+    register!("cactus", &[AGE_0_15], opaque = false)?;
+    register!("clay")?;
+    register!("sugar_cane", &[AGE_0_15], opaque = false)?;
+    register!("jukebox", override_default: &[("has_record", "false")], &[("has_record", Bool)])?;
+    register_fence!("oak_fence")?;
     register!("netherrack")?;
-    register!("soul_sand")?;
+    register!("soul_sand", opaque = false)?;
     register!("soul_soil")?;
-    register!("basalt")?;
-    register!("polished_basalt")?;
-    register!("soul_torch")?;
-    register!("soul_wall_torch")?;
+    register!("basalt", override_default: &[("axis", "y")])?;
+    register!("polished_basalt", override_default: &[("axis", "y")])?;
+    register!("soul_torch", opaque = false)?;
+    register!("soul_wall_torch", replace: &[FACING_NSWE], opaque = false)?;
     register!("glowstone")?;
     register!("nether_portal")?;
-    register!("carved_pumpkin")?;
-    register!("jack_o_lantern")?;
-    register!("cake")?;
-    register!("repeater")?;
+    register!("carved_pumpkin", replace: &[FACING_NSWE])?;
+    register!("jack_o_lantern", replace: &[FACING_NSWE])?;
+    register!("cake", opaque = false)?;
+    register!(
+        "repeater",
+        override_default: &[
+            ("delay", "1"),
+            ("facing", "north"),
+            ("locked", "false"),
+            ("powered", "false"),
+        ],
+        replace: &[("delay", Int(1..=4)), FACING_NSWE, ("locked", Bool), ("powered", Bool)],
+        opaque = false
+    )?;
     register_stained_glass!("white_stained_glass")?;
     register_stained_glass!("orange_stained_glass")?;
     register_stained_glass!("magenta_stained_glass")?;
@@ -694,22 +1439,15 @@ pub fn register_vanilla_blocks(
     register_stained_glass!("green_stained_glass")?;
     register_stained_glass!("red_stained_glass")?;
     register_stained_glass!("black_stained_glass")?;
-    {
-        macro_rules! register_trapdoor {
-            ($identifier:expr) => {
-                register!($identifier, &[POWERED, WATERLOGGED,])
-            };
-        }
-        register_trapdoor!("oak_trapdoor")?;
-        register_trapdoor!("spruce_trapdoor")?;
-        register_trapdoor!("birch_trapdoor")?;
-        register_trapdoor!("jungle_trapdoor")?;
-        register_trapdoor!("acacia_trapdoor")?;
-        register_trapdoor!("cherry_trapdoor")?;
-        register_trapdoor!("dark_oak_trapdoor")?;
-        register_trapdoor!("mangrove_trapdoor")?;
-        register_trapdoor!("bamboo_trapdoor")?;
-    }
+    register_trapdoor!("oak_trapdoor")?;
+    register_trapdoor!("spruce_trapdoor")?;
+    register_trapdoor!("birch_trapdoor")?;
+    register_trapdoor!("jungle_trapdoor")?;
+    register_trapdoor!("acacia_trapdoor")?;
+    register_trapdoor!("cherry_trapdoor")?;
+    register_trapdoor!("dark_oak_trapdoor")?;
+    register_trapdoor!("mangrove_trapdoor")?;
+    register_trapdoor!("bamboo_trapdoor")?;
     register!("stone_bricks")?;
     register!("mossy_stone_bricks")?;
     register!("cracked_stone_bricks")?;
@@ -744,42 +1482,81 @@ pub fn register_vanilla_blocks(
     }
     register!(
         "iron_bars",
+        override_default: &[
+            ("east", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("west", "false"),
+            ("waterlogged", "false"),
+        ],
         &[
             ("east", Bool),
             ("north", Bool),
             ("south", Bool),
             WATERLOGGED,
             ("west", Bool),
-        ]
+        ],
+        opaque = false
     )?;
-    register!("chain", &[WATERLOGGED])?;
+    register!(
+        "chain",
+        override_default: &[("axis", "y"), ("waterlogged", "false")],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
     register!(
         "glass_pane",
+        override_default: &[
+            ("east", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("west", "false"),
+            ("waterlogged", "false"),
+        ],
         &[
             ("east", Bool),
             ("north", Bool),
             ("south", Bool),
             WATERLOGGED,
             ("west", Bool),
-        ]
+        ],
+        opaque = false
     )?;
+    register!("pumpkin")?;
     register!("melon")?;
-    register!("attached_pumpkin_stem")?;
-    register!("attached_melon_stem")?;
-    register!("pumpkin_stem")?;
-    register!("melon_stem")?;
+    register!("attached_pumpkin_stem", replace: &[FACING_NSWE], opaque = false)?;
+    register!("attached_melon_stem", replace: &[FACING_NSWE], opaque = false)?;
+    register!("pumpkin_stem", opaque = false)?;
+    register!("melon_stem", opaque = false)?;
     register!(
         "vine",
+        override_default: &[
+            ("east", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("up", "false"),
+            ("west", "false"),
+        ],
         &[
             ("east", Bool),
             ("north", Bool),
             ("south", Bool),
             ("up", Bool),
             ("west", Bool),
-        ]
+        ],
+        opaque = false
     )?;
     register!(
         "glow_lichen",
+        override_default: &[
+            ("east", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("west", "false"),
+            ("up", "false"),
+            ("down", "false"),
+            ("waterlogged", "false"),
+        ],
         &[
             ("down", Bool),
             ("east", Bool),
@@ -788,102 +1565,161 @@ pub fn register_vanilla_blocks(
             ("up", Bool),
             WATERLOGGED,
             ("west", Bool),
-        ]
+        ],
+        opaque = false
     )?;
     register_fence_gate!("oak_fence_gate")?;
     register_stairs!("brick_stairs")?;
     register_stairs!("stone_brick_stairs")?;
     register_stairs!("mud_brick_stairs")?;
-    register!("mycelium")?;
-    register!("lily_pad")?;
+    register!("mycelium", override_default: &[("snowy", "false")], replace: &[("snowy", Bool)])?;
+    register!("lily_pad", opaque = false)?;
     register!("nether_bricks")?;
     register_fence!("nether_brick_fence")?;
     register_stairs!("nether_brick_stairs")?;
-    register!("nether_wart")?;
-    register!("enchanting_table")?;
+    register!("nether_wart", opaque = false)?;
+    register!("enchanting_table", opaque = false)?;
     register!(
         "brewing_stand",
+        override_default: &[
+            ("has_bottle_0", "false"),
+            ("has_bottle_1", "false"),
+            ("has_bottle_2", "false"),
+        ],
         &[
             ("has_bottle_0", Bool),
             ("has_bottle_1", Bool),
-            ("has_bottle_2", Bool)
-        ]
+            ("has_bottle_2", Bool),
+        ],
+        opaque = false
     )?;
-    register!("cauldron")?;
-    register!("water_cauldron")?;
-    register!("lava_cauldron")?;
-    register!("powder_snow_cauldron")?;
-    register!("end_portal")?;
-    register!("end_portal_frame")?;
+    register!("cauldron", opaque = false)?;
+    register!("water_cauldron", opaque = false)?;
+    register!("lava_cauldron", opaque = false)?;
+    register!("powder_snow_cauldron", opaque = false)?;
+    register!("end_portal", opaque = false)?;
+    register!(
+        "end_portal_frame",
+        override_default: &[("eye", "false"), ("facing", "north")],
+        replace: &[("eye", Bool), FACING_NSWE],
+        opaque = false
+    )?;
     register!("end_stone")?;
-    register!("dragon_egg")?;
-    register!("redstone_lamp")?;
-    register!("cocoa")?;
+    register!("dragon_egg", opaque = false)?;
+    register!("redstone_lamp", override_default: &[("lit", "false")], replace: &[LIT])?;
+    register!("cocoa", replace: &[("age", Int(0..=2)), FACING_NSWE], opaque = false)?;
     register_stairs!("sandstone_stairs")?;
     register!("emerald_ore")?;
     register!("deepslate_emerald_ore")?;
-    register!("ender_chest", &[FACING_NSWE, WATERLOGGED])?;
-    register!("tripwire_hook")?;
-    // FIXME Order's completely wrong for this, so just make a property override for variants the
-    // same as with multiparts, where we define everything. Panic if combination doesn't have a
-    // model.
-    register!("tripwire", &[("disarmed", Bool), POWERED])?;
+    register!(
+        "ender_chest",
+        override_default: &[("facing", "north"), ("waterlogged", "false")],
+        &[FACING_NSWE, WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "tripwire_hook",
+        override_default: &[
+            ("attached", "false"),
+            ("facing", "north"),
+            ("powered", "false"),
+        ],
+        replace: &[("attached", Bool), FACING_NSWE, POWERED],
+        opaque = false
+    )?;
+    register!(
+        "tripwire",
+        override_default: &[
+            ("attached", "false"),
+            ("disarmed", "false"),
+            ("east", "false"),
+            ("north", "false"),
+            ("powered", "false"),
+            ("south", "false"),
+            ("west", "false"),
+        ],
+        full_custom: &[
+            ("attached", Bool),
+            ("disarmed", Bool),
+            ("east", Bool),
+            ("north", Bool),
+            POWERED,
+            ("south", Bool),
+            ("west", Bool),
+        ],
+        skips: &["disarmed", "powered"],
+        opaque = false
+    )?;
     register!("emerald_block")?;
     register_stairs!("spruce_stairs")?;
     register_stairs!("birch_stairs")?;
     register_stairs!("jungle_stairs")?;
-    register!("command_block")?;
-    register!("beacon")?;
+    register!(
+        "command_block",
+        override_default: &[("conditional", "false"), ("facing", "north")],
+        replace: &[("conditional", Bool), FACING_NESWUD]
+    )?;
+    register!("beacon", opaque = false)?;
     register_wall!("cobblestone_wall")?;
     register_wall!("mossy_cobblestone_wall")?;
-    register!("flower_pot")?;
-    register!("potted_torchflower")?;
-    register!("potted_oak_sapling")?;
-    register!("potted_spruce_sapling")?;
-    register!("potted_birch_sapling")?;
-    register!("potted_jungle_sapling")?;
-    register!("potted_acacia_sapling")?;
-    register!("potted_cherry_sapling")?;
-    register!("potted_dark_oak_sapling")?;
-    register!("potted_mangrove_propagule")?;
-    register!("potted_fern")?;
-    register!("potted_dandelion")?;
-    register!("potted_poppy")?;
-    register!("potted_blue_orchid")?;
-    register!("potted_allium")?;
-    register!("potted_azure_bluet")?;
-    register!("potted_red_tulip")?;
-    register!("potted_orange_tulip")?;
-    register!("potted_white_tulip")?;
-    register!("potted_pink_tulip")?;
-    register!("potted_oxeye_daisy")?;
-    register!("potted_cornflower")?;
-    register!("potted_lily_of_the_valley")?;
-    register!("potted_wither_rose")?;
-    register!("potted_red_mushroom")?;
-    register!("potted_brown_mushroom")?;
-    register!("potted_dead_bush")?;
-    register!("potted_cactus")?;
-    register!("carrots")?;
-    register!("potatoes")?;
-    register!("oak_button")?;
-    register!("spruce_button")?;
-    register!("birch_button")?;
-    register!("jungle_button")?;
-    register!("acacia_button")?;
-    register!("cherry_button")?;
-    register!("dark_oak_button")?;
-    register!("mangrove_button")?;
-    register!("bamboo_button")?;
+    register!("flower_pot", opaque = false)?;
+    register!("potted_torchflower", opaque = false)?;
+    register!("potted_oak_sapling", opaque = false)?;
+    register!("potted_spruce_sapling", opaque = false)?;
+    register!("potted_birch_sapling", opaque = false)?;
+    register!("potted_jungle_sapling", opaque = false)?;
+    register!("potted_acacia_sapling", opaque = false)?;
+    register!("potted_cherry_sapling", opaque = false)?;
+    register!("potted_dark_oak_sapling", opaque = false)?;
+    register!("potted_mangrove_propagule", opaque = false)?;
+    register!("potted_fern", opaque = false)?;
+    register!("potted_dandelion", opaque = false)?;
+    register!("potted_poppy", opaque = false)?;
+    register!("potted_blue_orchid", opaque = false)?;
+    register!("potted_allium", opaque = false)?;
+    register!("potted_azure_bluet", opaque = false)?;
+    register!("potted_red_tulip", opaque = false)?;
+    register!("potted_orange_tulip", opaque = false)?;
+    register!("potted_white_tulip", opaque = false)?;
+    register!("potted_pink_tulip", opaque = false)?;
+    register!("potted_oxeye_daisy", opaque = false)?;
+    register!("potted_cornflower", opaque = false)?;
+    register!("potted_lily_of_the_valley", opaque = false)?;
+    register!("potted_wither_rose", opaque = false)?;
+    register!("potted_red_mushroom", opaque = false)?;
+    register!("potted_brown_mushroom", opaque = false)?;
+    register!("potted_dead_bush", opaque = false)?;
+    register!("potted_cactus", opaque = false)?;
+    register!("carrots", opaque = false)?;
+    register!("potatoes", opaque = false)?;
+    register_button!("oak_button")?;
+    register_button!("spruce_button")?;
+    register_button!("birch_button")?;
+    register_button!("jungle_button")?;
+    register_button!("acacia_button")?;
+    register_button!("cherry_button")?;
+    register_button!("dark_oak_button")?;
+    register_button!("mangrove_button")?;
+    register_button!("bamboo_button")?;
     {
         macro_rules! register_head {
             ($identifier:expr) => {
-                register!($identifier, &[ROTATION_0_15])
+                register!(
+                    $identifier,
+                    override_default: &[("powered", "false"), ("rotation", "0")],
+                    &[POWERED, ROTATION_0_15],
+                    opaque = false
+                )
             };
         }
         macro_rules! register_wall_head {
             ($identifier:expr) => {
-                register!($identifier, &[FACING_NSWE])
+                register!(
+                    $identifier,
+                    override_default: &[("facing", "north"), ("powered", "false")],
+                    &[FACING_NSWE, POWERED],
+                    opaque = false
+                )
             };
         }
         register_head!("skeleton_skull")?;
@@ -901,23 +1737,95 @@ pub fn register_vanilla_blocks(
         register_head!("piglin_head")?;
         register_wall_head!("piglin_wall_head")?;
     }
-    register!("anvil")?;
-    register!("chipped_anvil")?;
-    register!("damaged_anvil")?;
+    register!("anvil", replace: &[FACING_NSWE], opaque = false)?;
+    register!("chipped_anvil", replace: &[FACING_NSWE], opaque = false)?;
+    register!("damaged_anvil", replace: &[FACING_NSWE], opaque = false)?;
     register_chest!("trapped_chest")?;
-    register!("light_weighted_pressure_plate")?;
-    register!("heavy_weighted_pressure_plate")?;
-    register!("comparator")?;
-    register!("daylight_detector", &[("power", Int(0..=15))])?;
+    {
+        macro_rules! register_weighted_pressure_plate {
+            ($identifier:expr) => {
+                register!($identifier, replace: &[("power", Int(0..=15))], opaque = false)
+            };
+        }
+        register_weighted_pressure_plate!("light_weighted_pressure_plate")?;
+        register_weighted_pressure_plate!("heavy_weighted_pressure_plate")?;
+    }
+    register!(
+        "comparator",
+        override_default: &[("facing", "north"), ("mode", "compare"), ("powered", "false")],
+        replace: &[FACING_NSWE, ("mode", Enum(&["compare", "subtract"])), POWERED],
+        opaque = false
+    )?;
+    register!(
+        "daylight_detector",
+        override_default: &[("inverted", "false"), ("power", "0")],
+        replace: &[("inverted", Bool)],
+        &[("power", Int(0..=15))],
+        opaque = false
+    )?;
     register!("redstone_block")?;
     register!("nether_quartz_ore")?;
-    register!("hopper", &[("enabled", Bool)])?;
+    register!(
+        "hopper",
+        full_custom: &[
+            ("enabled", Bool),
+            ("facing", Enum(&["down", "north", "south", "west", "east"])),
+        ],
+        skips: &["enabled"],
+        opaque = false
+    )?;
     register!("quartz_block")?;
     register!("chiseled_quartz_block")?;
-    register!("quartz_pillar")?;
-    register!("quartz_stairs", &[WATERLOGGED])?;
-    register!("activator_rail", &[WATERLOGGED])?;
-    register!("dropper", &[("triggered", Bool)])?;
+    register!("quartz_pillar", override_default: &[("axis", "y")], opaque = false)?;
+    register!(
+        "quartz_stairs",
+        override_default: &[
+            ("facing", "north"),
+            ("half", "bottom"),
+            ("shape", "straight"),
+            ("waterlogged", "false"),
+        ],
+        replace: &[
+            FACING_NSWE,
+            ("half", Enum(&["top", "bottom"])),
+            ("shape", Enum(&[
+                "straight",
+                "inner_left",
+                "inner_right",
+                "outer_left",
+                "outer_right",
+            ])),
+        ],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "activator_rail",
+        override_default: &[
+            ("powered", "false"),
+            ("shape", "north_south"),
+            ("waterlogged", "false")
+        ],
+        replace: &[
+            POWERED,
+            ("shape", Enum(&[
+                "north_south",
+                "east_west",
+                "ascending_east",
+                "ascending_west",
+                "ascending_north",
+                "ascending_south",
+            ]))
+        ],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "dropper",
+        override_default: &[("facing", "north"), ("triggered", "false")],
+        replace: &[FACING_NESWUD],
+        &[("triggered", Bool)]
+    )?;
     register!("white_terracotta")?;
     register!("orange_terracotta")?;
     register!("magenta_terracotta")?;
@@ -939,13 +1847,21 @@ pub fn register_vanilla_blocks(
             ($identifier:expr) => {
                 register!(
                     $identifier,
+                    override_default: &[
+                        ("east", "false"),
+                        ("north", "false"),
+                        ("south", "false"),
+                        ("west", "false"),
+                        ("waterlogged", "false"),
+                    ],
                     &[
                         ("east", Bool),
                         ("north", Bool),
                         ("south", Bool),
                         WATERLOGGED,
                         ("west", Bool),
-                    ]
+                    ],
+                    opaque = false
                 )
             };
         }
@@ -972,10 +1888,21 @@ pub fn register_vanilla_blocks(
     register_stairs!("mangrove_stairs")?;
     register_stairs!("bamboo_stairs")?;
     register_stairs!("bamboo_mosaic_stairs")?;
-    register!("slime_block")?;
-    register!("barrier")?;
-    register!("light", &[WATERLOGGED])?;
-    register!("iron_trapdoor", &[POWERED, WATERLOGGED])?;
+    register!("slime_block", opaque = false)?;
+    register!(
+        "barrier",
+        override_default: &[("waterlogged", "false")],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "light",
+        override_default: &[("level", "15"), ("waterlogged", "false")],
+        replace: &[("level", Int(0..=15))],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register_trapdoor!("iron_trapdoor")?;
     register!("prismarine")?;
     register!("prismarine_bricks")?;
     register!("dark_prismarine")?;
@@ -985,42 +1912,72 @@ pub fn register_vanilla_blocks(
     register_slab!("prismarine_slab")?;
     register_slab!("prismarine_brick_slab")?;
     register_slab!("dark_prismarine_slab")?;
-    register!("sea_lantern")?;
-    register!("hay_block")?;
-    register!("white_carpet")?;
-    register!("orange_carpet")?;
-    register!("magenta_carpet")?;
-    register!("light_blue_carpet")?;
-    register!("yellow_carpet")?;
-    register!("lime_carpet")?;
-    register!("pink_carpet")?;
-    register!("gray_carpet")?;
-    register!("light_gray_carpet")?;
-    register!("cyan_carpet")?;
-    register!("purple_carpet")?;
-    register!("blue_carpet")?;
-    register!("brown_carpet")?;
-    register!("green_carpet")?;
-    register!("red_carpet")?;
-    register!("black_carpet")?;
+    register!("sea_lantern", opaque = false)?;
+    register!("hay_block", override_default: &[("axis", "y")])?;
+    register!("white_carpet", opaque = false)?;
+    register!("orange_carpet", opaque = false)?;
+    register!("magenta_carpet", opaque = false)?;
+    register!("light_blue_carpet", opaque = false)?;
+    register!("yellow_carpet", opaque = false)?;
+    register!("lime_carpet", opaque = false)?;
+    register!("pink_carpet", opaque = false)?;
+    register!("gray_carpet", opaque = false)?;
+    register!("light_gray_carpet", opaque = false)?;
+    register!("cyan_carpet", opaque = false)?;
+    register!("purple_carpet", opaque = false)?;
+    register!("blue_carpet", opaque = false)?;
+    register!("brown_carpet", opaque = false)?;
+    register!("green_carpet", opaque = false)?;
+    register!("red_carpet", opaque = false)?;
+    register!("black_carpet", opaque = false)?;
     register!("terracotta")?;
     register!("coal_block")?;
     register!("packed_ice")?;
-    register!("sunflower")?;
-    register!("lilac")?;
-    register!("rose_bush")?;
-    register!("peony")?;
-    register!("tall_grass")?;
-    register!("large_fern")?;
+    register!(
+        "sunflower",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!(
+        "lilac",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!(
+        "rose_bush",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!(
+        "peony",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!(
+        "tall_grass",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!(
+        "large_fern",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
     {
         macro_rules! register_banner {
             ($identifier:expr) => {
-                register!($identifier, &[ROTATION_0_15])
+                register!($identifier, &[ROTATION_0_15], opaque = false)
             };
         }
         macro_rules! register_wall_banner {
             ($identifier:expr) => {
-                register!($identifier, &[FACING_NSWE])
+                register!($identifier, &[FACING_NSWE], opaque = false)
             };
         }
         register_banner!("white_banner")?;
@@ -1112,9 +2069,22 @@ pub fn register_vanilla_blocks(
     register_door!("dark_oak_door")?;
     register_door!("mangrove_door")?;
     register_door!("bamboo_door")?;
-    register!("end_rod")?;
+    register!(
+        "end_rod",
+        override_default: &[("facing", "up")],
+        replace: &[FACING_NESWUD],
+        opaque = false
+    )?;
     register!(
         "chorus_plant",
+        override_default: &[
+            ("down", "false"),
+            ("east", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("up", "false"),
+            ("west", "false"),
+        ],
         &[
             ("down", Bool),
             ("east", Bool),
@@ -1122,32 +2092,60 @@ pub fn register_vanilla_blocks(
             ("south", Bool),
             ("up", Bool),
             ("west", Bool),
-        ]
+        ],
+        opaque = false
     )?;
-    register!("chorus_flower")?;
+    register!("chorus_flower", opaque = false)?;
     register!("purpur_block")?;
-    register!("purpur_pillar")?;
+    register!("purpur_pillar", override_default: &[("axis", "y")])?;
     register_stairs!("purpur_stairs")?;
     register!("end_stone_bricks")?;
-    register!("torchflower_crop")?;
-    register!("pitcher_crop")?;
-    register!("pitcher_plant")?;
-    register!("beetroots")?;
-    register!("dirt_path")?;
+    register!("torchflower_crop", opaque = false)?;
+    register!(
+        "pitcher_crop",
+        override_default: &[("age", "0"), ("half", "lower")],
+        replace: &[("age", Int(0..=4)), ("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!(
+        "pitcher_plant",
+        override_default: &[("half", "lower")],
+        replace: &[("half", Enum(&["upper", "lower"]))],
+        opaque = false
+    )?;
+    register!("beetroots", opaque = false)?;
+    register!("dirt_path", opaque = false)?;
     register!("end_gateway")?;
-    register!("repeating_command_block")?;
-    register!("chain_command_block")?;
+    register!(
+        "repeating_command_block",
+        override_default: &[("conditional", "false"), ("facing", "north")],
+        replace: &[("conditional", Bool), FACING_NESWUD]
+    )?;
+    register!(
+        "chain_command_block",
+        override_default: &[("conditional", "false"), ("facing", "north")],
+        replace: &[("conditional", Bool), FACING_NESWUD]
+    )?;
     register!("frosted_ice")?;
     register!("magma_block")?;
     register!("nether_wart_block")?;
     register!("red_nether_bricks")?;
-    register!("bone_block")?;
-    register!("structure_void")?;
-    register!("observer")?;
+    register!("bone_block", override_default: &[("axis", "y")])?;
+    register!("structure_void", opaque = false)?;
+    register!(
+        "observer",
+        override_default: &[("facing", "south"), ("powered", "false")],
+        replace: &[FACING_NESWUD, POWERED]
+    )?;
     {
         macro_rules! register_shulker_box {
             ($identifier:expr) => {
-                register!($identifier, &[FACING_NESWUD])
+                register!(
+                    $identifier,
+                    override_default: &[("facing", "up")],
+                    &[FACING_NESWUD],
+                    opaque = false
+                )
             };
         }
         register_shulker_box!("shulker_box")?;
@@ -1168,22 +2166,29 @@ pub fn register_vanilla_blocks(
         register_shulker_box!("red_shulker_box")?;
         register_shulker_box!("black_shulker_box")?;
     }
-    register!("white_glazed_terracotta")?;
-    register!("orange_glazed_terracotta")?;
-    register!("magenta_glazed_terracotta")?;
-    register!("light_blue_glazed_terracotta")?;
-    register!("yellow_glazed_terracotta")?;
-    register!("lime_glazed_terracotta")?;
-    register!("pink_glazed_terracotta")?;
-    register!("gray_glazed_terracotta")?;
-    register!("light_gray_glazed_terracotta")?;
-    register!("cyan_glazed_terracotta")?;
-    register!("purple_glazed_terracotta")?;
-    register!("blue_glazed_terracotta")?;
-    register!("brown_glazed_terracotta")?;
-    register!("green_glazed_terracotta")?;
-    register!("red_glazed_terracotta")?;
-    register!("black_glazed_terracotta")?;
+    {
+        macro_rules! register_glazed_terracotta {
+            ($identifier:expr) => {
+                register!($identifier, replace: &[FACING_NSWE])
+            };
+        }
+        register_glazed_terracotta!("white_glazed_terracotta")?;
+        register_glazed_terracotta!("orange_glazed_terracotta")?;
+        register_glazed_terracotta!("magenta_glazed_terracotta")?;
+        register_glazed_terracotta!("light_blue_glazed_terracotta")?;
+        register_glazed_terracotta!("yellow_glazed_terracotta")?;
+        register_glazed_terracotta!("lime_glazed_terracotta")?;
+        register_glazed_terracotta!("pink_glazed_terracotta")?;
+        register_glazed_terracotta!("gray_glazed_terracotta")?;
+        register_glazed_terracotta!("light_gray_glazed_terracotta")?;
+        register_glazed_terracotta!("cyan_glazed_terracotta")?;
+        register_glazed_terracotta!("purple_glazed_terracotta")?;
+        register_glazed_terracotta!("blue_glazed_terracotta")?;
+        register_glazed_terracotta!("brown_glazed_terracotta")?;
+        register_glazed_terracotta!("green_glazed_terracotta")?;
+        register_glazed_terracotta!("red_glazed_terracotta")?;
+        register_glazed_terracotta!("black_glazed_terracotta")?;
+    }
     register!("white_concrete")?;
     register!("orange_concrete")?;
     register!("magenta_concrete")?;
@@ -1216,11 +2221,11 @@ pub fn register_vanilla_blocks(
     register!("green_concrete_powder")?;
     register!("red_concrete_powder")?;
     register!("black_concrete_powder")?;
-    register!("kelp", &[("age", Int(0..=25))])?;
-    register!("kelp_plant")?;
+    register!("kelp", &[("age", Int(0..=25))], opaque = false)?;
+    register!("kelp_plant", opaque = false)?;
     register!("dried_kelp_block")?;
-    register!("turtle_egg")?;
-    register!("sniffer_egg")?;
+    register!("turtle_egg", opaque = false)?;
+    register!("sniffer_egg", opaque = false)?;
     register!("dead_tube_coral_block")?;
     register!("dead_brain_coral_block")?;
     register!("dead_bubble_coral_block")?;
@@ -1234,7 +2239,15 @@ pub fn register_vanilla_blocks(
     {
         macro_rules! register_coral {
             ($identifier:expr) => {
-                register!($identifier, &[WATERLOGGED])
+                register!($identifier, &[WATERLOGGED], opaque = false)
+            };
+            ($identifier:expr, replace: $replacement_variants:expr) => {
+                register!(
+                    $identifier,
+                    replace: $replacement_variants,
+                    &[WATERLOGGED],
+                    opaque = false
+                )
             };
         }
         register_coral!("dead_tube_coral")?;
@@ -1257,33 +2270,46 @@ pub fn register_vanilla_blocks(
         register_coral!("bubble_coral_fan")?;
         register_coral!("fire_coral_fan")?;
         register_coral!("horn_coral_fan")?;
-        register_coral!("dead_tube_coral_wall_fan")?;
-        register_coral!("dead_brain_coral_wall_fan")?;
-        register_coral!("dead_bubble_coral_wall_fan")?;
-        register_coral!("dead_fire_coral_wall_fan")?;
-        register_coral!("dead_horn_coral_wall_fan")?;
-        register_coral!("tube_coral_wall_fan")?;
-        register_coral!("brain_coral_wall_fan")?;
-        register_coral!("bubble_coral_wall_fan")?;
-        register_coral!("fire_coral_wall_fan")?;
-        register_coral!("horn_coral_wall_fan")?;
     }
-    register!("sea_pickle")?;
+    {
+        macro_rules! register_coral_wall_fan {
+            ($identifier:expr) => {
+                register!($identifier, replace: &[FACING_NSWE], &[WATERLOGGED], opaque = false)
+            };
+        }
+        register_coral_wall_fan!("dead_tube_coral_wall_fan")?;
+        register_coral_wall_fan!("dead_brain_coral_wall_fan")?;
+        register_coral_wall_fan!("dead_bubble_coral_wall_fan")?;
+        register_coral_wall_fan!("dead_fire_coral_wall_fan")?;
+        register_coral_wall_fan!("dead_horn_coral_wall_fan")?;
+        register_coral_wall_fan!("tube_coral_wall_fan")?;
+        register_coral_wall_fan!("brain_coral_wall_fan")?;
+        register_coral_wall_fan!("bubble_coral_wall_fan")?;
+        register_coral_wall_fan!("fire_coral_wall_fan")?;
+        register_coral_wall_fan!("horn_coral_wall_fan")?;
+    }
+    register!(
+        "sea_pickle",
+        override_default: &[("pickles", "1"), ("waterlogged", "true")],
+        replace: &[("pickles", Int(1..=4)), ("waterlogged", Bool)],
+        opaque = false
+    )?;
     register!("blue_ice")?;
-    register!("conduit", &[WATERLOGGED])?;
-    register!("bamboo_sapling")?;
+    register!("conduit", &[WATERLOGGED], opaque = false)?;
+    register!("bamboo_sapling", opaque = false)?;
     register!(
         "bamboo",
         &[
             ("age", Int(0..=1)),
             ("leaves", Enum(&["none", "small", "large"])),
             ("stage", Int(0..=1))
-        ]
+        ],
+        opaque = false
     )?;
-    register!("potted_bamboo")?;
-    register!("void_air")?;
-    register!("cave_air")?;
-    register!("bubble_column", &[("drag", Bool)])?;
+    register!("potted_bamboo", opaque = false)?;
+    register!("void_air", opaque = false)?;
+    register!("cave_air", opaque = false)?;
+    register!("bubble_column", &[("drag", Bool)], opaque = false)?;
     register_stairs!("polished_granite_stairs")?;
     register_stairs!("smooth_red_sandstone_stairs")?;
     register_stairs!("mossy_stone_brick_stairs")?;
@@ -1324,50 +2350,123 @@ pub fn register_vanilla_blocks(
     register_wall!("sandstone_wall")?;
     register_wall!("end_stone_brick_wall")?;
     register_wall!("diorite_wall")?;
-    register!("scaffolding", &[("distance", Int(0..=7)), WATERLOGGED])?;
-    register!("loom")?;
-    register!("barrel")?;
-    register!("smoker")?;
-    register!("blast_furnace")?;
+    register!(
+        "scaffolding",
+        override_default: &[("bottom", "false"), ("distance", "7"), ("waterlogged", "false")],
+        replace: &[("bottom", Bool)],
+        &[("distance", Int(0..=7)), WATERLOGGED],
+        opaque = false
+    )?;
+    register!("loom", replace: &[FACING_NSWE])?;
+    register!(
+        "barrel",
+        override_default: &[("facing", "north"), ("open", "false")],
+        replace: &[FACING_NESWUD, ("open", Bool)]
+    )?;
+    register!(
+        "smoker",
+        override_default: &[("facing", "north"), ("lit", "false")],
+        replace: &[FACING_NSWE, LIT]
+    )?;
+    register!(
+        "blast_furnace",
+        override_default: &[("facing", "north"), ("lit", "false")],
+        replace: &[FACING_NSWE, LIT]
+    )?;
     register!("cartography_table")?;
     register!("fletching_table")?;
-    register!("grindstone")?;
-    register!("lectern", &[("has_book", Bool), POWERED])?;
+    register!(
+        "grindstone",
+        override_default: &[("face", "wall"), ("facing", "north")],
+        replace: &[("face", Enum(&["floor", "wall", "ceiling"])), FACING_NSWE],
+        opaque = false
+    )?;
+    register!(
+        "lectern",
+        override_default: &[("facing", "north"), ("has_book", "false"), ("powered", "false")],
+        replace: &[FACING_NSWE],
+        &[("has_book", Bool), POWERED],
+        opaque = false
+    )?;
     register!("smithing_table")?;
-    register!("stonecutter")?;
-    register!("bell", &[POWERED])?;
-    register!("lantern", &[WATERLOGGED])?;
-    register!("soul_lantern", &[WATERLOGGED])?;
-    register!("campfire", &[("signal_fire", Bool), WATERLOGGED])?;
-    register!("soul_campfire", &[("signal_fire", Bool), WATERLOGGED])?;
-    register!("sweet_berry_bush")?;
-    register!("warped_stem")?;
-    register!("stripped_warped_stem")?;
-    register!("warped_hyphae")?;
-    register!("stripped_warped_hyphae")?;
+    register!("stonecutter", replace: &[FACING_NSWE], opaque = false)?;
+    register!(
+        "bell",
+        override_default: &[("attachment", "floor"), ("facing", "north"), ("powered", "false")],
+        replace: &[
+            ("attachment", Enum(&["floor", "ceiling", "single_wall", "double_wall"])),
+            FACING_NSWE,
+        ],
+        &[POWERED],
+        opaque = false
+    )?;
+    {
+        macro_rules! register_lantern {
+            ($identifier:expr) => {
+                register!(
+                    $identifier,
+                    override_default: &[("hanging", "false"), ("waterlogged", "false")],
+                    replace: &[("hanging", Bool)],
+                    &[WATERLOGGED],
+                    opaque = false
+                )
+            };
+        }
+        register_lantern!("lantern")?;
+        register_lantern!("soul_lantern")?;
+    }
+    register!(
+        "campfire",
+        override_default: &[
+            ("facing", "north"),
+            ("lit", "true"),
+            ("signal_fire", "false"),
+            ("waterlogged", "false"),
+        ],
+        replace: &[FACING_NSWE, LIT],
+        &[("signal_fire", Bool), WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "soul_campfire",
+        override_default: &[
+            ("facing", "north"),
+            ("lit", "true"),
+            ("signal_fire", "false"),
+            ("waterlogged", "false"),
+        ],
+        replace: &[FACING_NSWE, LIT],
+        &[("signal_fire", Bool), WATERLOGGED],
+        opaque = false
+    )?;
+    register!("sweet_berry_bush", opaque = false)?;
+    register!("warped_stem", override_default: &[("axis", "y")])?;
+    register!("stripped_warped_stem", override_default: &[("axis", "y")])?;
+    register!("warped_hyphae", override_default: &[("axis", "y")])?;
+    register!("stripped_warped_hyphae", override_default: &[("axis", "y")])?;
     register!("warped_nylium")?;
     register!("warped_fungus")?;
     register!("warped_wart_block")?;
     register!("warped_roots")?;
     register!("nether_sprouts")?;
-    register!("crimson_stem")?;
-    register!("stripped_crimson_stem")?;
-    register!("crimson_hyphae")?;
-    register!("stripped_crimson_hyphae")?;
+    register!("crimson_stem", override_default: &[("axis", "y")])?;
+    register!("stripped_crimson_stem", override_default: &[("axis", "y")])?;
+    register!("crimson_hyphae", override_default: &[("axis", "y")])?;
+    register!("stripped_crimson_hyphae", override_default: &[("axis", "y")])?;
     register!("crimson_nylium")?;
     register!("crimson_fungus")?;
     register!("shroomlight")?;
-    register!("weeping_vines", &[AGE_0_25])?;
-    register!("weeping_vines_plant")?;
-    register!("twisting_vines", &[AGE_0_25])?;
-    register!("twisting_vines_plant")?;
+    register!("weeping_vines", &[AGE_0_25], opaque = false)?;
+    register!("weeping_vines_plant", opaque = false)?;
+    register!("twisting_vines", &[AGE_0_25], opaque = false)?;
+    register!("twisting_vines_plant", opaque = false)?;
     register!("crimson_roots")?;
     register!("crimson_planks")?;
     register!("warped_planks")?;
     register_slab!("crimson_slab")?;
     register_slab!("warped_slab")?;
-    register!("crimson_pressure_plate")?;
-    register!("warped_pressure_plate")?;
+    register_pressure_plate!("crimson_pressure_plate")?;
+    register_pressure_plate!("warped_pressure_plate")?;
     register_fence!("crimson_fence")?;
     register_fence!("warped_fence")?;
     register_trapdoor!("crimson_trapdoor")?;
@@ -1376,30 +2475,51 @@ pub fn register_vanilla_blocks(
     register_fence_gate!("warped_fence_gate")?;
     register_stairs!("crimson_stairs")?;
     register_stairs!("warped_stairs")?;
-    register!("crimson_button")?;
-    register!("warped_button")?;
+    register_button!("crimson_button")?;
+    register_button!("warped_button")?;
     register_door!("crimson_door")?;
     register_door!("warped_door")?;
     register_sign!("crimson_sign")?;
     register_sign!("warped_sign")?;
     register_wall_sign!("crimson_wall_sign")?;
     register_wall_sign!("warped_wall_sign")?;
-    register!("structure_block")?;
-    register!("jigsaw")?;
-    register!("composter", &[("level", Int(0..=8))])?;
+    register!(
+        "structure_block",
+        override_default: &[("mode", "load")],
+        replace: &[("mode", Enum(&["save", "load", "corner", "data"]))]
+    )?;
+    register!(
+        "jigsaw",
+        override_default: &[("orientation", "north_up")],
+        replace: &[("orientation", Enum(&[
+            "down_east",
+            "down_north",
+            "down_south",
+            "down_west",
+            "up_east",
+            "up_north",
+            "up_south",
+            "up_west",
+            "west_up",
+            "east_up",
+            "north_up",
+            "south_up",
+        ]))]
+    )?;
+    register!("composter", &[("level", Int(0..=8))], opaque = false)?;
     register!("target", &[("power", Int(0..=15))])?;
-    register!("bee_nest")?;
-    register!("beehive")?;
-    register!("honey_block")?;
+    register!("bee_nest", replace: &[FACING_NSWE, ("honey_level", Int(0..=5))])?;
+    register!("beehive", replace: &[FACING_NSWE, ("honey_level", Int(0..=5))])?;
+    register!("honey_block", opaque = false)?;
     register!("honeycomb_block")?;
     register!("netherite_block")?;
     register!("ancient_debris")?;
     register!("crying_obsidian")?;
     register!("respawn_anchor")?;
-    register!("potted_crimson_fungus")?;
-    register!("potted_warped_fungus")?;
-    register!("potted_crimson_roots")?;
-    register!("potted_warped_roots")?;
+    register!("potted_crimson_fungus", opaque = false)?;
+    register!("potted_warped_fungus", opaque = false)?;
+    register!("potted_crimson_roots", opaque = false)?;
+    register!("potted_warped_roots", opaque = false)?;
     register!("lodestone")?;
     register!("blackstone")?;
     register_stairs!("blackstone_stairs")?;
@@ -1415,8 +2535,8 @@ pub fn register_vanilla_blocks(
     register!("gilded_blackstone")?;
     register_stairs!("polished_blackstone_stairs")?;
     register_slab!("polished_blackstone_slab")?;
-    register!("polished_blackstone_pressure_plate")?;
-    register!("polished_blackstone_button")?;
+    register_pressure_plate!("polished_blackstone_pressure_plate")?;
+    register_button!("polished_blackstone_button")?;
     register_wall!("polished_blackstone_wall")?;
     register!("chiseled_nether_bricks")?;
     register!("cracked_nether_bricks")?;
@@ -1424,7 +2544,17 @@ pub fn register_vanilla_blocks(
     {
         macro_rules! register_candle {
             ($identifier:expr) => {
-                register!($identifier, &[WATERLOGGED])
+                register!(
+                    $identifier,
+                    override_default: &[
+                        ("candles", "1"),
+                        ("lit", "false"),
+                        ("waterlogged", "false"),
+                    ],
+                    replace: &[("candles", Int(1..=4)), LIT],
+                    &[WATERLOGGED],
+                    opaque = false
+                )
             };
         }
         register_candle!("candle")?;
@@ -1445,43 +2575,121 @@ pub fn register_vanilla_blocks(
         register_candle!("red_candle")?;
         register_candle!("black_candle")?;
     }
-    register!("candle_cake")?;
-    register!("white_candle_cake")?;
-    register!("orange_candle_cake")?;
-    register!("magenta_candle_cake")?;
-    register!("light_blue_candle_cake")?;
-    register!("yellow_candle_cake")?;
-    register!("lime_candle_cake")?;
-    register!("pink_candle_cake")?;
-    register!("gray_candle_cake")?;
-    register!("light_gray_candle_cake")?;
-    register!("cyan_candle_cake")?;
-    register!("purple_candle_cake")?;
-    register!("blue_candle_cake")?;
-    register!("brown_candle_cake")?;
-    register!("green_candle_cake")?;
-    register!("red_candle_cake")?;
-    register!("black_candle_cake")?;
+    {
+        macro_rules! register_candle_cake {
+            ($identifier:expr) => {
+                register!(
+                    $identifier,
+                    override_default: &[("lit", "false")],
+                    replace: &[LIT],
+                    opaque = false
+                )
+            };
+        }
+        register_candle_cake!("candle_cake")?;
+        register_candle_cake!("white_candle_cake")?;
+        register_candle_cake!("orange_candle_cake")?;
+        register_candle_cake!("magenta_candle_cake")?;
+        register_candle_cake!("light_blue_candle_cake")?;
+        register_candle_cake!("yellow_candle_cake")?;
+        register_candle_cake!("lime_candle_cake")?;
+        register_candle_cake!("pink_candle_cake")?;
+        register_candle_cake!("gray_candle_cake")?;
+        register_candle_cake!("light_gray_candle_cake")?;
+        register_candle_cake!("cyan_candle_cake")?;
+        register_candle_cake!("purple_candle_cake")?;
+        register_candle_cake!("blue_candle_cake")?;
+        register_candle_cake!("brown_candle_cake")?;
+        register_candle_cake!("green_candle_cake")?;
+        register_candle_cake!("red_candle_cake")?;
+        register_candle_cake!("black_candle_cake")?;
+    }
     register!("amethyst_block")?;
     register!("budding_amethyst")?;
-    register!("amethyst_cluster", &[WATERLOGGED])?;
-    register!("large_amethyst_bud", &[WATERLOGGED])?;
-    register!("medium_amethyst_bud", &[WATERLOGGED])?;
-    register!("small_amethyst_bud", &[WATERLOGGED])?;
+    register!(
+        "amethyst_cluster",
+        override_default: &[("facing", "up"), ("waterlogged", "false")],
+        replace: &[FACING_NESWUD],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    {
+        macro_rules! register_amethyst_bud {
+            ($identifier:expr) => {
+                register!(
+                    $identifier,
+                    override_default: &[("facing", "up"), ("waterlogged", "false")],
+                    replace: &[FACING_NESWUD],
+                    &[WATERLOGGED],
+                    opaque = false
+                )
+            };
+        }
+        register_amethyst_bud!("large_amethyst_bud")?;
+        register_amethyst_bud!("medium_amethyst_bud")?;
+        register_amethyst_bud!("small_amethyst_bud")?;
+    }
     register!("tuff")?;
+    register_slab!("tuff_slab")?;
+    register_stairs!("tuff_stairs")?;
+    register_wall!("tuff_wall")?;
+    register!("polished_tuff")?;
+    register_slab!("polished_tuff_slab")?;
+    register_stairs!("polished_tuff_stairs")?;
+    register_wall!("polished_tuff_wall")?;
+    register!("chiseled_tuff")?;
+    register!("tuff_bricks")?;
+    register_slab!("tuff_brick_slab")?;
+    register_stairs!("tuff_brick_stairs")?;
+    register_wall!("tuff_brick_wall")?;
+    register!("chiseled_tuff_bricks")?;
     register!("calcite")?;
     register!("tinted_glass", opaque = false)?;
     register!("powder_snow")?;
-    // FIXME Same as above, completely wrong order
-    register!("sculk_sensor", &[("power", Int(0..=15)), WATERLOGGED])?;
-    // FIXME And again, wrong order
+    register!(
+        "sculk_sensor",
+        override_default: &[
+            ("power", "0"),
+            ("sculk_sensor_phase", "inactive"),
+            ("waterlogged", "false"),
+        ],
+        full_custom: &[
+            ("power", Int(0..=15)),
+            ("sculk_sensor_phase", Enum(&["inactive", "active", "cooldown"])),
+            WATERLOGGED,
+        ],
+        skips: &["power", "waterlogged"],
+        opaque = false
+    )?;
     register!(
         "calibrated_sculk_sensor",
-        &[("power", Int(0..=15)), WATERLOGGED]
+        override_default: &[
+            ("facing", "north"),
+            ("power", "0"),
+            ("sculk_sensor_phase", "inactive"),
+            ("waterlogged", "false"),
+        ],
+        full_custom: &[
+            FACING_NSWE,
+            ("power", Int(0..=15)),
+            ("sculk_sensor_phase", Enum(&["inactive", "active", "cooldown"])),
+            WATERLOGGED,
+        ],
+        skips: &["power", "waterlogged"],
+        opaque = false
     )?;
     register!("sculk")?;
     register!(
         "sculk_vein",
+        override_default: &[
+            ("down", "false"),
+            ("east", "false"),
+            ("north", "false"),
+            ("south", "false"),
+            ("up", "false"),
+            ("west", "false"),
+            ("waterlogged", "false"),
+        ],
         &[
             ("down", Bool),
             ("east", Bool),
@@ -1490,20 +2698,43 @@ pub fn register_vanilla_blocks(
             ("up", Bool),
             WATERLOGGED,
             ("west", Bool),
-        ]
+        ],
+        opaque = false
     )?;
-    register!("sculk_catalyst")?;
-    register!("sculk_shrieker", &[("shrieking", Bool), WATERLOGGED])?;
-    register!("oxidized_copper")?;
-    register!("weathered_copper")?;
-    register!("exposed_copper")?;
+    register!(
+        "sculk_catalyst",
+        override_default: &[("bloom", "false")],
+        replace: &[("bloom", Bool)]
+    )?;
+    register!(
+        "sculk_shrieker",
+        override_default: &[
+            ("can_summon", "false"),
+            ("shrieking", "false"),
+            ("waterlogged", "false"),
+        ],
+        replace: &[("can_summon", Bool)],
+        &[("shrieking", Bool), WATERLOGGED],
+        opaque = false
+    )?;
     register!("copper_block")?;
+    register!("exposed_copper")?;
+    register!("weathered_copper")?;
+    register!("oxidized_copper")?;
     register!("copper_ore")?;
     register!("deepslate_copper_ore")?;
     register!("oxidized_cut_copper")?;
     register!("weathered_cut_copper")?;
     register!("exposed_cut_copper")?;
     register!("cut_copper")?;
+    register!("oxidized_chiseled_copper")?;
+    register!("weathered_chiseled_copper")?;
+    register!("exposed_chiseled_copper")?;
+    register!("chiseled_copper")?;
+    register!("waxed_oxidized_chiseled_copper")?;
+    register!("waxed_weathered_chiseled_copper")?;
+    register!("waxed_exposed_chiseled_copper")?;
+    register!("waxed_chiseled_copper")?;
     register_stairs!("oxidized_cut_copper_stairs")?;
     register_stairs!("weathered_cut_copper_stairs")?;
     register_stairs!("exposed_cut_copper_stairs")?;
@@ -1528,25 +2759,120 @@ pub fn register_vanilla_blocks(
     register_slab!("waxed_weathered_cut_copper_slab")?;
     register_slab!("waxed_exposed_cut_copper_slab")?;
     register_slab!("waxed_cut_copper_slab")?;
-    register!("lightning_rod", &[WATERLOGGED])?;
-    register!("pointed_dripstone", &[WATERLOGGED])?;
+    register_door!("copper_door")?;
+    register_door!("exposed_copper_door")?;
+    register_door!("oxidized_copper_door")?;
+    register_door!("weathered_copper_door")?;
+    register_door!("waxed_copper_door")?;
+    register_door!("waxed_exposed_copper_door")?;
+    register_door!("waxed_oxidized_copper_door")?;
+    register_door!("waxed_weathered_copper_door")?;
+    register_trapdoor!("copper_trapdoor")?;
+    register_trapdoor!("exposed_copper_trapdoor")?;
+    register_trapdoor!("oxidized_copper_trapdoor")?;
+    register_trapdoor!("weathered_copper_trapdoor")?;
+    register_trapdoor!("waxed_copper_trapdoor")?;
+    register_trapdoor!("waxed_exposed_copper_trapdoor")?;
+    register_trapdoor!("waxed_oxidized_copper_trapdoor")?;
+    register_trapdoor!("waxed_weathered_copper_trapdoor")?;
+    register_grate!("copper_grate")?;
+    register_grate!("exposed_copper_grate")?;
+    register_grate!("weathered_copper_grate")?;
+    register_grate!("oxidized_copper_grate")?;
+    register_grate!("waxed_copper_grate")?;
+    register_grate!("waxed_exposed_copper_grate")?;
+    register_grate!("waxed_weathered_copper_grate")?;
+    register_grate!("waxed_oxidized_copper_grate")?;
+    {
+        macro_rules! register_bulb {
+            ($identifier:expr) => {
+                register!(
+                    $identifier,
+                    override_default: &[("lit", "false"), ("powered", "false")],
+                    replace: &[LIT, POWERED]
+                )
+            };
+        }
+        register_bulb!("copper_bulb")?;
+        register_bulb!("exposed_copper_bulb")?;
+        register_bulb!("weathered_copper_bulb")?;
+        register_bulb!("oxidized_copper_bulb")?;
+        register_bulb!("waxed_copper_bulb")?;
+        register_bulb!("waxed_exposed_copper_bulb")?;
+        register_bulb!("waxed_weathered_copper_bulb")?;
+        register_bulb!("waxed_oxidized_copper_bulb")?;
+    }
+    register!(
+        "lightning_rod",
+        override_default: &[("facing", "up"), ("powered", "false"), ("waterlogged", "false")],
+        replace: &[FACING_NESWUD, POWERED],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "pointed_dripstone",
+        override_default: &[
+            ("thickness", "tip"),
+            ("vertical_direction", "up"),
+            ("waterlogged", "false")
+        ],
+        replace: &[
+            ("thickness", Enum(&["tip_merge", "tip", "frustum", "middle", "base"])),
+            ("vertical_direction", Enum(&["up", "down"])),
+        ],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
     register!("dripstone_block")?;
     // FIXME Again, wrong order
-    register!("cave_vines", &[AGE_0_25])?;
-    register!("cave_vines_plant")?;
-    register!("spore_blossom")?;
-    register!("azalea")?;
-    register!("flowering_azalea")?;
-    register!("moss_carpet")?;
-    register!("pink_petals", &[FACING_NSWE, ("flower_amount", Int(1..=4))])?;
-    register!("moss_block")?;
-    register!("big_dripleaf", &[WATERLOGGED])?;
-    register!("big_dripleaf_stem", &[WATERLOGGED])?;
-    register!("small_dripleaf", &[WATERLOGGED])?;
-    register!("hanging_roots", &[WATERLOGGED])?;
+    register!(
+        "cave_vines",
+        override_default: &[("age", "0"), ("berries", "false")],
+        full_custom: &[AGE_0_25, ("berries", Bool)],
+        skips: &["age"],
+        opaque = false
+    )?;
+    register!(
+        "cave_vines_plant",
+        override_default: &[("berries", "false")],
+        replace: &[("berries", Bool)],
+        opaque = false
+    )?;
+    register!("spore_blossom", opaque = false)?;
+    register!("azalea", opaque = false)?;
+    register!("flowering_azalea", opaque = false)?;
+    register!("moss_carpet", opaque = false)?;
+    register!(
+        "pink_petals",
+        &[FACING_NSWE, ("flower_amount", Int(1..=4))],
+        opaque = false
+    )?;
+    register!("moss_block", opaque = false)?;
+    register!(
+        "big_dripleaf",
+        override_default: &[("facing", "north"), ("tilt", "none"), ("waterlogged", "false")],
+        replace: &[FACING_NSWE, ("tilt", Enum(&["none", "unstable", "partial", "full"]))],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "big_dripleaf_stem",
+        override_default: &[("facing", "north"), ("waterlogged", "false")],
+        replace: &[FACING_NSWE],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "small_dripleaf",
+        override_default: &[("facing", "north"), ("half", "lower"), ("waterlogged", "false")],
+        replace: &[FACING_NSWE, ("half", Enum(&["upper", "lower"]))],
+        &[WATERLOGGED],
+        opaque = false
+    )?;
+    register!("hanging_roots", override_default: &[("waterlogged", "false")], &[WATERLOGGED])?;
     register!("rooted_dirt")?;
     register!("mud")?;
-    register!("deepslate")?;
+    register!("deepslate", override_default: &[("axis", "y")])?;
     register!("cobbled_deepslate")?;
     register_stairs!("cobbled_deepslate_stairs")?;
     register_slab!("cobbled_deepslate_slab")?;
@@ -1566,26 +2892,67 @@ pub fn register_vanilla_blocks(
     register!("chiseled_deepslate")?;
     register!("cracked_deepslate_bricks")?;
     register!("cracked_deepslate_tiles")?;
-    register!("infested_deepslate")?;
+    register!("infested_deepslate", override_default: &[("axis", "y")])?;
     register!("smooth_basalt")?;
     register!("raw_iron_block")?;
     register!("raw_copper_block")?;
     register!("raw_gold_block")?;
-    register!("potted_azalea_bush")?;
-    register!("potted_flowering_azalea_bush")?;
-    register!("ochre_froglight")?;
-    register!("verdant_froglight")?;
-    register!("pearlescent_froglight")?;
-    register!("frogspawn")?;
+    register!("potted_azalea_bush", opaque = false)?;
+    register!("potted_flowering_azalea_bush", opaque = false)?;
+    register!("ochre_froglight", override_default: &[("axis", "y")])?;
+    register!("verdant_froglight", override_default: &[("axis", "y")])?;
+    register!("pearlescent_froglight", override_default: &[("axis", "y")])?;
+    register!("frogspawn", opaque = false)?;
     register!("reinforced_deepslate")?;
     register!(
         "decorated_pot",
-        &[("cracked", Bool), FACING_NSWE, WATERLOGGED]
+        override_default: &[("cracked", "false"), ("facing", "north"), ("waterlogged", "false")],
+        &[("cracked", Bool), FACING_NSWE, WATERLOGGED],
+        opaque = false
+    )?;
+    register!(
+        "crafter",
+        override_default: &[
+            ("crafting", "false"),
+            ("orientation", "north_up"),
+            ("triggered", "false"),
+        ],
+        replace: &[
+            ("crafting", Bool),
+            ("orientation", Enum(&[
+                "down_east",
+                "down_north",
+                "down_south",
+                "down_west",
+                "up_east",
+                "up_north",
+                "up_south",
+                "up_west",
+                "west_up",
+                "east_up",
+                "north_up",
+                "south_up",
+            ])),
+            ("triggered", Bool),
+        ]
+    )?;
+    register!(
+        "trial_spawner",
+        replace: &[("trial_spawner_state", Enum(&[
+            "inactive",
+            "waiting_for_players",
+            "active",
+            "waiting_for_reward_ejection",
+            "ejecting_reward",
+            "cooldown",
+        ]))],
+        opaque = false
     )?;
 
     println!("Time taken: {:?}", std::time::Instant::now() - start_time);
 
-    // Write out registry IDs to "entries.txt", helpful for adding new blocks
+    // TODO: Move this to a startup flag
+    // Write out registry IDs to "entries.json", helpful for adding new blocks
     #[cfg(debug_assertions)]
     {
         use std::fmt::Write;
@@ -1607,7 +2974,84 @@ pub fn register_vanilla_blocks(
         write!(&mut entries_string, "]")?;
         std::fs::write("entries.json", entries_string)?;
     }
-    // log::debug!("Registry: {:#?}", registry.data);
+    // Write out registry blockstate information to "blocks_rust.json".
+    // Helpful for adding new blocks
+    #[cfg(debug_assertions)]
+    {
+        use indexmap::{IndexMap, IndexSet};
+        #[derive(Clone, Debug, serde::Serialize)]
+        struct JsonBlock {
+            #[serde(skip_serializing_if = "IndexMap::is_empty")]
+            pub properties: IndexMap<Atom, IndexSet<Atom>>,
+            pub states: Vec<JsonBlockstate>,
+        }
+        #[derive(Clone, Debug, serde::Serialize)]
+        struct JsonBlockstate {
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            pub default: bool,
+            pub id: usize,
+            #[serde(skip_serializing_if = "IndexMap::is_empty")]
+            pub properties: IndexMap<Atom, Atom>,
+        }
+        // The Minecraft data generators sometimes break alphabetical order (why?) for properties,
+        // so fix property sort order here for blocks which need it.
+        let custom_ordering_map = {
+            let mut map = AHashMap::new();
+            macro_rules! insert_entry {
+                ($identifier:expr, [ $( $name:expr ),+ ]) => {
+                    map.insert(crate::identifier!($identifier), vec![$( Atom::from($name), )+])
+                };
+            }
+            insert_entry!("chest", ["type", "facing", "waterlogged"]);
+            insert_entry!("moving_piston", ["type", "facing"]);
+            insert_entry!("piston_head", ["type", "facing", "short"]);
+            insert_entry!("trapped_chest", ["type", "facing", "waterlogged"]);
+            map
+        };
+        let mut blocks = IndexMap::new();
+        for (id, info) in registry.global_palette.iter().enumerate() {
+            let block_entry = blocks
+                .entry(info.identifier.to_string())
+                .or_insert(JsonBlock {
+                    properties: IndexMap::new(),
+                    states: Vec::new(),
+                });
+            let mut properties: IndexMap<_, _> = info
+                .properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if let Some(custom_ordering) = custom_ordering_map.get(&info.identifier) {
+                properties.sort_by_cached_key(|n1, _| {
+                    custom_ordering.iter().position(|n2| n1 == n2).unwrap()
+                });
+            } else {
+                properties.sort_unstable_keys();
+            }
+            for (property, value) in properties.iter() {
+                let property_entry = block_entry
+                    .properties
+                    .entry(property.clone())
+                    .or_insert(IndexSet::new());
+                property_entry.insert(value.clone());
+            }
+            let default = registry
+                .data
+                .get_entry_from_identifier(&info.identifier)
+                .unwrap()
+                .default_blockstate
+                .as_usize()
+                == id;
+            block_entry.states.push(JsonBlockstate {
+                default,
+                id,
+                properties,
+            });
+        }
+        blocks.sort_unstable_keys();
+        let blocks_string = serde_json::to_string_pretty(&blocks)?;
+        std::fs::write("blocks_rust.json", blocks_string)?;
+    }
 
     Ok(())
 }

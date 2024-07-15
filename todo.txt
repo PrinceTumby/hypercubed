@@ -1,6 +1,8 @@
-- Make blockstate random choice selection based on hash of world position
+Features:
+- Animated textures
 
 Optimisation:
+- Split subchunk faces into 6 lists, one for each direction
 - Optimise multipart block models when they get generated:
   - If a face is completely occluded, remove it
   - Combine planar touching faces that have touching UVs
@@ -22,9 +24,11 @@ Optimisation:
     - Sort of like idea 1, but we precompute occlusion data for chunks/subchunks
   - Realtime methods could be used while generating precomputation data
 
-Bugfixes (check this whenever there's a weird bug):
-- Default blockstates for blocks are currently wrong:
-  - Make it so the default one is the one with everything in "default state"
-  - Bools are true then false, but default state is false
-  - Enums seem to have first one as default state
-  - Haven't checked ints
+Known Bugs:
+- Individual pixel polygon seams are sometimes visible on the edges of blocks:
+  - Only observed so far on my laptop with custom block faces (specifically snow)
+  - Tried multiple rendering methods, including making absolutely sure that vertex positions are
+    identical. Happens with every method tried (old face + matrix, model vertex + instancing,
+    manually baking all vertices at generation time)
+  - Should test whether this happens on my main computer as well, or if it's just something I have
+    no clue how to fix. Anti-aliasing will hopefully hide the problem as well.

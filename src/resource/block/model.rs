@@ -3,7 +3,7 @@ use crate::resource::manager::{get_resource_file, ResourceType};
 use ahash::AHashMap;
 use anyhow::{anyhow, bail, ensure, Context};
 use bitfield::bitfield;
-use nalgebra::{vector, Matrix4, Rotation3, Vector3};
+use nalgebra::{point, Matrix4, Point3, Rotation3, Vector3};
 use serde::Deserialize;
 use std::rc::Rc;
 
@@ -269,14 +269,20 @@ impl ModelCache {
             let [element] = &elements[..] else {
                 break 'specialize_block;
             };
-            if element.start_pos != vector![0., 0., 0.] || element.end_pos != vector![16., 16., 16.]
-            {
+            if element.start_pos != point![0., 0., 0.] || element.end_pos != point![16., 16., 16.] {
                 break 'specialize_block;
             }
             if element.rotation.is_some() || element.blockstate_rotation.is_some() {
                 break 'specialize_block;
             }
             if element.faces.iter().any(|(_, face)| face.is_none()) {
+                break 'specialize_block;
+            }
+            if element
+                .faces
+                .iter()
+                .any(|(_, face)| face.map(|f| f.tint_index != -1).unwrap_or(false))
+            {
                 break 'specialize_block;
             }
             if element.blockstate_rotation.is_some() {
@@ -298,493 +304,349 @@ impl ModelCache {
                 per_face_atlas_uvs,
             }));
         }
-        'specialize_overlayed_block: {
-            // Overlayed blocks have a single element spanning the entire block space with
-            // no rotation
+        'specialize_tinted_block: {
+            // Blocks have a single element spanning the entire block space with no
+            // rotation
             let elements = model_template.elements.as_ref().unwrap();
-            let [base_element, overlay_element] = &elements[..] else {
-                break 'specialize_overlayed_block;
+            let [element] = &elements[..] else {
+                break 'specialize_tinted_block;
             };
-            if base_element.start_pos != vector![0.0, 0.0, 0.0]
-                || base_element.end_pos != vector![16.0, 16.0, 16.0]
-            {
-                break 'specialize_overlayed_block;
+            if element.start_pos != point![0., 0., 0.] || element.end_pos != point![16., 16., 16.] {
+                break 'specialize_tinted_block;
             }
-            if overlay_element.start_pos != vector![0.0, 0.0, 0.0]
-                || overlay_element.end_pos != vector![16.0, 16.0, 16.0]
-            {
-                break 'specialize_overlayed_block;
+            if element.rotation.is_some() || element.blockstate_rotation.is_some() {
+                break 'specialize_tinted_block;
             }
-            if base_element.rotation.is_some() || overlay_element.rotation.is_some() {
-                break 'specialize_overlayed_block;
+            if element.faces.iter().any(|(_, face)| face.is_none()) {
+                break 'specialize_tinted_block;
             }
-            if base_element.faces.iter().any(|(_, face)| face.is_none()) {
-                break 'specialize_overlayed_block;
-            }
-            if base_element.blockstate_rotation.is_some()
-                || overlay_element.blockstate_rotation.is_some()
-            {
-                todo!("Support blockstate rotation for overlayed blocks")
-            }
-            // TODO The functions for these are already done, just port over from standard block
-            // specialization
-            if base_element
+            if element
                 .faces
                 .iter()
-                .filter_map(|(i, f)| f.map(|f| (i, f)))
-                .any(|(_, face)| face.rotation != RightAngleRotation::Zero)
+                .any(|(_, face)| face.map(|f| f.tint_index == -1).unwrap_or(false))
             {
-                todo!("Support block face texture rotation");
+                break 'specialize_tinted_block;
             }
-            if overlay_element
-                .faces
-                .iter()
-                .filter_map(|(i, f)| f.map(|f| (i, f)))
-                .any(|(_, face)| face.rotation != RightAngleRotation::Zero)
-            {
-                todo!("Support block face texture rotation");
-            }
-            if base_element
-                .faces
-                .iter()
-                .filter_map(|(i, f)| f.map(|f| (i, f)))
-                .any(|(_, face)| face.uvs.is_some() && face.uvs != Some([0.0, 0.0, 16.0, 16.0]))
-            {
-                todo!("Support block face custom uvs");
-            }
-            if overlay_element
-                .faces
-                .iter()
-                .filter_map(|(i, f)| f.map(|f| (i, f)))
-                .any(|(_, face)| face.uvs.is_some() && face.uvs != Some([0.0, 0.0, 16.0, 16.0]))
-            {
-                todo!("Support block face custom uvs");
+            if element.blockstate_rotation.is_some() {
+                todo!("Support blockstate rotation for tinted blocks")
             }
             // Load textures
-            let per_base_face_atlas_uvs = [
-                texture_atlas
-                    .get_or_load_texture(&Identifier::parse(
-                        &base_element.faces.top.as_ref().unwrap().texture,
-                    )?)?
-                    .uvs,
-                texture_atlas
-                    .get_or_load_texture(&Identifier::parse(
-                        &base_element.faces.bottom.as_ref().unwrap().texture,
-                    )?)?
-                    .uvs,
-                texture_atlas
-                    .get_or_load_texture(&Identifier::parse(
-                        &base_element.faces.north.as_ref().unwrap().texture,
-                    )?)?
-                    .uvs,
-                texture_atlas
-                    .get_or_load_texture(&Identifier::parse(
-                        &base_element.faces.south.as_ref().unwrap().texture,
-                    )?)?
-                    .uvs,
-                texture_atlas
-                    .get_or_load_texture(&Identifier::parse(
-                        &base_element.faces.east.as_ref().unwrap().texture,
-                    )?)?
-                    .uvs,
-                texture_atlas
-                    .get_or_load_texture(&Identifier::parse(
-                        &base_element.faces.west.as_ref().unwrap().texture,
-                    )?)?
-                    .uvs,
+            let per_face_atlas_uvs = [
+                Self::load_face_atlas_uvs(texture_atlas, element.faces.top.as_ref().unwrap())?,
+                Self::load_face_atlas_uvs(texture_atlas, element.faces.bottom.as_ref().unwrap())?,
+                Self::load_face_atlas_uvs(texture_atlas, element.faces.north.as_ref().unwrap())?,
+                Self::load_face_atlas_uvs(texture_atlas, element.faces.south.as_ref().unwrap())?,
+                Self::load_face_atlas_uvs(texture_atlas, element.faces.east.as_ref().unwrap())?,
+                Self::load_face_atlas_uvs(texture_atlas, element.faces.west.as_ref().unwrap())?,
             ];
-            let mut flags = OverlayedBlockFlags(0);
+            let mut flags = BlockFlags(0);
             flags.set_ambient_occlusion(model_template.ambient_occlusion);
-            let mut overlay_uvs: [Option<[u16; 4]>; 6] = [None; 6];
-            for (index, overlay_face) in overlay_element.faces.iter() {
-                if let Some(overlay_face) = overlay_face {
-                    overlay_uvs[index as usize] = Some(
-                        texture_atlas
-                            .get_or_load_texture(&Identifier::parse(&overlay_face.texture)?)?
-                            .uvs,
-                    );
-                    match index {
-                        BlockFace::Top => flags.set_overlay_top(true),
-                        BlockFace::Bottom => flags.set_overlay_bottom(true),
-                        BlockFace::North => flags.set_overlay_north(true),
-                        BlockFace::South => flags.set_overlay_south(true),
-                        BlockFace::East => flags.set_overlay_east(true),
-                        BlockFace::West => flags.set_overlay_west(true),
+            return Ok(ModelType::TintedBlock(BlockInfo {
+                flags,
+                per_face_atlas_uvs,
+            }));
+        }
+        'specialize_overlayed_block: {
+            // Overlayed blocks have any number of elements, all spanning the entire block space,
+            // none of which with rotation
+            let elements = model_template.elements.as_ref().unwrap();
+            if elements.iter().any(|element| {
+                element.start_pos != point![0.0, 0.0, 0.0]
+                    || element.end_pos != point![16.0, 16.0, 16.0]
+            }) {
+                break 'specialize_overlayed_block;
+            }
+            if elements.iter().any(|element| element.rotation.is_some()) {
+                break 'specialize_overlayed_block;
+            }
+            if elements
+                .iter()
+                .any(|element| element.blockstate_rotation.is_some())
+            {
+                break 'specialize_overlayed_block;
+            }
+            let mut faces = Vec::new();
+            for element in elements {
+                // TODO The functions for these are already done, just port over from standard block
+                // specialization
+                if element
+                    .faces
+                    .iter()
+                    .filter_map(|(i, f)| f.map(|f| (i, f)))
+                    .any(|(_, face)| face.rotation != RightAngleRotation::Zero)
+                {
+                    todo!("Support block face texture rotation");
+                }
+                if element
+                    .faces
+                    .iter()
+                    .filter_map(|(i, f)| f.map(|f| (i, f)))
+                    .any(|(_, face)| face.uvs.is_some() && face.uvs != Some([0.0, 0.0, 16.0, 16.0]))
+                {
+                    todo!("Support block face texture rotation");
+                }
+                for (index, face) in element.faces.iter() {
+                    if let Some(face) = face {
+                        faces.push(OverlayedBlockFace {
+                            face_i: index as u8,
+                            tint: match face.tint_index {
+                                -1 => None,
+                                // Apparently vanilla only uses one tint index, so anything other
+                                // than -1 just means `Tint::Biome`
+                                _ => Some(Tint::Biome),
+                                // _ => unimplemented!("unknown tint index {}", face.tint_index),
+                            },
+                            atlas_uvs: texture_atlas
+                                .get_or_load_texture(&Identifier::parse(&face.texture)?)?
+                                .uvs,
+                        });
                     }
                 }
             }
+            let mut flags = BlockFlags(0);
+            flags.set_ambient_occlusion(model_template.ambient_occlusion);
             return Ok(ModelType::OverlayedBlock(OverlayedBlockInfo {
                 flags,
-                per_base_face_atlas_uvs,
-                per_overlay_face_atlas_uvs: overlay_uvs.map(|uv| uv.unwrap_or([0xFFFF; 4])),
-            }));
-        }
-        'specialize_cross: {
-            // Blocks have a single element spanning the entire block space with no
-            // rotation
-            let elements = model_template.elements.as_ref().unwrap();
-            let [face_1, face_2] = &elements[..] else {
-                break 'specialize_cross;
-            };
-            if face_1.shade || face_2.shade {
-                break 'specialize_cross;
-            }
-            if face_1.start_pos != vector![0.8, 0., 8.] || face_1.end_pos != vector![15.2, 16., 8.]
-            {
-                break 'specialize_cross;
-            }
-            if face_2.start_pos != vector![8., 0., 0.8] || face_2.end_pos != vector![8., 16., 15.2]
-            {
-                break 'specialize_cross;
-            }
-            if face_1.rotation
-                != Some(ModelElementRotation {
-                    origin: vector![8., 8., 8.],
-                    axis: RotationAxis::Y,
-                    angle: 45.,
-                    rescale: true,
-                })
-            {
-                break 'specialize_cross;
-            }
-            if face_2.rotation
-                != Some(ModelElementRotation {
-                    origin: vector![8., 8., 8.],
-                    axis: RotationAxis::Y,
-                    angle: 45.,
-                    rescale: true,
-                })
-            {
-                break 'specialize_cross;
-            }
-            if face_1.blockstate_rotation.is_some() || face_2.blockstate_rotation.is_some() {
-                todo!("blockstate rotation on a cross? (probably just change todo to break)");
-                // break 'specialize_cross;
-            }
-            let Some(ref north_face) = face_1.faces.north else {
-                break 'specialize_cross;
-            };
-            let cross_texture = &north_face.texture;
-            if !matches!(&face_1.faces, TemplateElementFaces {
-                    top: None,
-                    bottom: None,
-                    north: Some(TemplateElementFace {
-                        uvs: Some([n_uv1, n_uv2, n_uv3, n_uv4]),
-                        texture: north_texture,
-                        cullface: Some(BlockFace::North),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: -1,
-                    }),
-                    south: Some(TemplateElementFace {
-                        uvs: Some([s_uv1, s_uv2, s_uv3, s_uv4]),
-                        texture: south_texture,
-                        cullface: Some(BlockFace::South),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: -1,
-                    }),
-                    east: None,
-                    west: None,
-                } if &north_texture == &cross_texture &&
-                    &south_texture == &cross_texture &&
-                    *n_uv1 == 0.0 &&
-                    *n_uv2 == 0.0 &&
-                    *n_uv3 == 16.0 &&
-                    *n_uv4 == 16.0 &&
-                    *s_uv1 == 0.0 &&
-                    *s_uv2 == 0.0 &&
-                    *s_uv3 == 16.0 &&
-                    *s_uv4 == 16.0)
-            {
-                break 'specialize_cross;
-            }
-            if !matches!(&face_2.faces, TemplateElementFaces {
-                    top: None,
-                    bottom: None,
-                    north: None,
-                    south: None,
-                    east: Some(TemplateElementFace {
-                        uvs: Some([e_uv1, e_uv2, e_uv3, e_uv4]),
-                        texture: east_texture,
-                        cullface: Some(BlockFace::East),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: -1,
-                    }),
-                    west: Some(TemplateElementFace {
-                        uvs: Some([w_uv1, w_uv2, w_uv3, w_uv4]),
-                        texture: west_texture,
-                        cullface: Some(BlockFace::West),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: -1,
-                    }),
-                } if &east_texture == &cross_texture &&
-                    &west_texture == &cross_texture &&
-                    *e_uv1 == 0.0 &&
-                    *e_uv2 == 0.0 &&
-                    *e_uv3 == 16.0 &&
-                    *e_uv4 == 16.0 &&
-                    *w_uv1 == 0.0 &&
-                    *w_uv2 == 0.0 &&
-                    *w_uv3 == 16.0 &&
-                    *w_uv4 == 16.0)
-            {
-                break 'specialize_cross;
-            }
-            // Load texture
-            let cross_atlas_start_uvs = texture_atlas
-                .get_or_load_texture(&Identifier::parse(&cross_texture)?)?
-                .uvs;
-            return Ok(ModelType::Cross(CrossInfo {
-                cross_atlas_start_uvs,
-            }));
-        }
-        'specialize_biome_tinted_cross: {
-            // Blocks have a single element spanning the entire block space with no
-            // rotation
-            let elements = model_template.elements.as_ref().unwrap();
-            let [face_1, face_2] = &elements[..] else {
-                break 'specialize_biome_tinted_cross;
-            };
-            if face_1.shade || face_2.shade {
-                break 'specialize_biome_tinted_cross;
-            }
-            if face_1.start_pos != vector![0.8, 0., 8.] || face_1.end_pos != vector![15.2, 16., 8.]
-            {
-                break 'specialize_biome_tinted_cross;
-            }
-            if face_2.start_pos != vector![8., 0., 0.8] || face_2.end_pos != vector![8., 16., 15.2]
-            {
-                break 'specialize_biome_tinted_cross;
-            }
-            if face_1.rotation
-                != Some(ModelElementRotation {
-                    origin: vector![8., 8., 8.],
-                    axis: RotationAxis::Y,
-                    angle: 45.,
-                    rescale: true,
-                })
-            {
-                break 'specialize_biome_tinted_cross;
-            }
-            if face_2.rotation
-                != Some(ModelElementRotation {
-                    origin: vector![8., 8., 8.],
-                    axis: RotationAxis::Y,
-                    angle: 45.,
-                    rescale: true,
-                })
-            {
-                break 'specialize_biome_tinted_cross;
-            }
-            if face_1.blockstate_rotation.is_some() || face_2.blockstate_rotation.is_some() {
-                todo!("blockstate rotation on a cross? (probably just change todo to break)");
-                // break 'specialize_biome_tinted_cross;
-            }
-            let Some(ref north_face) = face_1.faces.north else {
-                break 'specialize_biome_tinted_cross;
-            };
-            let cross_texture = &north_face.texture;
-            if !matches!(&face_1.faces, TemplateElementFaces {
-                    top: None,
-                    bottom: None,
-                    north: Some(TemplateElementFace {
-                        uvs: Some([n_uv1, n_uv2, n_uv3, n_uv4]),
-                        texture: north_texture,
-                        cullface: Some(BlockFace::North),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: 0,
-                    }),
-                    south: Some(TemplateElementFace {
-                        uvs: Some([s_uv1, s_uv2, s_uv3, s_uv4]),
-                        texture: south_texture,
-                        cullface: Some(BlockFace::South),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: 0,
-                    }),
-                    east: None,
-                    west: None,
-                } if &north_texture == &cross_texture &&
-                    &south_texture == &cross_texture &&
-                    *n_uv1 == 0.0 &&
-                    *n_uv2 == 0.0 &&
-                    *n_uv3 == 16.0 &&
-                    *n_uv4 == 16.0 &&
-                    *s_uv1 == 0.0 &&
-                    *s_uv2 == 0.0 &&
-                    *s_uv3 == 16.0 &&
-                    *s_uv4 == 16.0)
-            {
-                break 'specialize_biome_tinted_cross;
-            }
-            if !matches!(&face_2.faces, TemplateElementFaces {
-                    top: None,
-                    bottom: None,
-                    north: None,
-                    south: None,
-                    east: Some(TemplateElementFace {
-                        uvs: Some([e_uv1, e_uv2, e_uv3, e_uv4]),
-                        texture: east_texture,
-                        cullface: Some(BlockFace::East),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: 0,
-                    }),
-                    west: Some(TemplateElementFace {
-                        uvs: Some([w_uv1, w_uv2, w_uv3, w_uv4]),
-                        texture: west_texture,
-                        cullface: Some(BlockFace::West),
-                        rotation: RightAngleRotation::Zero,
-                        tint_index: 0,
-                    }),
-                } if &east_texture == &cross_texture &&
-                    &west_texture == &cross_texture &&
-                    *e_uv1 == 0.0 &&
-                    *e_uv2 == 0.0 &&
-                    *e_uv3 == 16.0 &&
-                    *e_uv4 == 16.0 &&
-                    *w_uv1 == 0.0 &&
-                    *w_uv2 == 0.0 &&
-                    *w_uv3 == 16.0 &&
-                    *w_uv4 == 16.0)
-            {
-                break 'specialize_biome_tinted_cross;
-            }
-            // Load texture
-            let cross_atlas_start_uvs = texture_atlas
-                .get_or_load_texture(&Identifier::parse(&cross_texture)?)?
-                .uvs;
-            return Ok(ModelType::BiomeTintedCross(CrossInfo {
-                cross_atlas_start_uvs,
+                faces,
             }));
         }
         // Fall back to more expensive model rendering if we can't specialize
-        let converted_elements: Vec<ModelElement> = model_template
-            .elements
-            .unwrap()
-            .into_iter()
-            .map(|template_element| {
-                // Generate matrix which transforms normal block faces to element faces
-                let matrix = {
-                    /// Converts a Minecraft element coordinate to a model coordinate.
-                    /// Minecraft element coordinates are 0 to 16 within a block, whereas
-                    /// we have model coordinates from -1 to +1.
-                    fn mc_elem_to_model_coord(vec: Vector3<f32>) -> Vector3<f32> {
-                        vec.add_scalar(-8.0) / 8.0
-                    }
-                    let start = mc_elem_to_model_coord(template_element.start_pos);
-                    let end = mc_elem_to_model_coord(template_element.end_pos);
-                    let size = end - start;
-                    let origin = (start + end) / 2.0;
-                    let rotation = match template_element.rotation {
-                        None => Matrix4::identity(),
-                        Some(template_rotation) => {
-                            let origin = mc_elem_to_model_coord(template_rotation.origin);
-                            let axis = match template_rotation.axis {
-                                RotationAxis::X => Vector3::x_axis(),
-                                RotationAxis::Y => Vector3::y_axis(),
-                                RotationAxis::Z => Vector3::z_axis(),
-                            };
-                            let angle = template_rotation.angle.to_radians();
-                            let rotation = Matrix4::from_axis_angle(&axis, angle)
-                                .prepend_translation(&-origin)
-                                .append_translation(&origin);
-                            let rescaled_rotation = if template_rotation.rescale {
-                                let rescale_amount = 1.0 + (1.0 / (angle.cos() - 1.0));
-                                match template_rotation.axis {
-                                    RotationAxis::X => rotation.append_nonuniform_scaling(
-                                        &Vector3::new(1.0, rescale_amount, rescale_amount),
-                                    ),
-                                    RotationAxis::Y => rotation.append_nonuniform_scaling(
-                                        &Vector3::new(rescale_amount, 1.0, rescale_amount),
-                                    ),
-                                    RotationAxis::Z => rotation.append_nonuniform_scaling(
-                                        &Vector3::new(rescale_amount, rescale_amount, 1.0),
-                                    ),
-                                }
-                            } else {
-                                rotation
-                            };
-                            match template_element.blockstate_rotation {
-                                None => rescaled_rotation,
-                                Some(TemplateElementBlockstateRotation {
-                                    x_rotation,
-                                    y_rotation,
-                                    ..
-                                }) => {
-                                    let x_y_axis_angles = [
-                                        (Vector3::x_axis(), x_rotation),
-                                        (Vector3::y_axis(), y_rotation),
-                                    ];
-                                    let [x_blockstate_rot, y_blockstate_rot] =
-                                        x_y_axis_angles.map(|(axis, angle)| match angle {
-                                            RightAngleRotation::Zero => Matrix4::identity(),
-                                            RightAngleRotation::Ninety => {
-                                                Rotation3::from_axis_angle(
-                                                    &axis,
-                                                    std::f32::consts::FRAC_PI_2,
-                                                )
-                                                .to_homogeneous()
-                                            }
-                                            RightAngleRotation::OneEighty => {
-                                                Rotation3::from_axis_angle(
-                                                    &axis,
-                                                    std::f32::consts::PI,
-                                                )
-                                                .to_homogeneous()
-                                            }
-                                            RightAngleRotation::TwoSeventy => {
-                                                Rotation3::from_axis_angle(
-                                                    &axis,
-                                                    -std::f32::consts::FRAC_PI_2,
-                                                )
-                                                .to_homogeneous()
-                                            }
-                                        });
-                                    y_blockstate_rot * x_blockstate_rot * rescaled_rotation
-                                }
+        let mut converted_vertices: Vec<ModelVertex> = Vec::new();
+        let mut converted_indices: Vec<u32> = Vec::new();
+        for template_element in model_template.elements.unwrap() {
+            const FACE_NORMALS: [Vector3<f32>; 6] = [
+                // Top
+                Vector3::new(0.0, 1.0, 0.0),
+                // Bottom
+                Vector3::new(0.0, -1.0, 0.0),
+                // North
+                Vector3::new(0.0, 0.0, -1.0),
+                // South
+                Vector3::new(0.0, 0.0, 1.0),
+                // East
+                Vector3::new(1.0, 0.0, 0.0),
+                // West
+                Vector3::new(-1.0, 0.0, 0.0),
+            ];
+            const FACE_INDICES: [u32; 6] = [1, 0, 2, 1, 2, 3];
+            const BLOCK_FACES: [BlockFace; 6] = [
+                BlockFace::Top,
+                BlockFace::Bottom,
+                BlockFace::North,
+                BlockFace::South,
+                BlockFace::East,
+                BlockFace::West,
+            ];
+            let element_faces = [
+                template_element.faces.top,
+                template_element.faces.bottom,
+                template_element.faces.north,
+                template_element.faces.south,
+                template_element.faces.east,
+                template_element.faces.west,
+            ];
+            for face_i in 0..6 {
+                // So I think the issue was using all the PER_FACE_VERTICES.
+                // Think we need to swap orders around to fix up front face.
+                // Also, are the vertices upside down or something?
+                // if face_i != 0 {
+                //     continue;
+                // }
+                let Some(element_face) = element_faces[face_i].clone() else {
+                    continue;
+                };
+                let converted_face = Self::convert_face(
+                    texture_atlas,
+                    element_face,
+                    template_element.blockstate_rotation,
+                    BLOCK_FACES[face_i],
+                )?;
+                /// Converts a Minecraft element coordinate to a model coordinate.
+                /// Minecraft element coordinates are 0 to 16 within a block, whereas
+                /// we have model coordinates from -0.5 to +0.5.
+                fn mc_elem_to_model_coord(point: Point3<f32>) -> Point3<f32> {
+                    Point3::from(point.coords.add_scalar(-8.0) / 16.0)
+                }
+                let start = mc_elem_to_model_coord(template_element.start_pos);
+                let end = mc_elem_to_model_coord(template_element.end_pos);
+                let face_vertices = match face_i {
+                    // Top
+                    0 => [
+                        Point3::new(start.x, end.y, start.z),
+                        Point3::new(end.x, end.y, start.z),
+                        Point3::new(start.x, end.y, end.z),
+                        Point3::new(end.x, end.y, end.z),
+                    ],
+                    // Bottom
+                    1 => [
+                        Point3::new(start.x, start.y, end.z),
+                        Point3::new(end.x, start.y, end.z),
+                        Point3::new(start.x, start.y, start.z),
+                        Point3::new(end.x, start.y, start.z),
+                    ],
+                    // North
+                    2 => [
+                        Point3::new(start.x, start.y, start.z),
+                        Point3::new(end.x, start.y, start.z),
+                        Point3::new(start.x, end.y, start.z),
+                        Point3::new(end.x, end.y, start.z),
+                    ],
+                    // South
+                    3 => [
+                        Point3::new(end.x, start.y, end.z),
+                        Point3::new(start.x, start.y, end.z),
+                        Point3::new(end.x, end.y, end.z),
+                        Point3::new(start.x, end.y, end.z),
+                    ],
+                    // East
+                    4 => [
+                        Point3::new(end.x, start.y, start.z),
+                        Point3::new(end.x, start.y, end.z),
+                        Point3::new(end.x, end.y, start.z),
+                        Point3::new(end.x, end.y, end.z),
+                    ],
+                    // West
+                    5 => [
+                        Point3::new(start.x, start.y, end.z),
+                        Point3::new(start.x, start.y, start.z),
+                        Point3::new(start.x, end.y, end.z),
+                        Point3::new(start.x, end.y, start.z),
+                    ],
+                    _ => unreachable!(),
+                };
+                // let face_vertices = match face_i {
+                //     // Top
+                //     0 => [
+                //         Vector3::new(-0.5, 0.5, -0.5),
+                //         Vector3::new(0.5, 0.5, -0.5),
+                //         Vector3::new(-0.5, 0.5, 0.5),
+                //         Vector3::new(0.5, 0.5, 0.5),
+                //     ],
+                //     // Bottom
+                //     1 => [
+                //         Vector3::new(-0.5, -0.5, 0.5),
+                //         Vector3::new(0.5, -0.5, 0.5),
+                //         Vector3::new(-0.5, -0.5, -0.5),
+                //         Vector3::new(0.5, -0.5, -0.5),
+                //     ],
+                //     // North
+                //     2 => [
+                //         Vector3::new(-0.5, -0.5, -0.5),
+                //         Vector3::new(0.5, -0.5, -0.5),
+                //         Vector3::new(-0.5, 0.5, -0.5),
+                //         Vector3::new(0.5, 0.5, -0.5),
+                //     ],
+                //     // South
+                //     3 => [
+                //         Vector3::new(0.5, -0.5, 0.5),
+                //         Vector3::new(-0.5, -0.5, 0.5),
+                //         Vector3::new(0.5, 0.5, 0.5),
+                //         Vector3::new(-0.5, 0.5, 0.5),
+                //     ],
+                //     // East
+                //     4 => [
+                //         Vector3::new(0.5, -0.5, -0.5),
+                //         Vector3::new(0.5, -0.5, 0.5),
+                //         Vector3::new(0.5, 0.5, -0.5),
+                //         Vector3::new(0.5, 0.5, 0.5),
+                //     ],
+                //     // West
+                //     5 => [
+                //         Vector3::new(-0.5, -0.5, 0.5),
+                //         Vector3::new(-0.5, -0.5, -0.5),
+                //         Vector3::new(-0.5, 0.5, 0.5),
+                //         Vector3::new(-0.5, 0.5, -0.5),
+                //     ],
+                //     _ => unreachable!(),
+                // };
+                let face_normal = FACE_NORMALS[face_i];
+                let num_converted_vertices = u32::try_from(converted_vertices.len()).unwrap();
+                let face_indices = FACE_INDICES.map(|index| index + num_converted_vertices);
+                let size = end - start;
+                let origin = Point3::from((start.coords + end.coords) / 2.0);
+                let basic_rotation = match template_element.rotation {
+                    None => Matrix4::identity(),
+                    Some(template_rotation) => {
+                        let origin = mc_elem_to_model_coord(template_rotation.origin);
+                        let axis = match template_rotation.axis {
+                            RotationAxis::X => Vector3::x_axis(),
+                            RotationAxis::Y => Vector3::y_axis(),
+                            RotationAxis::Z => Vector3::z_axis(),
+                        };
+                        let angle = template_rotation.angle.to_radians();
+                        let rotation = Matrix4::from_axis_angle(&axis, angle)
+                            .prepend_translation(&-origin.coords)
+                            .append_translation(&origin.coords);
+                        if template_rotation.rescale {
+                            let rescale_amount = (1.0 + (1.0 / (angle.cos() - 1.0))) / 2.0;
+                            match template_rotation.axis {
+                                RotationAxis::X => rotation.append_nonuniform_scaling(
+                                    &Vector3::new(1.0, rescale_amount, rescale_amount),
+                                ),
+                                RotationAxis::Y => rotation.append_nonuniform_scaling(
+                                    &Vector3::new(rescale_amount, 1.0, rescale_amount),
+                                ),
+                                RotationAxis::Z => rotation.append_nonuniform_scaling(
+                                    &Vector3::new(rescale_amount, rescale_amount, 1.0),
+                                ),
                             }
+                        } else {
+                            rotation
                         }
-                    };
-                    rotation
-                        .append_nonuniform_scaling(&size)
-                        .append_translation(&origin)
-                };
-                // Convert template faces
-                let faces = {
-                    let faces = template_element.faces;
-                    let rot = template_element.blockstate_rotation;
-                    ModelElementFaces {
-                        top: Self::convert_face(texture_atlas, faces.top, rot, BlockFace::Top)?,
-                        bottom: Self::convert_face(
-                            texture_atlas,
-                            faces.bottom,
-                            rot,
-                            BlockFace::Bottom,
-                        )?,
-                        north: Self::convert_face(
-                            texture_atlas,
-                            faces.north,
-                            rot,
-                            BlockFace::North,
-                        )?,
-                        south: Self::convert_face(
-                            texture_atlas,
-                            faces.south,
-                            rot,
-                            BlockFace::South,
-                        )?,
-                        east: Self::convert_face(texture_atlas, faces.east, rot, BlockFace::East)?,
-                        west: Self::convert_face(texture_atlas, faces.west, rot, BlockFace::West)?,
                     }
                 };
-                Ok(ModelElement {
-                    matrix,
-                    shade: template_element.shade,
-                    faces,
-                })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        return Ok(ModelType::Other(OtherInfo {
-            elements: converted_elements,
-        }));
+                let rotation = match template_element.blockstate_rotation {
+                    None => basic_rotation,
+                    Some(TemplateElementBlockstateRotation {
+                        x_rotation,
+                        y_rotation,
+                        ..
+                    }) => {
+                        let x_y_axis_angles = [
+                            (Vector3::x_axis(), x_rotation),
+                            (Vector3::y_axis(), y_rotation),
+                        ];
+                        let [x_blockstate_rot, y_blockstate_rot] =
+                            x_y_axis_angles.map(|(axis, angle)| match angle {
+                                RightAngleRotation::Zero => Matrix4::identity(),
+                                RightAngleRotation::Ninety => {
+                                    Rotation3::from_axis_angle(&axis, -std::f32::consts::FRAC_PI_2)
+                                        .to_homogeneous()
+                                }
+                                RightAngleRotation::OneEighty => {
+                                    Rotation3::from_axis_angle(&axis, std::f32::consts::PI)
+                                        .to_homogeneous()
+                                }
+                                RightAngleRotation::TwoSeventy => {
+                                    Rotation3::from_axis_angle(&axis, std::f32::consts::FRAC_PI_2)
+                                        .to_homogeneous()
+                                }
+                            });
+                        y_blockstate_rot * x_blockstate_rot * basic_rotation
+                    }
+                };
+                // let complete_matrix = rotation
+                //     .prepend_translation(&origin)
+                //     .prepend_nonuniform_scaling(&size);
+                let complete_matrix = rotation;
+                let mut transformed_vertices = face_vertices.map(|vertex| ModelVertex {
+                    local_pos: complete_matrix.transform_point(&vertex),
+                    uvs: [0; 2],
+                    normal: complete_matrix.transform_vector(&face_normal),
+                    tint: converted_face.tint,
+                });
+                transformed_vertices[0].uvs = [converted_face.uvs[2], converted_face.uvs[3]];
+                transformed_vertices[1].uvs = [converted_face.uvs[0], converted_face.uvs[3]];
+                transformed_vertices[2].uvs = [converted_face.uvs[2], converted_face.uvs[1]];
+                transformed_vertices[3].uvs = [converted_face.uvs[0], converted_face.uvs[1]];
+                converted_vertices.extend(transformed_vertices.into_iter());
+                converted_indices.extend(face_indices.into_iter());
+            }
+        }
+        Ok(ModelType::Other(OtherInfo {
+            vertices: converted_vertices,
+            indices: converted_indices,
+        }))
     }
 
     /// Rotates `texture_uvs` around its centre by `angle`.
@@ -864,8 +726,8 @@ impl ModelCache {
                 [
                     (uv_fractions[0] * x_diff + x_start) as u16,
                     (uv_fractions[1] * y_diff + y_start) as u16,
-                    (uv_fractions[0] * x_diff + x_start) as u16,
-                    (uv_fractions[1] * y_diff + y_start) as u16,
+                    (uv_fractions[2] * x_diff + x_start) as u16,
+                    (uv_fractions[3] * y_diff + y_start) as u16,
                 ]
             }
         };
@@ -875,11 +737,10 @@ impl ModelCache {
 
     fn convert_face(
         texture_atlas: &mut texture::AtlasBuilder,
-        face: Option<TemplateElementFace>,
+        face: TemplateElementFace,
         blockstate_rotation: Option<TemplateElementBlockstateRotation>,
         index: BlockFace,
-    ) -> anyhow::Result<Option<ModelElementFace>> {
-        let Some(face) = face else { return Ok(None) };
+    ) -> anyhow::Result<ModelElementFace> {
         let texture_uvs = texture_atlas
             .get_or_load_texture(&Identifier::parse(&face.texture)?)?
             .uvs;
@@ -892,31 +753,30 @@ impl ModelCache {
                 x_rotation,
                 y_rotation,
                 uv_lock,
-            }) if uv_lock => {
-                // FIXME Pretty sure this is rotating some faces the wrong way. Check using a
-                // dropper.
-                match index {
-                    BlockFace::Top => Self::rotate_uvs(transformed_uvs, y_rotation),
-                    BlockFace::Bottom => Self::rotate_uvs(transformed_uvs, y_rotation),
-                    BlockFace::East => Self::rotate_uvs(transformed_uvs, x_rotation),
-                    BlockFace::West => Self::rotate_uvs(transformed_uvs, x_rotation),
-                    // See above todo!
-                    _ => transformed_uvs,
-                }
-            }
+            }) if uv_lock => match index {
+                BlockFace::Top => Self::rotate_uvs(transformed_uvs, y_rotation),
+                BlockFace::Bottom => Self::rotate_uvs(transformed_uvs, y_rotation),
+                BlockFace::East => Self::rotate_uvs(transformed_uvs, x_rotation),
+                BlockFace::West => Self::rotate_uvs(transformed_uvs, x_rotation),
+                _ => transformed_uvs,
+            },
             _ => transformed_uvs,
         };
-        Ok(Some(ModelElementFace {
+        Ok(ModelElementFace {
             uvs: rotated_uvs,
             cullface: face.cullface.unwrap_or(index),
             tint: match face.tint_index {
                 -1 => None,
-                // Apparently vanilla only uses one tint index, so anything other than -1 just
-                // means `Tint::Biome`
+                // Apparently vanilla only uses one tint index currently
                 _ => Some(Tint::Biome),
-                // _ => unimplemented!("unknown tint index {}", face.tint_index),
+                // FIXME: pink_petals_stem uses a tint index of 1?
+                // _ => unimplemented!(
+                //     "unknown tint index {} when loading {}",
+                //     face.tint_index,
+                //     face.texture,
+                // ),
             },
-        }))
+        })
     }
 }
 
@@ -944,8 +804,12 @@ pub enum ModelState {
 pub enum ModelType {
     /// Model with no elements. Example: Air
     None,
-    /// Standard block, has all six faces, only element, and no fancy stuff. Example: Cobblestone
+    /// Standard block, has all six faces, only one element, and no fancy stuff. Example: Cobblestone
     Block(BlockInfo),
+    /// Tinted block, has all six faces, and only one element. All faces are tinted. Example: Leaves
+    TintedBlock(BlockInfo),
+    // TODO Make this just have a vec of faces, each face has optional tint index, then make flags
+    // just BlockFlags
     /// Block with extra faces containing transparent pixels drawn on top. Example: Grass block
     OverlayedBlock(OverlayedBlockInfo),
     /// Contains two double sided 2D elements at 45 degrees. Example: Dandelion
@@ -972,25 +836,18 @@ bitfield! {
     pub ambient_occlusion, set_ambient_occlusion: 0;
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct OverlayedBlockInfo {
-    pub flags: OverlayedBlockFlags,
-    /// In order of top, bottom, north, south, east and west.
-    pub per_base_face_atlas_uvs: [[u16; 4]; 6],
-    pub per_overlay_face_atlas_uvs: [[u16; 4]; 6],
+    pub flags: BlockFlags,
+    pub faces: Vec<OverlayedBlockFace>,
 }
 
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct OverlayedBlockFlags(u16);
-    impl Debug;
-    pub ambient_occlusion, set_ambient_occlusion: 0;
-    pub has_overlay_top, set_overlay_top: 1;
-    pub has_overlay_bottom, set_overlay_bottom: 2;
-    pub has_overlay_north, set_overlay_north: 3;
-    pub has_overlay_south, set_overlay_south: 4;
-    pub has_overlay_east, set_overlay_east: 5;
-    pub has_overlay_west, set_overlay_west: 6;
+#[derive(Clone, Copy, Debug)]
+pub struct OverlayedBlockFace {
+    pub face_i: u8,
+    pub tint: Option<Tint>,
+    /// In order of top, bottom, north, south, east and west.
+    pub atlas_uvs: [u16; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1003,36 +860,86 @@ pub struct LiquidInfo {
     pub uvs: [u16; 4],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct OtherInfo {
-    pub elements: Vec<ModelElement>,
+    pub vertices: Vec<ModelVertex>,
+    pub indices: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelVertex {
+    pub local_pos: Point3<f32>,
+    pub uvs: [u16; 2],
+    pub normal: Vector3<f32>,
+    pub tint: Option<Tint>,
+}
+
+impl PartialEq for ModelVertex {
+    fn eq(&self, other: &Self) -> bool {
+        fn f32_eq(x: &f32, y: &f32) -> bool {
+            x.total_cmp(y).is_eq()
+        }
+        fn vec3_eq(left: &Vector3<f32>, right: &Vector3<f32>) -> bool {
+            Iterator::zip(left.as_slice().iter(), right.as_slice().iter())
+                .map(|(l, r)| f32_eq(l, r))
+                .all(std::convert::identity)
+        }
+        self.uvs == other.uvs
+            && self.tint == other.tint
+            && vec3_eq(&self.local_pos.coords, &other.local_pos.coords)
+            && vec3_eq(&self.normal, &other.normal)
+    }
+}
+
+impl Eq for ModelVertex {}
+
+impl std::hash::Hash for ModelVertex {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        fn f32_hash<H: std::hash::Hasher>(x: &f32, state: &mut H) {
+            x.to_bits().hash(state);
+        }
+        fn vec3_hash<H: std::hash::Hasher>(vec: &Vector3<f32>, state: &mut H) {
+            f32_hash(&vec.x, state);
+            f32_hash(&vec.y, state);
+            f32_hash(&vec.z, state);
+        }
+        vec3_hash(&self.local_pos.coords, state);
+        self.uvs.hash(state);
+        vec3_hash(&self.normal, state);
+        self.tint.hash(state);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ModelElement {
-    pub matrix: Matrix4<f32>,
-    pub shade: bool,
-    pub faces: ModelElementFaces,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ModelElementFaces {
-    pub top: Option<ModelElementFace>,
-    pub bottom: Option<ModelElementFace>,
-    pub north: Option<ModelElementFace>,
-    pub south: Option<ModelElementFace>,
-    pub east: Option<ModelElementFace>,
-    pub west: Option<ModelElementFace>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ModelElementFace {
+struct ModelElementFace {
     pub uvs: [u16; 4],
     pub cullface: BlockFace,
     pub tint: Option<Tint>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// #[derive(Clone, Debug)]
+// pub struct OtherInfo {
+//     pub elements: Vec<ModelElement>,
+// }
+
+// #[derive(Clone, Copy, Debug)]
+// pub struct ModelElement {
+//     pub matrix: Matrix4<f32>,
+//     pub shade: bool,
+//     pub faces: ModelElementFaces,
+// }
+
+// #[derive(Clone, Copy, Debug)]
+// pub struct ModelElementFaces {
+//     pub top: Option<ModelElementFace>,
+//     pub bottom: Option<ModelElementFace>,
+//     pub north: Option<ModelElementFace>,
+//     pub south: Option<ModelElementFace>,
+//     pub east: Option<ModelElementFace>,
+//     pub west: Option<ModelElementFace>,
+// }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tint {
     Biome,
 }
@@ -1118,9 +1025,9 @@ pub struct ModelDisplayPosition {
 #[derive(Clone, Debug, Deserialize)]
 pub struct TemplateElement {
     #[serde(rename = "from")]
-    pub start_pos: Vector3<f32>,
+    pub start_pos: Point3<f32>,
     #[serde(rename = "to")]
-    pub end_pos: Vector3<f32>,
+    pub end_pos: Point3<f32>,
     pub rotation: Option<ModelElementRotation>,
     #[serde(default = "bool_true")]
     pub shade: bool,
@@ -1139,7 +1046,7 @@ pub struct TemplateElementBlockstateRotation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct ModelElementRotation {
-    pub origin: Vector3<f32>,
+    pub origin: Point3<f32>,
     pub angle: f32,
     pub axis: RotationAxis,
     #[serde(default)]

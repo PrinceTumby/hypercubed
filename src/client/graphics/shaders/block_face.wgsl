@@ -53,7 +53,7 @@ fn vs_main(
     let end_uvs = vec2<f32>(instance.uvs.zw) / atlas_size;
     out.uvs = mix(start_uvs, end_uvs, block_vertex.uvs);
     // Normal
-    out.normal = face_matrix * block_vertex.normal;
+    out.normal = y_rotation_matrix * x_rotation_matrix * face_matrix * block_vertex.normal;
     return out;
 }
 

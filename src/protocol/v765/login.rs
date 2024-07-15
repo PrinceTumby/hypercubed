@@ -1,6 +1,6 @@
-pub use crate::protocol::v763::{LoginSuccess, Property, Response};
+pub use crate::protocol::v763::packet::login::{LoginSuccess, Property, Response};
 
-use super::super::super::prelude::*;
+use super::prelude::*;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, PacketWrite)]

@@ -1,12 +1,18 @@
 pub mod chunk;
+pub mod debug;
+pub mod egui_renderer;
 
 use crate::resource;
-use nalgebra::{Isometry3, Matrix4, Point3, UnitQuaternion};
+use nalgebra::{Isometry3, Matrix4, Point3, UnitQuaternion, Vector3};
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
+use wgpu::util::DeviceExt as _;
 use winit::window::Window;
+use ahash::{AHashMap, AHashSet};
+use std::collections::VecDeque;
+use crate::basic_types::AxisDirection;
+use petgraph::graph::DiGraph;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Camera {
     pub pos: Point3<f32>,
     pub proj_matrix: Matrix4<f32>,
@@ -27,34 +33,101 @@ impl Camera {
         )
     }
 
-    pub fn generate_view_matrix_slice(&self) -> [[f32; 4]; 4] {
+    pub fn generate_view_matrix(&self) -> Matrix4<f32> {
         let translate = Isometry3::new(self.pos.coords, nalgebra::zero())
             .inverse()
             .to_matrix();
         let rotate = self.get_rot().inverse().to_homogeneous();
-        let view_matrix = self.proj_matrix * rotate * translate;
+        self.proj_matrix * rotate * translate
+    }
+
+    pub fn generate_reversed_depth_view_matrix(&self) -> Matrix4<f32> {
+        // Using a standard depth buffer had issues with Z-fighting on faraway objects (snow
+        // clipping through spruce leaves from high enough up was a particularly bad case).
+        Matrix4::new_nonuniform_scaling(&Vector3::new(1.0, 1.0, -0.5))
+            .append_translation(&Vector3::new(0.0, 0.0, 0.5))
+            * self.generate_view_matrix()
+    }
+
+    pub fn generate_reversed_depth_view_matrix_slice(&self) -> [[f32; 4]; 4] {
+        *self.generate_reversed_depth_view_matrix().as_ref()
+    }
+
+    pub fn generate_debug_crosshair_view_matrix_slice(&self) -> [[f32; 4]; 4] {
+        let fake_pos = Point3::from(self.get_rot() * Vector3::z().scale(30.0));
+        let up = self.get_rot() * Vector3::y();
+        let look_at = Matrix4::look_at_rh(&fake_pos, &Point3::origin(), &up);
+        let view_matrix = self.proj_matrix * look_at;
         *view_matrix.as_ref()
+    }
+
+    /// Generates a normal and offset for each view clipping plane.
+    /// Planes are in order of left, right, bottom, top, near, far.
+    pub fn generate_clipping_planes(&self) -> [(Vector3<f32>, f32); 6] {
+        /// Converts constants from a plane equation to a normal vector and offset
+        fn convert_abcd(a: f32, b: f32, c: f32, d: f32) -> (Vector3<f32>, f32) {
+            let normal = Vector3::new(a, b, c);
+            let normal_len = normal.magnitude();
+            (normal / normal_len, d / normal_len)
+        }
+        let m = self.generate_view_matrix();
+        [
+            // Left
+            convert_abcd(m.m41 + m.m11, m.m42 + m.m12, m.m43 + m.m13, m.m44 + m.m14),
+            // Right
+            convert_abcd(m.m41 - m.m11, m.m42 - m.m12, m.m43 - m.m13, m.m44 - m.m14),
+            // Bottom
+            convert_abcd(m.m41 + m.m21, m.m42 + m.m22, m.m43 + m.m23, m.m44 + m.m24),
+            // Top
+            convert_abcd(m.m41 - m.m21, m.m42 - m.m22, m.m43 - m.m23, m.m44 - m.m24),
+            // Near
+            convert_abcd(m.m41 + m.m31, m.m42 + m.m32, m.m43 + m.m33, m.m44 + m.m34),
+            // Far
+            convert_abcd(m.m41 - m.m31, m.m42 - m.m32, m.m43 - m.m33, m.m44 - m.m34),
+        ]
     }
 }
 
-#[derive(Debug)]
-pub struct GraphicsResources {
-    pub surface: wgpu::Surface,
+pub struct GraphicsResources<'a> {
+    pub surface: wgpu::Surface<'a>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
 }
 
-#[derive(Debug)]
-pub struct GraphicsState {
-    pub resources: Arc<GraphicsResources>,
+#[derive(Clone, Copy, Debug)]
+pub struct GraphicsOptions {
+    pub vsync: bool,
+}
+
+impl Default for GraphicsOptions {
+    fn default() -> Self {
+        Self {
+            vsync: true,
+        }
+    }
+}
+
+impl GraphicsOptions {
+    pub fn get_present_mode(&self) -> wgpu::PresentMode {
+        match self.vsync {
+            true => wgpu::PresentMode::Fifo,
+            false => wgpu::PresentMode::Immediate,
+        }
+    }
+}
+
+pub struct GraphicsState<'a> {
+    pub resources: Arc<GraphicsResources<'a>>,
     pub config: wgpu::SurfaceConfiguration,
+    pub graphics_options: GraphicsOptions,
     pub block_render_pipeline: wgpu::RenderPipeline,
     pub tinted_block_render_pipeline: wgpu::RenderPipeline,
+    pub custom_block_render_pipeline: wgpu::RenderPipeline,
+    pub debug_crosshair_render_pipeline: wgpu::RenderPipeline,
+    pub egui_renderer: egui_renderer::Renderer,
     pub depth_texture: Texture,
     pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
     pub instance_buffer: wgpu::Buffer,
-    pub num_indices: u32,
     pub block_item_atlas_bind_group: wgpu::BindGroup,
     pub block_registry: resource::block::Registry,
     pub camera: Camera,
@@ -62,17 +135,40 @@ pub struct GraphicsState {
     pub camera_bind_group: wgpu::BindGroup,
     pub camera_bind_group_layout: wgpu::BindGroupLayout,
     pub matrices_bind_group: wgpu::BindGroup,
+    pub debug_crosshair_camera_buffer: wgpu::Buffer,
+    pub debug_crosshair_camera_bind_group: wgpu::BindGroup,
+    pub debug_crosshair_vertex_buffer: wgpu::Buffer,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub clear_color: wgpu::Color,
 }
 
-impl GraphicsState {
-    const DEFAULT_FOV: f32 = 70.0;
-    const DEFAULT_ZNEAR: f32 = 0.01;
-    const DEFAULT_ZFAR: f32 = 10000.0;
+#[derive(Clone, Copy, Debug)]
+pub struct DebugState {
+    pub cull_planes_active: usize,
+    pub rendering_view_frustum: bool,
+    pub cull_camera_moving_with_player: bool,
+    pub cull_camera: Camera,
+    pub cave_cull_check_not_backwards: bool,
+    pub cave_cull_check_frustum: bool,
+    pub cave_cull_check_connectivity: bool,
+    pub cave_cull_render_connectivity: bool,
+    pub cave_cull_render_traversal_graph: bool,
+    pub cave_cull_debug_render_dist: f32,
+    pub max_render_chunks: usize,
+}
+
+pub struct DebugOutput {
+    pub subchunks_culled: usize,
+    pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
+}
+
+impl<'a> GraphicsState<'a> {
+    pub const DEFAULT_FOV: f32 = 70.0;
+    pub const DEFAULT_ZNEAR: f32 = 0.01;
+    pub const DEFAULT_ZFAR: f32 = 1024.0;
 
     #[tracing::instrument(skip_all)]
-    pub async fn new<F>(window: &Window, register_blocks: F) -> anyhow::Result<Self>
+    pub async fn new<F>(window: Window, register_blocks: F) -> anyhow::Result<Self>
     where
         F: FnOnce(
             &mut resource::block::Registry,
@@ -82,7 +178,7 @@ impl GraphicsState {
     {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(Default::default());
-        let surface = unsafe { instance.create_surface(window)? };
+        let surface = instance.create_surface(window)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -94,8 +190,10 @@ impl GraphicsState {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::PUSH_CONSTANTS,
-                    limits: if cfg!(target_arch = "wasm32") {
+                    required_features: wgpu::Features::POLYGON_MODE_LINE
+                        | wgpu::Features::MULTI_DRAW_INDIRECT
+                        | wgpu::Features::INDIRECT_FIRST_INSTANCE,
+                    required_limits: if cfg!(target_arch = "wasm32") {
                         wgpu::Limits::downlevel_webgl2_defaults()
                     } else {
                         wgpu::Limits::default()
@@ -113,12 +211,14 @@ impl GraphicsState {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
+        let graphics_options = GraphicsOptions::default();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: graphics_options.get_present_mode(),
+            desired_maximum_frame_latency: 2,
             alpha_mode: wgpu::CompositeAlphaMode::Opaque,
             view_formats: vec![],
         };
@@ -242,6 +342,7 @@ impl GraphicsState {
             ],
         });
         let depth_texture = Texture::create_depth_texture(&device, &config, "depth_texture");
+        // Block pipelines
         let generic_block_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Chunk Block Pipeline Layout"),
@@ -262,6 +363,26 @@ impl GraphicsState {
             &config,
             &generic_block_pipeline_layout,
         );
+        let custom_block_render_pipeline = chunk::custom_block::create_render_pipeline(
+            &device,
+            &config,
+            &generic_block_pipeline_layout,
+        );
+        // Debug information pipelines
+        let debug_crosshair_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Debug Crosshair Render Pipeline Layout"),
+                bind_group_layouts: &[&camera_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let debug_crosshair_render_pipeline = debug::crosshair::create_render_pipeline(
+            &device,
+            &config,
+            &debug_crosshair_pipeline_layout,
+        );
+        // egui Renderer
+        let egui_renderer = egui_renderer::Renderer::new(&device, &config);
+        // Buffers
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex_buffer"),
             contents: bytemuck::cast_slice(chunk::block_face::VERTICES),
@@ -272,11 +393,6 @@ impl GraphicsState {
             contents: bytemuck::cast_slice(&[] as &[chunk::block_face::Instance]),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("index_buffer"),
-            contents: bytemuck::cast_slice(chunk::block_face::INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
         let proj_matrix = Matrix4::new_perspective(
             (size.width as f32) / (size.height as f32),
             f32::to_radians(GraphicsState::DEFAULT_FOV),
@@ -284,15 +400,15 @@ impl GraphicsState {
             GraphicsState::DEFAULT_ZFAR,
         );
         let camera = Camera {
-            pos: Point3::new(-2.0, 1.0, 2.0),
+            pos: Point3::new(0.0, 124.0, 0.0),
             proj_matrix,
-            yaw: 45.0,
-            pitch: -10.0,
+            yaw: 0.0,
+            pitch: 0.0,
             roll: 0.0,
         };
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&camera.generate_view_matrix_slice()),
+            contents: bytemuck::cast_slice(&camera.generate_reversed_depth_view_matrix_slice()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -342,6 +458,30 @@ impl GraphicsState {
                 },
             ],
         });
+        // Debug buffers
+        let debug_crosshair_camera_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Debug Crosshair Camera Buffer"),
+                contents: bytemuck::cast_slice(
+                    &camera.generate_debug_crosshair_view_matrix_slice(),
+                ),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let debug_crosshair_camera_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Debug Crosshair Camera Bind Group"),
+                layout: &camera_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: debug_crosshair_camera_buffer.as_entire_binding(),
+                }],
+            });
+        let debug_crosshair_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Debug Crosshair Vertex Buffer"),
+                contents: bytemuck::cast_slice(debug::crosshair::VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
         Ok(Self {
             resources: Arc::new(GraphicsResources {
                 surface,
@@ -349,13 +489,15 @@ impl GraphicsState {
                 queue,
             }),
             config,
+            graphics_options,
             block_render_pipeline,
             tinted_block_render_pipeline,
+            custom_block_render_pipeline,
+            debug_crosshair_render_pipeline,
+            egui_renderer,
             depth_texture,
             vertex_buffer,
-            index_buffer,
             instance_buffer,
-            num_indices: (chunk::block_face::INDICES.len() * 3) as u32,
             block_item_atlas_bind_group,
             block_registry,
             camera,
@@ -363,6 +505,9 @@ impl GraphicsState {
             camera_bind_group,
             camera_bind_group_layout,
             matrices_bind_group,
+            debug_crosshair_camera_buffer,
+            debug_crosshair_camera_bind_group,
+            debug_crosshair_vertex_buffer,
             size,
             // Minecraft plains biome sky color
             clear_color: wgpu::Color {
@@ -398,14 +543,31 @@ impl GraphicsState {
     }
 
     pub fn render(
-        &self,
-        block_faces: &chunk::block_face::InstanceList,
-        tinted_block_faces: &chunk::tinted_block_face::InstanceList,
-    ) -> Result<(), wgpu::SurfaceError> {
+        &mut self,
+        subchunks: &AHashMap<[i32; 3], chunk::Subchunk>,
+        loaded_chunks: &AHashSet<[i32; 2]>,
+        egui_ctx: &egui::Context,
+        egui_full_output: egui::output::FullOutput,
+        debug_state: &DebugState,
+    ) -> Result<DebugOutput, wgpu::SurfaceError> {
+        let pixels_per_point = egui_full_output.pixels_per_point;
+        let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
         self.resources.queue.write_buffer(
             &self.camera_buffer,
             0,
-            bytemuck::cast_slice(&self.camera.generate_view_matrix_slice()),
+            bytemuck::cast_slice(&self.camera.generate_reversed_depth_view_matrix_slice()),
+        );
+        self.resources.queue.write_buffer(
+            &self.debug_crosshair_camera_buffer,
+            0,
+            bytemuck::cast_slice(&self.camera.generate_debug_crosshair_view_matrix_slice()),
+        );
+        let egui_render_data = self.egui_renderer.prepare(
+            &self.resources,
+            &self.size,
+            egui_full_output.textures_delta.set,
+            egui_primitives,
+            pixels_per_point,
         );
         let output = self.resources.surface.get_current_texture()?;
         let view = output
@@ -418,6 +580,8 @@ impl GraphicsState {
                     label: Some("Render Encoder"),
                 });
         // Main render pass
+        let mut subchunks_skipped = 0;
+        let mut subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])> = Vec::new();
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -432,7 +596,7 @@ impl GraphicsState {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_texture.view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -440,40 +604,338 @@ impl GraphicsState {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            // Base block faces
-            {
-                render_pass.set_pipeline(&self.block_render_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass
-                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.set_vertex_buffer(1, block_faces.get_instances_slice());
-                render_pass.draw_indexed(0..self.num_indices, 0, 0..block_faces.num_instances());
+            //let camera_clipping_planes = self.camera.generate_clipping_planes();
+            let camera_clipping_planes = debug_state.cull_camera.generate_clipping_planes();
+            let mut rendered_chunks: AHashSet<[i32; 3]> = AHashSet::new();
+            let mut visited_chunks: AHashSet<[i32; 3]> = AHashSet::new();
+            #[derive(Clone, Copy)]
+            struct QueuedChunk {
+                pub coords: [i32; 3],
+                pub from_dir: Option<AxisDirection>,
+                pub back_travel_amount: f32,
             }
-            // Tinted block faces
+            // NOTE:
+            // - DDA to make a "as the spectator clips" path, compare to actual path taken
+            // - Track winding amount
+            // 
+            //let mut subchunk_graph: DiGraph<QueuedChunk, ()> = DiGraph::new();
+            let mut chunk_queue: VecDeque<QueuedChunk> = VecDeque::new();
             {
-                render_pass.set_pipeline(&self.tinted_block_render_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass
-                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.set_vertex_buffer(1, tinted_block_faces.get_instances_slice());
-                render_pass.draw_indexed(
-                    0..self.num_indices,
-                    0,
-                    0..tinted_block_faces.num_instances(),
-                );
+                const MIN_HEIGHT_I32: i32 = -64;
+                let camera_pos = debug_state.cull_camera.pos;
+                let camera_x = (camera_pos.x.floor() as i32).div_euclid(16);
+                let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32).div_euclid(16);
+                let camera_z = (camera_pos.z.floor() as i32).div_euclid(16);
+                chunk_queue.push_back(QueuedChunk {
+                    coords: [camera_x, camera_y, camera_z],
+                    from_dir: None,
+                    back_travel_amount: 0.0,
+                    //expand_to_neighbours: true,
+                });
+                visited_chunks.insert([camera_x, camera_y, camera_z]);
+                //if subchunks.contains_key(&[camera_x, camera_y, camera_z]) {
+                //    chunk_queue.push_back(([camera_x, camera_y, camera_z], None));
+                //} else {
+                //    chunk_queue.extend(subchunks.iter().map(|(coords, _)| (*coords, None)));
+                //}
             }
+            let mut num_subchunks_rendered = 0;
+            'subchunk_loop: while let Some(queued_chunk) = chunk_queue.pop_front() {
+                let QueuedChunk {
+                    coords: chunk_coords,
+                    from_dir,
+                    back_travel_amount: chunk_back_travel_amount,
+                    //expand_to_neighbours: chunk_expand_to_neighbours,
+                } = queued_chunk;
+                let subchunk_maybe = subchunks.get(&chunk_coords);
+                // Visit neighbours
+                {
+                    let [chunk_x, chunk_y, chunk_z] = chunk_coords;
+                    let neighbour_chunks = [
+                        ([chunk_x - 1, chunk_y, chunk_z], AxisDirection::West),
+                        ([chunk_x + 1, chunk_y, chunk_z], AxisDirection::East),
+                        ([chunk_x, chunk_y, chunk_z - 1], AxisDirection::North),
+                        ([chunk_x, chunk_y, chunk_z + 1], AxisDirection::South),
+                        ([chunk_x, chunk_y - 1, chunk_z], AxisDirection::Down),
+                        ([chunk_x, chunk_y + 1, chunk_z], AxisDirection::Up),
+                    ];
+                    let facing_dir = debug_state.cull_camera
+                        .get_rot()
+                        .transform_vector(&-Vector3::z());
+                    'neighbour_loop: for (neighbour_coord, to_dir) in neighbour_chunks {
+                        const WORLD_HEIGHT_I32: i32 = 384;
+                        if neighbour_coord[1] < 0 || neighbour_coord[1] > WORLD_HEIGHT_I32 / 16 {
+                            continue;
+                        }
+                        if !loaded_chunks.contains(&[neighbour_coord[0], neighbour_coord[2]]) {
+                            continue;
+                        }
+                        //// Check we're not going backwards
+                        //if debug_state.cave_cull_check_not_backwards {
+                        //    if facing_dir.dot(&to_dir.as_vector()) < 0.4 {
+                        //        continue;
+                        //    }
+                        //}
+                        // Check we're haven't gone backwards too much
+                        let back_travel_diff = facing_dir.dot(&to_dir.as_vector());
+                        let neighbour_back_travel_amount =
+                            (chunk_back_travel_amount - back_travel_diff).max(0.0);
+                        if debug_state.cave_cull_check_not_backwards {
+                            if neighbour_back_travel_amount >= 1.25 {
+                                continue;
+                            }
+                        }
+                        if let Some(from_dir) = from_dir {
+                            //// Check we're not going backwards
+                            //if debug_state.cave_cull_check_not_backwards {
+                            //    let chunk_centre = Point3::new(
+                            //        chunk_coords[0] as f32,
+                            //        chunk_coords[1] as f32,
+                            //        chunk_coords[2] as f32,
+                            //    );
+                            //    let neighbour_centre = Point3::new(
+                            //        neighbour_coord[0] as f32,
+                            //        neighbour_coord[1] as f32,
+                            //        neighbour_coord[2] as f32,
+                            //    );
+                            //    let from_coords = chunk_centre + from_dir.as_vector();
+                            //    let dir_change = (neighbour_centre - from_coords).normalize();
+                            //    if facing_dir.dot(&dir_change) < -0.75 {
+                            //        continue;
+                            //    }
+                            //}
+                            // Check we can go to the neighbour from the last subchunk through this
+                            // subchunk
+                            if debug_state.cave_cull_check_connectivity {
+                                if let Some(subchunk) = subchunk_maybe {
+                                    if !subchunk.connected_faces.connects(&from_dir, &to_dir) {
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        // Check neighbour lies in camera frustum
+                        if debug_state.cave_cull_check_frustum {
+                            const MIN_HEIGHT_I32: i32 = -64;
+                            let start_coords = [
+                                (neighbour_coord[0] * 16) as f32,
+                                (neighbour_coord[1] * 16 + MIN_HEIGHT_I32) as f32,
+                                (neighbour_coord[2] * 16) as f32,
+                            ];
+                            let end_coords = start_coords.map(|n| n + 16.0);
+                            for (i, clip_plane) in camera_clipping_planes.into_iter().enumerate() {
+                                let (normal, offset) = clip_plane;
+                                if i >= debug_state.cull_planes_active {
+                                    break;
+                                }
+                                let inward_point = Point3::new(
+                                    match normal.x > 0.0 {
+                                        false => start_coords[0],
+                                        true => end_coords[0],
+                                    },
+                                    match normal.y > 0.0 {
+                                        false => start_coords[1],
+                                        true => end_coords[1],
+                                    },
+                                    match normal.z > 0.0 {
+                                        false => start_coords[2],
+                                        true => end_coords[2],
+                                    },
+                                );
+                                if inward_point.coords.dot(&normal) + offset < 0.0 {
+                                    continue 'neighbour_loop;
+                                }
+                            }
+                        }
+                        // Check we haven't already rendered this subchunk
+                        if visited_chunks.contains(&neighbour_coord) {
+                            continue;
+                        }
+                        visited_chunks.insert(neighbour_coord);
+                        chunk_queue.push_back(QueuedChunk {
+                            coords: neighbour_coord,
+                            from_dir: Some(to_dir.invert()),
+                            back_travel_amount: neighbour_back_travel_amount,
+                        });
+                        subchunk_traversal_graph.push((chunk_coords, neighbour_coord));
+                    }
+                }
+                let Some(subchunk) = subchunk_maybe else {
+                    continue;
+                };
+                //// Frustum culling
+                //{
+                //    let start_coords = subchunk.start_coords.map(|n| n as f32);
+                //    const AXIS_LEN: f32 = 16.0;
+                //    let end_coords = start_coords.map(|n| n + AXIS_LEN);
+                //    //for (normal, offset) in camera_clipping_planes {
+                //    for (i, clip_plane) in camera_clipping_planes.into_iter().enumerate() {
+                //        let (normal, offset) = clip_plane;
+                //        if i >= debug_state.cull_planes_active {
+                //            break;
+                //        }
+                //        let inward_point = Point3::new(
+                //            match normal.x > 0.0 {
+                //                false => start_coords[0],
+                //                true => end_coords[0],
+                //            },
+                //            match normal.y > 0.0 {
+                //                false => start_coords[1],
+                //                true => end_coords[1],
+                //            },
+                //            match normal.z > 0.0 {
+                //                false => start_coords[2],
+                //                true => end_coords[2],
+                //            },
+                //        );
+                //        if inward_point.coords.dot(&normal) + offset < 0.0 {
+                //            subchunks_skipped += 1;
+                //            continue 'subchunk_loop;
+                //        }
+                //    }
+                //}
+                if num_subchunks_rendered >= debug_state.max_render_chunks {
+                    break;
+                } else {
+                    num_subchunks_rendered += 1;
+                }
+                rendered_chunks.insert(chunk_coords);
+                // Base block faces
+                {
+                    render_pass.set_pipeline(&self.block_render_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+                    render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    render_pass.set_vertex_buffer(1, subchunk.block_faces.get_slice());
+                    render_pass.draw(0..4, 0..subchunk.block_faces.num_items());
+                }
+                // Tinted block faces
+                {
+                    render_pass.set_pipeline(&self.tinted_block_render_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+                    render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    render_pass.set_vertex_buffer(1, subchunk.tinted_block_faces.get_slice());
+                    render_pass.draw(0..4, 0..subchunk.tinted_block_faces.num_items());
+                }
+                // Custom blocks
+                if let Some(custom_block_info) = subchunk.custom_block_info.as_ref() {
+                    render_pass.set_pipeline(&self.custom_block_render_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+                    render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, custom_block_info.vertices.get_slice());
+                    render_pass.set_index_buffer(
+                        custom_block_info.indices.get_slice(),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    render_pass.set_vertex_buffer(1, custom_block_info.instances.get_slice());
+                    render_pass.multi_draw_indexed_indirect(
+                        custom_block_info.draw_args.get_buffer(),
+                        0,
+                        custom_block_info.draw_args.num_items(),
+                    );
+                }
+            }
+            {
+                let subchunk_coord_set: AHashSet<_> = subchunks.keys().copied().collect();
+                subchunks_skipped = subchunk_coord_set.difference(&rendered_chunks).count();
+            }
+            //'subchunk_loop: for subchunk in subchunks.values() {
+            //    // Frustum culling
+            //    {
+            //        let start_coords = subchunk.start_coords.map(|n| n as f32);
+            //        const AXIS_LEN: f32 = 16.0;
+            //        let end_coords = start_coords.map(|n| n + AXIS_LEN);
+            //        //for (normal, offset) in camera_clipping_planes {
+            //        for (i, clip_plane) in camera_clipping_planes.into_iter().enumerate() {
+            //            let (normal, offset) = clip_plane;
+            //            if i >= debug_state.cull_planes_active {
+            //                break;
+            //            }
+            //            let inward_point = Point3::new(
+            //                match normal.x > 0.0 {
+            //                    false => start_coords[0],
+            //                    true => end_coords[0],
+            //                },
+            //                match normal.y > 0.0 {
+            //                    false => start_coords[1],
+            //                    true => end_coords[1],
+            //                },
+            //                match normal.z > 0.0 {
+            //                    false => start_coords[2],
+            //                    true => end_coords[2],
+            //                },
+            //            );
+            //            if inward_point.coords.dot(&normal) + offset < 0.0 {
+            //                subchunks_skipped += 1;
+            //                continue 'subchunk_loop;
+            //            }
+            //        }
+            //    }
+            //    // Base block faces
+            //    {
+            //        render_pass.set_pipeline(&self.block_render_pipeline);
+            //        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            //        render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+            //        render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+            //        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            //        render_pass.set_vertex_buffer(1, subchunk.block_faces.get_slice());
+            //        render_pass.draw(0..4, 0..subchunk.block_faces.num_items());
+            //    }
+            //    // Tinted block faces
+            //    {
+            //        render_pass.set_pipeline(&self.tinted_block_render_pipeline);
+            //        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            //        render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+            //        render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+            //        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            //        render_pass.set_vertex_buffer(1, subchunk.tinted_block_faces.get_slice());
+            //        render_pass.draw(0..4, 0..subchunk.tinted_block_faces.num_items());
+            //    }
+            //    // Custom blocks
+            //    if let Some(custom_block_info) = subchunk.custom_block_info.as_ref() {
+            //        render_pass.set_pipeline(&self.custom_block_render_pipeline);
+            //        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            //        render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+            //        render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+            //        render_pass.set_vertex_buffer(0, custom_block_info.vertices.get_slice());
+            //        render_pass.set_index_buffer(
+            //            custom_block_info.indices.get_slice(),
+            //            wgpu::IndexFormat::Uint32,
+            //        );
+            //        render_pass.set_vertex_buffer(1, custom_block_info.instances.get_slice());
+            //        render_pass.multi_draw_indexed_indirect(
+            //            custom_block_info.draw_args.get_buffer(),
+            //            0,
+            //            custom_block_info.draw_args.num_items(),
+            //        );
+            //    }
+            //}
+            // Debug crosshair
+            {
+                render_pass.set_pipeline(&self.debug_crosshair_render_pipeline);
+                render_pass.set_bind_group(0, &self.debug_crosshair_camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.debug_crosshair_vertex_buffer.slice(..));
+                render_pass.draw(0..6, 0..1);
+            }
+            //println!("Skipped {subchunks_skipped} out of {}", subchunks.len());
+            // egui
+            self.egui_renderer
+                .render(&mut render_pass, &egui_render_data);
         }
         self.resources
             .queue
             .submit(std::iter::once(encoder.finish()));
         output.present();
-        Ok(())
+        self.egui_renderer
+            .free_textures(&egui_full_output.textures_delta.free);
+        Ok(DebugOutput {
+            subchunks_culled: subchunks_skipped,
+            subchunk_traversal_graph,
+        })
     }
 }
 

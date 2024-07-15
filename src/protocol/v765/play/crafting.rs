@@ -1,4 +1,4 @@
-use super::super::super::prelude::*;
+use super::super::prelude::*;
 use nom::branch::alt;
 use nom::combinator::verify;
 use nom::multi::count;
@@ -45,9 +45,12 @@ impl Deserialize for Recipe {
         macro_rules! recipe_parser {
             ($( $tag_value:expr => ($deserializer:expr, $data_func:expr) $(,)? )+) => {{
                 alt(( $( tuple((
+                    // Type identifier length and data
                     verify(VarInt::deserialize, |VarInt(value)| *value == $tag_value.len() as i32),
                     tag($tag_value.as_slice()),
+                    // Recipe ID
                     String::deserialize,
+                    // Extra data
                     $deserializer,
                 )).map(|(_len, _type, id, data)| Recipe { id, data: $data_func(data) }), )+ ))
             }}
@@ -114,10 +117,10 @@ pub struct ShapelessRecipe {
 
 #[derive(Clone, Debug)]
 pub struct ShapedRecipe {
-    pub width: i32,
-    pub height: i32,
     pub group: String,
     pub category: Category,
+    pub width: i32,
+    pub height: i32,
     pub ingredients: Vec<Ingredient>,
     pub result: Slot,
     pub show_notification: bool,
@@ -125,11 +128,11 @@ pub struct ShapedRecipe {
 
 impl Deserialize for ShapedRecipe {
     fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        let (rest, (VarInt(width), VarInt(height), group, category)) = tuple((
-            VarInt::deserialize,
-            VarInt::deserialize,
+        let (rest, (group, category, VarInt(width), VarInt(height))) = tuple((
             String::deserialize,
             Category::deserialize,
+            VarInt::deserialize,
+            VarInt::deserialize,
         ))(input)?;
         let (rest, ingredients) = count(Ingredient::deserialize, (width * height) as usize)(rest)?;
         let (rest, (result, show_notification)) =

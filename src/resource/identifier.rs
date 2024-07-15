@@ -3,7 +3,7 @@ pub use string_cache::DefaultAtom as Atom;
 use smallvec::SmallVec;
 use thiserror::Error;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Identifier {
     pub namespace: Atom,
     pub path_prefix_segments: SmallVec<[Atom; 2]>,

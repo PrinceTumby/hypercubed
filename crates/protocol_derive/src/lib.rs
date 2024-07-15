@@ -66,7 +66,22 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
                 }
             },
         },
-        _ => panic!("`Serialize` can only be derived for structs"),
+        Data::Enum(_enum_data) => {
+            quote! {
+                fn serialize_to<W: ::std::io::Write>(&self, writer: &mut W)
+                    -> ::std::io::Result<()>
+                {
+                    VarInt(*self as i32).serialize_into(writer)
+                }
+
+                fn serialize_into<W: ::std::io::Write>(self, writer: &mut W)
+                    -> ::std::io::Result<()>
+                {
+                    VarInt(self as i32).serialize_into(writer)
+                }
+            }
+        }
+        _ => panic!("`Serialize` can only be derived for structs and enums"),
     };
     let output = quote! {
         impl #impl_generics Serialize for #name #ty_generics #where_clause {

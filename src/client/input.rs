@@ -14,6 +14,7 @@ pub struct PlayControlState {
     pub right: bool,
     pub jump: bool,
     pub sneak: bool,
+    pub sprint: bool,
     // TODO Replace these with mouse movement
     pub look_up: bool,
     pub look_down: bool,
@@ -40,7 +41,9 @@ impl PlayControlState {
             KeyCode::KeyS => self.backward = is_pressed,
             KeyCode::KeyA => self.left = is_pressed,
             KeyCode::KeyD => self.right = is_pressed,
-            // KeyCode::Space => self.jump = is_pressed,
+            // Toggle sprint
+            KeyCode::ControlLeft if is_pressed => self.sprint = !self.sprint,
+            //KeyCode::Space => self.jump = is_pressed,
             KeyCode::BracketRight => self.jump = is_pressed,
             KeyCode::ShiftLeft => self.sneak = is_pressed,
             // TODO Replace these with mouse movement
@@ -54,9 +57,10 @@ impl PlayControlState {
 
     pub fn update_camera(&mut self, camera: &mut Camera, delta_time: f32) {
         let camera_rot = camera.get_rot();
-        let forward_dir = camera_rot * *Vector3::z_axis() * delta_time;
-        let right_dir = camera_rot * *Vector3::x_axis() * delta_time;
-        let up_dir = camera_rot * *Vector3::y_axis() * delta_time;
+        let speed = if self.sprint { 15.0 } else { 2.0 };
+        let forward_dir = camera_rot * *Vector3::z_axis() * delta_time * speed;
+        let right_dir = camera_rot * *Vector3::x_axis() * delta_time * speed;
+        let up_dir = camera_rot * *Vector3::y_axis() * delta_time * speed;
         const LOOK_SPEED: f32 = 90.0;
         if self.forward {
             camera.pos -= forward_dir;

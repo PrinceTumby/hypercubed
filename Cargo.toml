@@ -9,19 +9,23 @@ protocol_verbose = []
 [dependencies]
 ahash = { version = "0.8", features = [ "serde" ] }
 anyhow = "1"
+bimap = "0.6"
 bitfield = "0.14"
 bytebuffer = "2"
 bytemuck = { version = "1.14", features = [ "derive" ] }
+env_logger = "0.10"
 flate2 = "1"
 image = { version = "0.24", features = [ "png" ] }
 indexmap = { version = "2.1", features = [ "serde" ] }
 lazy_static = "1.4"
+log = "0.4"
 nalgebra = { version = "0.32", features = [ "serde-serialize" ] }
 nom-supreme = "0.8"
 nom = "7"
+petgraph = "0.6"
 pollster = "0.3"
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
-quartz_nbt = "0.2"
+quartz_nbt = { version = "0.2", features = [ "serde" ] }
 rand = "0.8"
 serde = { version = "1", features = [ "derive" ] }
 serde_json = "1"
@@ -33,10 +37,12 @@ tracing-subscriber = "0.3"
 tracing-tracy = "0.10"
 tracing = "0.1"
 uuid = { version = "1.4", features = [ "v3", "v4" ] }
-wgpu = "0.18"
+wgpu = "0.20"
 winit = { version = "0.29", features = [ "rwh_05" ] }
-log = "0.4"
-env_logger = "0.10"
+egui = { version = "0.27", features = [ "bytemuck" ] }
 
-[profile.dev.package.image]
-opt-level = 3
+[profile.release]
+debug = 1
+
+[profile.dev]
+opt-level = 1
