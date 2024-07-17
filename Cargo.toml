@@ -14,6 +14,7 @@ bitfield = "0.14"
 bytebuffer = "2"
 bytemuck = { version = "1.14", features = [ "derive" ] }
 env_logger = "0.10"
+fixedbitset = "0.5"
 flate2 = "1"
 image = { version = "0.24", features = [ "png" ] }
 indexmap = { version = "2.1", features = [ "serde" ] }

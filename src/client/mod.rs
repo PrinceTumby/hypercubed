@@ -8,6 +8,7 @@ use std::time::Instant;
 use winit::event::{Event, StartCause, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
+use fixedbitset::FixedBitSet;
 
 use super::resource;
 use crate::identifier;
@@ -53,6 +54,21 @@ pub(crate) async fn window_run(
         .get_index_from_identifier(&identifier!("minecraft:spruce_leaves"))
         .unwrap();
     let chunk_gen_start_time = std::time::Instant::now();
+    const AXIS_LEN: usize = 16;
+    const AXIS_LEN_I32: i32 = AXIS_LEN as i32;
+    const MIN_HEIGHT_I32: i32 = -64;
+    const MAX_HEIGHT_I32: i32 = 319;
+    // Used in subchunk connectivity graph generation.
+    // Compiler doesn't seem to be smart enough to hoist the allocation if we have it further down,
+    // as putting here gives a performance boost.
+    // Y major, then Z, then X.
+    let mut unchecked_blocks = FixedBitSet::with_capacity(AXIS_LEN.pow(3));
+    #[inline]
+    fn coords_to_bit_idx(coords: [i8; 3]) -> usize {
+        let [x, y, z] = coords.map(|n| n as usize);
+        //y * AXIS_LEN.pow(2) + z * AXIS_LEN + x
+        y << 8 | z << 4 | x
+    }
     'chunk_loop: for (&(chunk_x, chunk_z), chunk_sections) in chunks.iter() {
         loaded_chunks.insert([chunk_x, chunk_z]);
         'subchunk_loop: for (section_i, chunk_section) in chunk_sections.iter().enumerate() {
@@ -80,10 +96,6 @@ pub(crate) async fn window_run(
             let mut custom_block_vertices = Vec::new();
             let mut custom_block_indices = Vec::new();
             let mut added_custom_blocks = AHashMap::new();
-            const AXIS_LEN: usize = 16;
-            const AXIS_LEN_I32: i32 = AXIS_LEN as i32;
-            const MIN_HEIGHT_I32: i32 = -64;
-            const MAX_HEIGHT_I32: i32 = 319;
             for y in 0..AXIS_LEN {
                 let global_y = ((AXIS_LEN * section_i + y) as i32 + MIN_HEIGHT_I32) as f32;
                 for z in 0..AXIS_LEN {
@@ -379,8 +391,6 @@ pub(crate) async fn window_run(
                         };
                     }
                     Palette::Palette(indices) => {
-                        let mut all_opaque = true;
-                        let mut all_non_opaque = true;
                         let mut num_opaque = 0;
                         for index in indices {
                             let blockstate_info = &graphics_state.block_registry.global_palette
@@ -425,8 +435,8 @@ pub(crate) async fn window_run(
                 }
                 let mut current_group: usize = 0;
                 let mut current_group_faces = FaceSet::empty();
-                let mut unchecked_blocks: AHashSet<[i8; 3]> = AHashSet::new();
                 let mut group_faces: Vec<FaceSet> = Vec::new();
+                unchecked_blocks.clear();
                 // Add all non-opaque blocks
                 for x in 0..AXIS_LEN {
                     for y in 0..AXIS_LEN {
@@ -437,15 +447,15 @@ pub(crate) async fn window_run(
                             let block_info = &graphics_state
                                 .block_registry[blockstate_info.block_index];
                             if !block_info.properties.opaque {
-                                let coords = [x as i8, y as i8, z as i8];
-                                unchecked_blocks.insert(coords);
+                                let bit_index = y * AXIS_LEN.pow(2) + z * AXIS_LEN + x;
+                                unchecked_blocks.insert(bit_index);
                             }
                         }
                     }
                 }
                 // Flood fill from each non-opaque block, to split all the blocks into groups.
                 let mut queue: AHashSet<[i8; 3]> = AHashSet::new();
-                while !queue.is_empty() || !unchecked_blocks.is_empty() {
+                while !queue.is_empty() || !unchecked_blocks.is_clear() {
                     let [x, y, z] = queue.iter()
                         .copied()
                         .next()
@@ -456,20 +466,41 @@ pub(crate) async fn window_run(
                         .unwrap_or_else(|| {
                             // No more blocks in queue, make a new group and grab a new block
                             // that hasn't been checked yet.
-                            let coord = *unchecked_blocks.iter().next().unwrap();
+                            let coord = {
+                                let bit_index = unchecked_blocks.minimum().unwrap();
+                                //[
+                                //    (bit_index / AXIS_LEN.pow(2)) as i8,
+                                //    ((bit_index / AXIS_LEN) % AXIS_LEN) as i8,
+                                //    (bit_index % AXIS_LEN) as i8,
+                                //]
+                                [
+                                    (bit_index & 0xF) as i8,
+                                    ((bit_index >> 8) & 0xF) as i8,
+                                    ((bit_index >> 4) & 0xF) as i8,
+                                ]
+                            };
                             group_faces.push(current_group_faces);
                             current_group += 1;
                             current_group_faces = FaceSet::empty();
                             coord
                         });
-                    unchecked_blocks.remove(&[x, y, z]);
+                    //dbg!([x, y, z]);
+                    //let dbg_bit_index = coords_to_bit_idx([x, y, z]);
+                    //dbg!(dbg_bit_index);
+                    //let dbg_coords = [
+                    //    ((dbg_bit_index >> 8) & 0xF) as i8,
+                    //    ((dbg_bit_index >> 4) & 0xF) as i8,
+                    //    (dbg_bit_index & 0xF) as i8,
+                    //];
+                    //dbg!(dbg_coords);
+                    unchecked_blocks.remove(coords_to_bit_idx([x, y, z]));
                     let surrounding_block_coords = [
                         [x - 1, y, z],
                         [x + 1, y, z],
-                        [x, y - 1, z],
-                        [x, y + 1, z],
                         [x, y, z - 1],
                         [x, y, z + 1],
+                        [x, y - 1, z],
+                        [x, y + 1, z],
                     ];
                     for new_coord in surrounding_block_coords {
                         let [new_x, new_y, new_z] = new_coord;
@@ -486,7 +517,7 @@ pub(crate) async fn window_run(
                             current_group_faces.add_dir(AxisDirection::North);
                         } else if new_z >= AXIS_LEN as i8 {
                             current_group_faces.add_dir(AxisDirection::South);
-                        } else if unchecked_blocks.contains(&new_coord) {
+                        } else if unchecked_blocks.contains(coords_to_bit_idx(new_coord)) {
                             queue.insert(new_coord);
                         }
                     }
