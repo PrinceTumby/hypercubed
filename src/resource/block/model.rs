@@ -1,5 +1,6 @@
 use super::{texture, Identifier, RightAngleRotation};
 use crate::resource::manager::{get_resource_file, ResourceType};
+use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
 use ahash::AHashMap;
 use anyhow::{anyhow, bail, ensure, Context};
 use bitfield::bitfield;
@@ -11,6 +12,10 @@ use std::rc::Rc;
 pub struct ModelCache {
     pub completed_models: AHashMap<Identifier, Rc<ModelType>>,
     pub templates: AHashMap<Identifier, Rc<Template>>,
+    // Once all custom blocks have been loaded, these two lists are converted into GPU buffers for
+    // rendering.
+    pub custom_block_vertices: Vec<GraphicsCustomBlockVertex>,
+    pub custom_block_indices: Vec<u32>,
 }
 
 impl ModelCache {
@@ -18,6 +23,8 @@ impl ModelCache {
         Self {
             completed_models: AHashMap::new(),
             templates: AHashMap::new(),
+            custom_block_vertices: Vec::new(),
+            custom_block_indices: Vec::new(),
         }
     }
 
@@ -124,7 +131,7 @@ impl ModelCache {
         if !complete {
             bail!("combined template {final_template:?} cannot be finalized");
         }
-        Self::finalize_model(final_template, texture_atlas).map(Rc::new)
+        self.finalize_model(final_template, texture_atlas).map(Rc::new)
     }
 
     /// If `skip_finalizing_model` is specified, this will return the model's template instead of
@@ -232,7 +239,7 @@ impl ModelCache {
         };
         // If template is complete, then we convert it to a finished model
         if !skip_finalizing_model && complete {
-            let completed_model = Rc::new(Self::finalize_model(model_template, texture_atlas)?);
+            let completed_model = Rc::new(self.finalize_model(model_template, texture_atlas)?);
             assert!(
                 self.completed_models
                     .insert(location.clone(), completed_model.clone())
@@ -247,6 +254,7 @@ impl ModelCache {
 
     #[tracing::instrument(skip(texture_atlas))]
     fn finalize_model(
+        &mut self,
         model_template: Template,
         texture_atlas: &mut texture::AtlasBuilder,
     ) -> anyhow::Result<ModelType> {
@@ -514,56 +522,9 @@ impl ModelCache {
                     ],
                     _ => unreachable!(),
                 };
-                // let face_vertices = match face_i {
-                //     // Top
-                //     0 => [
-                //         Vector3::new(-0.5, 0.5, -0.5),
-                //         Vector3::new(0.5, 0.5, -0.5),
-                //         Vector3::new(-0.5, 0.5, 0.5),
-                //         Vector3::new(0.5, 0.5, 0.5),
-                //     ],
-                //     // Bottom
-                //     1 => [
-                //         Vector3::new(-0.5, -0.5, 0.5),
-                //         Vector3::new(0.5, -0.5, 0.5),
-                //         Vector3::new(-0.5, -0.5, -0.5),
-                //         Vector3::new(0.5, -0.5, -0.5),
-                //     ],
-                //     // North
-                //     2 => [
-                //         Vector3::new(-0.5, -0.5, -0.5),
-                //         Vector3::new(0.5, -0.5, -0.5),
-                //         Vector3::new(-0.5, 0.5, -0.5),
-                //         Vector3::new(0.5, 0.5, -0.5),
-                //     ],
-                //     // South
-                //     3 => [
-                //         Vector3::new(0.5, -0.5, 0.5),
-                //         Vector3::new(-0.5, -0.5, 0.5),
-                //         Vector3::new(0.5, 0.5, 0.5),
-                //         Vector3::new(-0.5, 0.5, 0.5),
-                //     ],
-                //     // East
-                //     4 => [
-                //         Vector3::new(0.5, -0.5, -0.5),
-                //         Vector3::new(0.5, -0.5, 0.5),
-                //         Vector3::new(0.5, 0.5, -0.5),
-                //         Vector3::new(0.5, 0.5, 0.5),
-                //     ],
-                //     // West
-                //     5 => [
-                //         Vector3::new(-0.5, -0.5, 0.5),
-                //         Vector3::new(-0.5, -0.5, -0.5),
-                //         Vector3::new(-0.5, 0.5, 0.5),
-                //         Vector3::new(-0.5, 0.5, -0.5),
-                //     ],
-                //     _ => unreachable!(),
-                // };
                 let face_normal = FACE_NORMALS[face_i];
                 let num_converted_vertices = u32::try_from(converted_vertices.len()).unwrap();
                 let face_indices = FACE_INDICES.map(|index| index + num_converted_vertices);
-                let size = end - start;
-                let origin = Point3::from((start.coords + end.coords) / 2.0);
                 let basic_rotation = match template_element.rotation {
                     None => Matrix4::identity(),
                     Some(template_rotation) => {
@@ -625,9 +586,6 @@ impl ModelCache {
                         y_blockstate_rot * x_blockstate_rot * basic_rotation
                     }
                 };
-                // let complete_matrix = rotation
-                //     .prepend_translation(&origin)
-                //     .prepend_nonuniform_scaling(&size);
                 let complete_matrix = rotation;
                 let mut transformed_vertices = face_vertices.map(|vertex| ModelVertex {
                     local_pos: complete_matrix.transform_point(&vertex),
@@ -643,9 +601,30 @@ impl ModelCache {
                 converted_indices.extend(face_indices.into_iter());
             }
         }
+        // Add converted model for later rendering
+        let start_vertex: u32 =
+            self.custom_block_vertices.len().try_into().unwrap();
+        let start_index: u32 =
+            self.custom_block_indices.len().try_into().unwrap();
+        let num_indices: u32 =
+            converted_indices.len().try_into().unwrap();
+        self.custom_block_vertices.extend(converted_vertices.iter().map(
+            |v| GraphicsCustomBlockVertex {
+                pos: *v.local_pos.coords.as_ref(),
+                uvs: v.uvs,
+                normal: *v.normal.as_ref(),
+                tint_percentage: match v.tint {
+                    None => 0.0,
+                    Some(Tint::Biome) => 1.0,
+                },
+            },
+        ));
+        self.custom_block_indices.extend(converted_indices.iter().copied());
         Ok(ModelType::Other(OtherInfo {
             vertices: converted_vertices,
             indices: converted_indices,
+            start_vertex,
+            start_index_and_len: (start_index, num_indices),
         }))
     }
 
@@ -864,6 +843,8 @@ pub struct LiquidInfo {
 pub struct OtherInfo {
     pub vertices: Vec<ModelVertex>,
     pub indices: Vec<u32>,
+    pub start_vertex: u32,
+    pub start_index_and_len: (u32, u32),
 }
 
 #[derive(Clone, Debug)]

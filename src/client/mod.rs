@@ -13,7 +13,6 @@ use fixedbitset::FixedBitSet;
 use super::resource;
 use crate::identifier;
 use resource::block::blockstate;
-use resource::block::model::ModelVertex;
 use resource::block::model::{ModelType, Tint};
 use resource::block::RightAngleRotation;
 
@@ -26,7 +25,6 @@ use resource::block::RightAngleRotation;
 //     }
 // }
 
-// TODO Give this a better name
 pub(crate) async fn window_run(
     chunks: AHashMap<(i32, i32), Vec<super::ChunkSection>>,
 ) -> anyhow::Result<()> {
@@ -40,20 +38,12 @@ pub(crate) async fn window_run(
     let mut input_state = PlayControlState::default();
     let egui_ctx = egui::Context::default();
     // Generate block faces for each subchunk
-    #[derive(Clone, Debug)]
-    struct AddedCustomBlock {
-        pub start_vertex: u32,
-        pub start_index: u32,
-        pub num_indices: u32,
-        pub instance_group: Vec<graphics::chunk::custom_block::Instance>,
-    }
     let mut subchunks: AHashMap<[i32; 3], graphics::chunk::Subchunk> = AHashMap::new();
     let mut loaded_chunks: AHashSet<[i32; 2]> = AHashSet::new();
     let spruce_leaves_registry_index = graphics_state
         .block_registry
         .get_index_from_identifier(&identifier!("minecraft:spruce_leaves"))
         .unwrap();
-    let chunk_gen_start_time = std::time::Instant::now();
     const AXIS_LEN: usize = 16;
     const AXIS_LEN_I32: i32 = AXIS_LEN as i32;
     const MIN_HEIGHT_I32: i32 = -64;
@@ -70,32 +60,30 @@ pub(crate) async fn window_run(
         y << 8 | z << 4 | x
     }
     'chunk_loop: for (&(chunk_x, chunk_z), chunk_sections) in chunks.iter() {
-        loaded_chunks.insert([chunk_x, chunk_z]);
-        'subchunk_loop: for (section_i, chunk_section) in chunk_sections.iter().enumerate() {
+        // Skip chunks with missing neighbours, so that for every chunk we actually render, it
+        // has all its neighbours to decide whether border faces should be rendered.
+        // I believe Minecraft does the same.
+        {
+            let surrounding_chunk_coords = [
+                (chunk_x - 1, chunk_z),
+                (chunk_x + 1, chunk_z),
+                (chunk_x, chunk_z - 1),
+                (chunk_x, chunk_z + 1),
+            ];
+            for chunk in surrounding_chunk_coords {
+                if !chunks.contains_key(&chunk) {
+                    continue 'chunk_loop;
+                }
+            }
+            loaded_chunks.insert([chunk_x, chunk_z]);
+        }
+        for (section_i, chunk_section) in chunk_sections.iter().enumerate() {
             if chunk_section.block_count == 0 {
                 continue;
             }
-            // Skip chunks with missing neighbours, so that for every chunk we actually render, it
-            // has all its neighbours to decide whether border faces should be rendered.
-            // I believe Minecraft does the same.
-            {
-                let surrounding_chunk_coords = [
-                    (chunk_x - 1, chunk_z),
-                    (chunk_x + 1, chunk_z),
-                    (chunk_x, chunk_z - 1),
-                    (chunk_x, chunk_z + 1),
-                ];
-                for chunk in surrounding_chunk_coords {
-                    if !chunks.contains_key(&chunk) {
-                        continue 'chunk_loop;
-                    }
-                }
-            }
-            let mut block_faces = Vec::new();
-            let mut tinted_block_faces = Vec::new();
-            let mut custom_block_vertices = Vec::new();
-            let mut custom_block_indices = Vec::new();
-            let mut added_custom_blocks = AHashMap::new();
+            let mut block_faces: [Vec<_>; 6] = Default::default();
+            let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
+            let mut custom_block_instance_groups = AHashMap::new();
             for y in 0..AXIS_LEN {
                 let global_y = ((AXIS_LEN * section_i + y) as i32 + MIN_HEIGHT_I32) as f32;
                 for z in 0..AXIS_LEN {
@@ -219,10 +207,6 @@ pub(crate) async fn window_run(
                                 ],
                             };
                         }
-                        // TODO: Greedy meshing, using same principles as culling:
-                        // - Culling works by checking blocks in directions
-                        // - If the block in the direction is the same block (and neither have
-                        //   rotation), then we can merge them together
                         // Spruce Leaves are hardcoded, so override tint colour here
                         let tint_color = match blockstate_info.block_index {
                             ident if ident == spruce_leaves_registry_index => {
@@ -237,11 +221,11 @@ pub(crate) async fn window_run(
                                     if face_cull_map[i] {
                                         continue;
                                     }
-                                    block_faces.push(graphics::chunk::block_face::Instance {
-                                        pos: [global_x, global_y, global_z],
-                                        uvs: info.per_face_atlas_uvs[i],
-                                        matrix_indices: [i as u8, x_rot_mat, y_rot_mat, 0],
-                                    });
+                                    block_faces[i].push(graphics::chunk::block_face::Instance::new(
+                                        [x as u8, y as u8, z as u8],
+                                        info.per_face_atlas_uvs[i],
+                                        [x_rot_mat, y_rot_mat],
+                                    ));
                                 }
                             }
                             ModelType::TintedBlock(info) => {
@@ -249,14 +233,12 @@ pub(crate) async fn window_run(
                                     if face_cull_map[i] {
                                         continue;
                                     }
-                                    tinted_block_faces.push(
-                                        graphics::chunk::tinted_block_face::Instance {
-                                            pos: [global_x, global_y, global_z],
-                                            uvs: info.per_face_atlas_uvs[i],
-                                            matrix_indices: [i as u8, x_rot_mat, y_rot_mat, 0],
-                                            tint_color,
-                                        },
-                                    );
+                                    tinted_block_faces[i].push(graphics::chunk::tinted_block_face::Instance::new(
+                                        [x as u8, y as u8, z as u8],
+                                        info.per_face_atlas_uvs[i],
+                                        tint_color,
+                                        [x_rot_mat, y_rot_mat],
+                                    ));
                                 }
                             }
                             ModelType::OverlayedBlock(info) => {
@@ -266,59 +248,25 @@ pub(crate) async fn window_run(
                                     }
                                     if let Some(tint) = face.tint {
                                         assert!(tint == Tint::Biome, "TODO: Alternative tints");
-                                        tinted_block_faces.push(
-                                            graphics::chunk::tinted_block_face::Instance {
-                                                pos: [global_x, global_y, global_z],
-                                                uvs: face.atlas_uvs,
-                                                matrix_indices: [
-                                                    face.face_i,
-                                                    x_rot_mat,
-                                                    y_rot_mat,
-                                                    0,
-                                                ],
-                                                tint_color,
-                                            },
-                                        );
+                                        tinted_block_faces[face.face_i as usize].push(graphics::chunk::tinted_block_face::Instance::new(
+                                            [x as u8, y as u8, z as u8],
+                                            face.atlas_uvs,
+                                            tint_color,
+                                            [x_rot_mat, y_rot_mat],
+                                        ));
                                     } else {
-                                        block_faces.push(graphics::chunk::block_face::Instance {
-                                            pos: [global_x, global_y, global_z],
-                                            uvs: face.atlas_uvs,
-                                            matrix_indices: [face.face_i, x_rot_mat, y_rot_mat, 0],
-                                        });
+                                        block_faces[face.face_i as usize].push(graphics::chunk::block_face::Instance::new(
+                                            [x as u8, y as u8, z as u8],
+                                            face.atlas_uvs,
+                                            [x_rot_mat, y_rot_mat],
+                                        ));
                                     }
                                 }
                             }
                             ModelType::Other(info) => {
-                                use graphics::chunk::custom_block;
-                                let added_block =
-                                    added_custom_blocks.entry(info).or_insert_with(|| {
-                                        let start_vertex: u32 =
-                                            custom_block_vertices.len().try_into().unwrap();
-                                        let start_index: u32 =
-                                            custom_block_indices.len().try_into().unwrap();
-                                        let num_indices: u32 =
-                                            info.indices.len().try_into().unwrap();
-                                        custom_block_vertices.extend(info.vertices.iter().map(
-                                            |v| custom_block::Vertex {
-                                                pos: *v.local_pos.coords.as_ref(),
-                                                uvs: v.uvs,
-                                                normal: *v.normal.as_ref(),
-                                                tint_percentage: match v.tint {
-                                                    None => 0.0,
-                                                    Some(Tint::Biome) => 1.0,
-                                                },
-                                            },
-                                        ));
-                                        custom_block_indices.extend(info.indices.iter().copied());
-                                        AddedCustomBlock {
-                                            start_vertex,
-                                            start_index,
-                                            num_indices,
-                                            instance_group: Vec::new(),
-                                        }
-                                    });
-                                // assert_eq!(blockstate_info.identifier, added_block.identifier);
-                                added_block.instance_group.push(custom_block::Instance {
+                                let block_instances =
+                                    custom_block_instance_groups.entry(info).or_insert_with(Vec::new);
+                                block_instances.push(graphics::chunk::custom_block::Instance {
                                     pos: [global_x, global_y, global_z],
                                     matrix_indices: [x_rot_mat, y_rot_mat, 0, 0],
                                     tint_color,
@@ -329,54 +277,13 @@ pub(crate) async fn window_run(
                     }
                 }
             }
-            // Generate custom block instance and draw command buffers
-            let custom_block_info = if added_custom_blocks.len() > 0 {
-                let mut custom_block_instances = Vec::new();
-                let mut custom_block_draw_args = Vec::new();
-                for custom_block in added_custom_blocks.into_values() {
-                    let start_instance: u32 = custom_block_instances.len().try_into().unwrap();
-                    let num_instances: u32 = custom_block.instance_group.len().try_into().unwrap();
-                    custom_block_instances.extend(custom_block.instance_group);
-                    custom_block_draw_args.push(
-                        graphics::chunk::custom_block::DrawIndexedIndirectArgs {
-                            num_indices: custom_block.num_indices,
-                            num_instances,
-                            start_index: custom_block.start_index,
-                            start_vertex: custom_block.start_vertex,
-                            start_instance,
-                        },
-                    );
-                }
-                Some(graphics::chunk::SubchunkCustomBlockInfo {
-                    vertices: graphics::chunk::custom_block::VertexList::new(
-                        &graphics_state.resources.device,
-                        &custom_block_vertices,
-                    ),
-                    indices: graphics::chunk::custom_block::IndexList::new(
-                        &graphics_state.resources.device,
-                        &custom_block_indices,
-                    ),
-                    instances: graphics::chunk::custom_block::InstanceList::new(
-                        &graphics_state.resources.device,
-                        &custom_block_instances,
-                    ),
-                    draw_args: graphics::chunk::custom_block::DrawArgsList::new(
-                        &graphics_state.resources.device,
-                        &custom_block_draw_args,
-                    ),
-                })
-            } else {
-                None
-            };
-            // Runs a variant of Minecraft's cave culling algorithm connected face generation.
+            // Runs a variant of Minecraft's cave culling algorithm, specifically the connected
+            // face generation.
             // Documented here: https://tomcc.github.io/2014/08/31/visibility-1.html
             let connected_faces = 'connected_faces: {
-                //dbg!(chunk_x, chunk_z, section_i);
-                // TODO: Fix this, seems to be pretty wrong
                 use super::Palette;
                 use crate::basic_types::AxisDirection;
                 use graphics::chunk::SubchunkConnectivity;
-                use std::collections::VecDeque;
                 // If we can immediately tell all the subchunk blocks are opaque, skip this entire
                 // process and just return that no subchunk faces are connected.
                 match chunk_section.block_states.palette() {
@@ -468,11 +375,6 @@ pub(crate) async fn window_run(
                             // that hasn't been checked yet.
                             let coord = {
                                 let bit_index = unchecked_blocks.minimum().unwrap();
-                                //[
-                                //    (bit_index / AXIS_LEN.pow(2)) as i8,
-                                //    ((bit_index / AXIS_LEN) % AXIS_LEN) as i8,
-                                //    (bit_index % AXIS_LEN) as i8,
-                                //]
                                 [
                                     (bit_index & 0xF) as i8,
                                     ((bit_index >> 8) & 0xF) as i8,
@@ -484,15 +386,6 @@ pub(crate) async fn window_run(
                             current_group_faces = FaceSet::empty();
                             coord
                         });
-                    //dbg!([x, y, z]);
-                    //let dbg_bit_index = coords_to_bit_idx([x, y, z]);
-                    //dbg!(dbg_bit_index);
-                    //let dbg_coords = [
-                    //    ((dbg_bit_index >> 8) & 0xF) as i8,
-                    //    ((dbg_bit_index >> 4) & 0xF) as i8,
-                    //    (dbg_bit_index & 0xF) as i8,
-                    //];
-                    //dbg!(dbg_coords);
                     unchecked_blocks.remove(coords_to_bit_idx([x, y, z]));
                     let surrounding_block_coords = [
                         [x - 1, y, z],
@@ -538,49 +431,75 @@ pub(crate) async fn window_run(
                             subchunk_connectivity.add_connection(&face_1, &face_2);
                         }
                     }
-                    //for i in 0..directions.len() - 1 {
-                    //    let (face_1, face_1_in_set) = directions[i];
-                    //    if !face_1_in_set {
-                    //        continue;
-                    //    }
-                    //    for j in i..directions.len() {
-                    //        let (face_2, face_2_in_set) = directions[j];
-                    //        if !face_2_in_set {
-                    //            continue;
-                    //        }
-                    //        subchunk_connectivity.add_connection(&face_1, &face_2);
-                    //    }
-                    //}
                 }
                 subchunk_connectivity
             };
-            subchunks.insert([chunk_x, section_i as i32, chunk_z], graphics::chunk::Subchunk {
-                start_coords: [
-                    AXIS_LEN_I32 * chunk_x,
-                    AXIS_LEN_I32 * section_i as i32 + MIN_HEIGHT_I32,
-                    AXIS_LEN_I32 * chunk_z,
-                ],
-                block_faces: graphics::chunk::block_face::InstanceList::new(
-                    &graphics_state.resources.device,
-                    &block_faces,
-                ),
-                tinted_block_faces: graphics::chunk::tinted_block_face::InstanceList::new(
-                    &graphics_state.resources.device,
-                    &tinted_block_faces,
-                ),
-                custom_block_info,
+            let subchunk_coords = [chunk_x, section_i as i32, chunk_z];
+            let start_coords = [
+                AXIS_LEN_I32 * chunk_x,
+                AXIS_LEN_I32 * section_i as i32 + MIN_HEIGHT_I32,
+                AXIS_LEN_I32 * chunk_z,
+            ];
+            // Block faces
+            let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
+            let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
+            for i in 0..6 {
+                if block_faces[i].len() == 0 {
+                    continue;
+                }
+                let base_quad = graphics::chunk::block_face::Vertex::generate_base_quad(start_coords, i);
+                let instance_group = &block_faces[i];
+                let quad_start_vertex = graphics_state.block_face_vertex_buffer_manager
+                    .alloc_area(&graphics_state.resources.queue, subchunk_coords, base_quad);
+                let instance_group_start = graphics_state.block_face_instance_buffer_manager
+                    .alloc_area(&graphics_state.resources.queue, subchunk_coords, instance_group);
+                let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+                block_face_start_vertices[i] = quad_start_vertex;
+                block_face_instance_groups[i] = (instance_group_start, instance_group_len);
+            }
+            // Tinted block faces
+            let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
+            let mut tinted_block_face_instance_groups: [(u32, u32); 6] = Default::default();
+            for i in 0..6 {
+                if tinted_block_faces[i].len() == 0 {
+                    continue;
+                }
+                let base_quad = graphics::chunk::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
+                let instance_group = &tinted_block_faces[i];
+                let quad_start_vertex = graphics_state.tinted_block_face_vertex_buffer_manager
+                    .alloc_area(&graphics_state.resources.queue, subchunk_coords, base_quad);
+                let instance_group_start = graphics_state.tinted_block_face_instance_buffer_manager
+                    .alloc_area(&graphics_state.resources.queue, subchunk_coords, instance_group);
+                let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+                tinted_block_face_start_vertices[i] = quad_start_vertex;
+                tinted_block_face_instance_groups[i] = (instance_group_start, instance_group_len);
+            }
+            let custom_block_groups = custom_block_instance_groups.into_iter().map(
+                |(info, instances)| {
+                    let start_instance = graphics_state.custom_block_instance_buffer_manager
+                        .alloc_area(&graphics_state.resources.queue, subchunk_coords, &instances);
+                    let num_instances: u32 = instances.len().try_into().unwrap();
+                    graphics::chunk::CustomBlockGroup {
+                        start_vertex: info.start_vertex,
+                        start_index_and_len: info.start_index_and_len,
+                        start_instance_and_len: (start_instance, num_instances),
+                    }
+                }
+            )
+            .collect();
+            subchunks.insert(subchunk_coords, graphics::chunk::Subchunk {
+                start_coords,
+                block_face_start_vertices,
+                block_face_instance_groups,
+                tinted_block_face_start_vertices,
+                tinted_block_face_instance_groups,
+                custom_block_groups,
                 connected_faces,
             });
         }
     }
-    println!(
-        "Processed {} chunks in {}s",
-        loaded_chunks.len(),
-        (std::time::Instant::now() - chunk_gen_start_time).as_secs_f64()
-    );
-    if true {
-        std::process::exit(0);
-    }
+    //// Run buffer uploads
+    //graphics_state.resources.queue.submit([]);
     let mut last_mouse_pos = egui::Pos2::new(0.0, 0.0);
     let mut events: Vec<egui::Event> = Vec::new();
     let mut subchunks_skipped = 0;
@@ -590,6 +509,7 @@ pub(crate) async fn window_run(
         rendering_view_frustum: false,
         cull_camera_moving_with_player: true,
         cull_camera: graphics_state.camera,
+        cave_cull_check_unflipped: true,
         cave_cull_check_not_backwards: false,
         cave_cull_check_frustum: true,
         cave_cull_check_connectivity: true,
@@ -681,6 +601,10 @@ pub(crate) async fn window_run(
                             );
                             ui.collapsing("Cave Culling", |ui| {
                                 ui.checkbox(
+                                    &mut debug_state.cave_cull_check_unflipped,
+                                    "Flip check",
+                                );
+                                ui.checkbox(
                                     &mut debug_state.cave_cull_check_not_backwards,
                                     "Backwards check",
                                 );
@@ -760,7 +684,7 @@ pub(crate) async fn window_run(
                             debug_state.cull_camera = graphics_state.camera;
                         }
                         if debug_state.rendering_view_frustum {
-                            use nalgebra::{Point3, Vector3};
+                            use nalgebra::Point3;
                             let cull_camera = debug_state.cull_camera;
                             let graphics_camera = &graphics_state.camera;
                             let inv_cull_view_mat =
@@ -831,7 +755,6 @@ pub(crate) async fn window_run(
                         }
                         if debug_state.cave_cull_render_connectivity {
                             use nalgebra::{Point3, Vector3};
-                            let cull_camera = debug_state.cull_camera;
                             let graphics_camera = &graphics_state.camera;
                             let colours = [
                                 Color32::GRAY,
@@ -886,9 +809,6 @@ pub(crate) async fn window_run(
                                     subchunk_centre[1],
                                     subchunk_centre[2],
                                 );
-                                if (graphics_camera.pos - subchunk_centre).magnitude() > debug_state.cave_cull_debug_render_dist {
-                                    continue;
-                                }
                                 // Render bounding box
                                 {
                                     let start = Point3::new(
@@ -929,15 +849,27 @@ pub(crate) async fn window_run(
                                         [corners[7], corners[4]],
                                     ];
                                     for line in lines {
+                                        let max_dist = debug_state.cave_cull_debug_render_dist;
+                                        let end_1_dist = (graphics_camera.pos - line[0]).magnitude();
+                                        let end_2_dist = (graphics_camera.pos - line[1]).magnitude();
+                                        if end_1_dist > max_dist || end_2_dist > max_dist {
+                                            continue;
+                                        }
                                         let Some(line) = debug_clip_and_project_line(line, graphics_camera) else {
                                             continue;
                                         };
+                                        let centre_dist = (graphics_camera.pos - subchunk_centre).magnitude();
+                                        let alpha = (1.0 - (centre_dist / max_dist.max(0.01))).max(0.0);
                                         painter.add(Shape::line_segment(
                                             line.map(|p| Pos2::new(
                                                 (p.x + 1.0) / 2.0 * width_f32,
                                                 (-p.y + 1.0) / 2.0 * height_f32,
                                             )),
-                                            (3.0, Color32::from_rgba_unmultiplied(0xFF, 0x00, 0xFF, 0xFF)),
+                                            (
+                                                5.0 * alpha,
+                                                Color32::from_rgba_unmultiplied(0xFF, 0x00, 0xFF, 0xFF)
+                                                    .gamma_multiply(alpha),
+                                            ),
                                         ));
                                     }
                                 }
@@ -948,15 +880,23 @@ pub(crate) async fn window_run(
                                     let colour = colours[i];
                                     let offset_pos = offset_positions[i];
                                     let pair_centre = subchunk_centre + offset_pos;
+                                    let max_dist = debug_state.cave_cull_debug_render_dist;
                                     let end_1 = pair_centre + dir_1.as_vector() * 8.0;
                                     let end_2 = pair_centre + dir_2.as_vector() * 8.0;
+                                    let end_1_dist = (graphics_camera.pos - end_1).magnitude();
+                                    let end_2_dist = (graphics_camera.pos - end_2).magnitude();
+                                    if end_1_dist > max_dist || end_2_dist > max_dist {
+                                        continue;
+                                    }
+                                    let average_dist = (end_1_dist + end_2_dist) / 2.0;
+                                    let alpha = (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
                                     if let Some(line_1) = debug_clip_and_project_line([pair_centre, end_1], graphics_camera) {
                                         painter.add(Shape::line_segment(
                                             line_1.map(|p| Pos2::new(
                                                 (p.x + 1.0) / 2.0 * width_f32,
                                                 (-p.y + 1.0) / 2.0 * height_f32,
                                             )),
-                                            (1.5, colour),
+                                            (5.0 * alpha, colour.gamma_multiply(alpha)),
                                         ));
                                     }
                                     if let Some(line_2) = debug_clip_and_project_line([pair_centre, end_2], graphics_camera) {
@@ -965,15 +905,14 @@ pub(crate) async fn window_run(
                                                 (p.x + 1.0) / 2.0 * width_f32,
                                                 (-p.y + 1.0) / 2.0 * height_f32,
                                             )),
-                                            (1.5, colour),
+                                            (5.0 * alpha, colour.gamma_multiply(alpha)),
                                         ));
                                     }
                                 }
                             }
                         }
                         if debug_state.cave_cull_render_traversal_graph {
-                            use nalgebra::{Point3, Vector3};
-                            let cull_camera = debug_state.cull_camera;
+                            use nalgebra::Point3;
                             let graphics_camera = &graphics_state.camera;
                             for (from_chunk, to_chunk) in &subchunk_traversal_graph {
                                 let chunks = [from_chunk, to_chunk];
@@ -1081,7 +1020,7 @@ pub(crate) async fn window_run(
 }
 
 use graphics::Camera;
-use nalgebra::{Matrix4, Point3};
+use nalgebra::Point3;
 
 fn debug_clip_and_project_points(points: &[Point3<f32>], camera: &Camera) -> Vec<Point3<f32>> {
     fn clip_intersection_x(p1: Point3<f32>, p2: Point3<f32>, edge: f32) -> Point3<f32> {

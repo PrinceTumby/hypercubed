@@ -10,7 +10,12 @@ use winit::window::Window;
 use ahash::{AHashMap, AHashSet};
 use std::collections::VecDeque;
 use crate::basic_types::AxisDirection;
-use petgraph::graph::DiGraph;
+//use petgraph::graph::DiGraph;
+use chunk::{
+    block_face::{BlockFaceVertexBufferManager, BlockFaceInstanceBufferManager},
+    tinted_block_face::{TintedBlockFaceVertexBufferManager, TintedBlockFaceInstanceBufferManager},
+    custom_block::CustomBlockInstanceBufferManager,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
@@ -126,8 +131,13 @@ pub struct GraphicsState<'a> {
     pub debug_crosshair_render_pipeline: wgpu::RenderPipeline,
     pub egui_renderer: egui_renderer::Renderer,
     pub depth_texture: Texture,
-    pub vertex_buffer: wgpu::Buffer,
-    pub instance_buffer: wgpu::Buffer,
+    pub block_face_vertex_buffer_manager: BlockFaceVertexBufferManager,
+    pub block_face_instance_buffer_manager: BlockFaceInstanceBufferManager,
+    pub tinted_block_face_vertex_buffer_manager: TintedBlockFaceVertexBufferManager,
+    pub tinted_block_face_instance_buffer_manager: TintedBlockFaceInstanceBufferManager,
+    pub custom_block_instance_buffer_manager: CustomBlockInstanceBufferManager,
+    pub custom_block_vertices_buffer: wgpu::Buffer,
+    pub custom_block_indices_buffer: wgpu::Buffer,
     pub block_item_atlas_bind_group: wgpu::BindGroup,
     pub block_registry: resource::block::Registry,
     pub camera: Camera,
@@ -148,6 +158,7 @@ pub struct DebugState {
     pub rendering_view_frustum: bool,
     pub cull_camera_moving_with_player: bool,
     pub cull_camera: Camera,
+    pub cave_cull_check_unflipped: bool,
     pub cave_cull_check_not_backwards: bool,
     pub cave_cull_check_frustum: bool,
     pub cave_cull_check_connectivity: bool,
@@ -181,7 +192,7 @@ impl<'a> GraphicsState<'a> {
         let surface = instance.create_surface(window)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -190,17 +201,14 @@ impl<'a> GraphicsState<'a> {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
+                    label: None,
                     required_features: wgpu::Features::POLYGON_MODE_LINE
                         | wgpu::Features::MULTI_DRAW_INDIRECT
                         | wgpu::Features::INDIRECT_FIRST_INSTANCE,
-                    required_limits: if cfg!(target_arch = "wasm32") {
-                        wgpu::Limits::downlevel_webgl2_defaults()
-                    } else {
-                        wgpu::Limits::default()
-                    },
-                    label: None,
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::Performance,
                 },
-                None, // Trace path
+                None,
             )
             .await
             .unwrap();
@@ -305,7 +313,13 @@ impl<'a> GraphicsState<'a> {
                     },
                 ],
             });
-        let (block_item_texture_atlas, block_item_atlas_size, block_registry) = {
+        let (
+            block_item_texture_atlas,
+            block_item_atlas_size,
+            block_registry,
+            custom_block_vertices_buffer,
+            custom_block_indices_buffer,
+        ) = {
             use crate::resource;
             let size = [1024; 2];
             let square_length = 16;
@@ -315,7 +329,25 @@ impl<'a> GraphicsState<'a> {
             let mut block_registry = resource::block::Registry::new();
             register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
             let atlas = atlas_builder.build(&device, &queue, Some("Block and Item Atlas"));
-            (atlas, size, block_registry)
+            let custom_block_vertices_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Custom Block Vertices Buffer"),
+                    contents: bytemuck::cast_slice(&model_cache.custom_block_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let custom_block_indices_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Custom Block Indices Buffer"),
+                    contents: bytemuck::cast_slice(&model_cache.custom_block_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+            (
+                atlas,
+                size,
+                block_registry,
+                custom_block_vertices_buffer,
+                custom_block_indices_buffer,
+            )
         };
         let block_item_atlas_size_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -380,19 +412,15 @@ impl<'a> GraphicsState<'a> {
             &config,
             &debug_crosshair_pipeline_layout,
         );
-        // egui Renderer
+        // egui renderer
         let egui_renderer = egui_renderer::Renderer::new(&device, &config);
+        // Buffer managers
+        let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device);
+        let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device);
+        let tinted_block_face_vertex_buffer_manager = TintedBlockFaceVertexBufferManager::new(&device);
+        let tinted_block_face_instance_buffer_manager = TintedBlockFaceInstanceBufferManager::new(&device);
+        let custom_block_instance_buffer_manager = CustomBlockInstanceBufferManager::new(&device);
         // Buffers
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex_buffer"),
-            contents: bytemuck::cast_slice(chunk::block_face::VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("instance_buffer"),
-            contents: bytemuck::cast_slice(&[] as &[chunk::block_face::Instance]),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
         let proj_matrix = Matrix4::new_perspective(
             (size.width as f32) / (size.height as f32),
             f32::to_radians(GraphicsState::DEFAULT_FOV),
@@ -496,8 +524,13 @@ impl<'a> GraphicsState<'a> {
             debug_crosshair_render_pipeline,
             egui_renderer,
             depth_texture,
-            vertex_buffer,
-            instance_buffer,
+            block_face_vertex_buffer_manager,
+            block_face_instance_buffer_manager,
+            tinted_block_face_vertex_buffer_manager,
+            tinted_block_face_instance_buffer_manager,
+            custom_block_instance_buffer_manager,
+            custom_block_vertices_buffer,
+            custom_block_indices_buffer,
             block_item_atlas_bind_group,
             block_registry,
             camera,
@@ -580,8 +613,11 @@ impl<'a> GraphicsState<'a> {
                     label: Some("Render Encoder"),
                 });
         // Main render pass
-        let mut subchunks_skipped = 0;
+        let subchunks_skipped;
         let mut subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])> = Vec::new();
+        let block_face_draw_args_buffer;
+        let tinted_block_face_draw_args_buffer;
+        let custom_block_draw_args_buffer;
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -608,16 +644,23 @@ impl<'a> GraphicsState<'a> {
             let camera_clipping_planes = debug_state.cull_camera.generate_clipping_planes();
             let mut rendered_chunks: AHashSet<[i32; 3]> = AHashSet::new();
             let mut visited_chunks: AHashSet<[i32; 3]> = AHashSet::new();
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, Debug)]
             struct QueuedChunk {
                 pub coords: [i32; 3],
                 pub from_dir: Option<AxisDirection>,
                 pub back_travel_amount: f32,
+                pub flipping_state: FlippingState,
             }
-            // NOTE:
-            // - DDA to make a "as the spectator clips" path, compare to actual path taken
-            // - Track winding amount
-            // 
+            // TODO: Come up with a better name for this, document how it works
+            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+            enum FlippingState {
+                Unflipped {
+                    x_positive: Option<bool>,
+                    y_positive: Option<bool>,
+                    z_positive: Option<bool>,
+                },
+                Flipped,
+            }
             //let mut subchunk_graph: DiGraph<QueuedChunk, ()> = DiGraph::new();
             let mut chunk_queue: VecDeque<QueuedChunk> = VecDeque::new();
             {
@@ -626,13 +669,18 @@ impl<'a> GraphicsState<'a> {
                 let camera_x = (camera_pos.x.floor() as i32).div_euclid(16);
                 let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32).div_euclid(16);
                 let camera_z = (camera_pos.z.floor() as i32).div_euclid(16);
+                let camera_chunk_coords = [camera_x, camera_y, camera_z];
                 chunk_queue.push_back(QueuedChunk {
-                    coords: [camera_x, camera_y, camera_z],
+                    coords: camera_chunk_coords,
                     from_dir: None,
                     back_travel_amount: 0.0,
-                    //expand_to_neighbours: true,
+                    flipping_state: FlippingState::Unflipped {
+                        x_positive: None,
+                        y_positive: None,
+                        z_positive: None,
+                    }
                 });
-                visited_chunks.insert([camera_x, camera_y, camera_z]);
+                visited_chunks.insert(camera_chunk_coords);
                 //if subchunks.contains_key(&[camera_x, camera_y, camera_z]) {
                 //    chunk_queue.push_back(([camera_x, camera_y, camera_z], None));
                 //} else {
@@ -640,16 +688,48 @@ impl<'a> GraphicsState<'a> {
                 //}
             }
             let mut num_subchunks_rendered = 0;
-            'subchunk_loop: while let Some(queued_chunk) = chunk_queue.pop_front() {
+            #[repr(C)]
+            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+            pub struct DrawIndirectArgs {
+                pub num_vertices: u32,
+                pub num_instances: u32,
+                pub start_vertex: u32,
+                pub start_instance: u32,
+            }
+            #[repr(C)]
+            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+            pub struct DrawIndexedIndirectArgs {
+                pub num_indices: u32,
+                pub num_instances: u32,
+                pub start_index: u32,
+                pub start_vertex: u32,
+                pub start_instance: u32,
+            }
+            let mut block_face_draw_args: Vec<DrawIndirectArgs> = Vec::new();
+            let mut tinted_block_face_draw_args: Vec<DrawIndirectArgs> = Vec::new();
+            let mut custom_block_draw_args: Vec<DrawIndexedIndirectArgs> = Vec::new();
+            while let Some(queued_chunk) = chunk_queue.pop_front() {
                 let QueuedChunk {
                     coords: chunk_coords,
                     from_dir,
                     back_travel_amount: chunk_back_travel_amount,
-                    //expand_to_neighbours: chunk_expand_to_neighbours,
+                    flipping_state: chunk_flip_state,
                 } = queued_chunk;
                 let subchunk_maybe = subchunks.get(&chunk_coords);
                 // Visit neighbours
-                {
+                'neighbour_blk: {
+                    let (cur_x_flip, cur_y_flip, cur_z_flip) = if debug_state.cave_cull_check_unflipped {
+                        match chunk_flip_state {
+                            FlippingState::Unflipped {
+                                x_positive,
+                                y_positive,
+                                z_positive,
+                            } => (x_positive, y_positive, z_positive),
+                            FlippingState::Flipped => break 'neighbour_blk,
+                        }
+                    } else {
+                        (None, None, None)
+                    };
                     let [chunk_x, chunk_y, chunk_z] = chunk_coords;
                     let neighbour_chunks = [
                         ([chunk_x - 1, chunk_y, chunk_z], AxisDirection::West),
@@ -670,40 +750,16 @@ impl<'a> GraphicsState<'a> {
                         if !loaded_chunks.contains(&[neighbour_coord[0], neighbour_coord[2]]) {
                             continue;
                         }
-                        //// Check we're not going backwards
-                        //if debug_state.cave_cull_check_not_backwards {
-                        //    if facing_dir.dot(&to_dir.as_vector()) < 0.4 {
-                        //        continue;
-                        //    }
-                        //}
                         // Check we're haven't gone backwards too much
-                        let back_travel_diff = facing_dir.dot(&to_dir.as_vector());
+                        let back_travel_diff = -facing_dir.dot(&to_dir.as_vector());
                         let neighbour_back_travel_amount =
-                            (chunk_back_travel_amount - back_travel_diff).max(0.0);
+                            (chunk_back_travel_amount + back_travel_diff).max(0.0);
                         if debug_state.cave_cull_check_not_backwards {
-                            if neighbour_back_travel_amount >= 1.25 {
+                            if neighbour_back_travel_amount >= 1.1 {
                                 continue;
                             }
                         }
                         if let Some(from_dir) = from_dir {
-                            //// Check we're not going backwards
-                            //if debug_state.cave_cull_check_not_backwards {
-                            //    let chunk_centre = Point3::new(
-                            //        chunk_coords[0] as f32,
-                            //        chunk_coords[1] as f32,
-                            //        chunk_coords[2] as f32,
-                            //    );
-                            //    let neighbour_centre = Point3::new(
-                            //        neighbour_coord[0] as f32,
-                            //        neighbour_coord[1] as f32,
-                            //        neighbour_coord[2] as f32,
-                            //    );
-                            //    let from_coords = chunk_centre + from_dir.as_vector();
-                            //    let dir_change = (neighbour_centre - from_coords).normalize();
-                            //    if facing_dir.dot(&dir_change) < -0.75 {
-                            //        continue;
-                            //    }
-                            //}
                             // Check we can go to the neighbour from the last subchunk through this
                             // subchunk
                             if debug_state.cave_cull_check_connectivity {
@@ -747,15 +803,39 @@ impl<'a> GraphicsState<'a> {
                                 }
                             }
                         }
-                        // Check we haven't already rendered this subchunk
+                        // Check we haven't already rendered the neighbour
                         if visited_chunks.contains(&neighbour_coord) {
                             continue;
                         }
+                        // Calculate flip state for neighbour
                         visited_chunks.insert(neighbour_coord);
                         chunk_queue.push_back(QueuedChunk {
                             coords: neighbour_coord,
                             from_dir: Some(to_dir.invert()),
                             back_travel_amount: neighbour_back_travel_amount,
+                            flipping_state: {
+                                let (new_x_flip, new_y_flip, new_z_flip) = match to_dir {
+                                    AxisDirection::Down => (None, Some(false), None),
+                                    AxisDirection::Up => (None, Some(true), None),
+                                    AxisDirection::North => (None, None, Some(false)),
+                                    AxisDirection::South => (None, None, Some(true)),
+                                    AxisDirection::West => (Some(false), None, None),
+                                    AxisDirection::East => (Some(true), None, None),
+                                };
+                                if [
+                                    cur_x_flip.zip(new_x_flip),
+                                    cur_y_flip.zip(new_y_flip),
+                                    cur_z_flip.zip(new_z_flip),
+                                ].iter().any(|&flips| flips.is_some_and(|(x, y)| x != y)) {
+                                    FlippingState::Flipped
+                                } else {
+                                    FlippingState::Unflipped {
+                                        x_positive: new_x_flip.or(cur_x_flip),
+                                        y_positive: new_y_flip.or(cur_y_flip),
+                                        z_positive: new_z_flip.or(cur_z_flip),
+                                    }
+                                }
+                            },
                         });
                         subchunk_traversal_graph.push((chunk_coords, neighbour_coord));
                     }
@@ -763,157 +843,123 @@ impl<'a> GraphicsState<'a> {
                 let Some(subchunk) = subchunk_maybe else {
                     continue;
                 };
-                //// Frustum culling
-                //{
-                //    let start_coords = subchunk.start_coords.map(|n| n as f32);
-                //    const AXIS_LEN: f32 = 16.0;
-                //    let end_coords = start_coords.map(|n| n + AXIS_LEN);
-                //    //for (normal, offset) in camera_clipping_planes {
-                //    for (i, clip_plane) in camera_clipping_planes.into_iter().enumerate() {
-                //        let (normal, offset) = clip_plane;
-                //        if i >= debug_state.cull_planes_active {
-                //            break;
-                //        }
-                //        let inward_point = Point3::new(
-                //            match normal.x > 0.0 {
-                //                false => start_coords[0],
-                //                true => end_coords[0],
-                //            },
-                //            match normal.y > 0.0 {
-                //                false => start_coords[1],
-                //                true => end_coords[1],
-                //            },
-                //            match normal.z > 0.0 {
-                //                false => start_coords[2],
-                //                true => end_coords[2],
-                //            },
-                //        );
-                //        if inward_point.coords.dot(&normal) + offset < 0.0 {
-                //            subchunks_skipped += 1;
-                //            continue 'subchunk_loop;
-                //        }
-                //    }
-                //}
                 if num_subchunks_rendered >= debug_state.max_render_chunks {
                     break;
                 } else {
                     num_subchunks_rendered += 1;
                 }
                 rendered_chunks.insert(chunk_coords);
-                // Base block faces
-                {
-                    render_pass.set_pipeline(&self.block_render_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                    render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                    render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(1, subchunk.block_faces.get_slice());
-                    render_pass.draw(0..4, 0..subchunk.block_faces.num_items());
-                }
-                // Tinted block faces
-                {
-                    render_pass.set_pipeline(&self.tinted_block_render_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                    render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                    render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    render_pass.set_vertex_buffer(1, subchunk.tinted_block_faces.get_slice());
-                    render_pass.draw(0..4, 0..subchunk.tinted_block_faces.num_items());
+                for i in 0..6 {
+                    // TODO: This is meant to hide faces you can't see, but it doesn't work with
+                    //       blocks that have blockstate rotations.
+                    //
+                    //let skip_face_dir = match i {
+                    //    0 => chunk_coords[1] > camera_chunk_coords[1],
+                    //    1 => chunk_coords[1] < camera_chunk_coords[1],
+                    //    2 => chunk_coords[2] < camera_chunk_coords[2],
+                    //    3 => chunk_coords[2] > camera_chunk_coords[2],
+                    //    4 => chunk_coords[0] > camera_chunk_coords[0],
+                    //    5 => chunk_coords[0] < camera_chunk_coords[0],
+                    //    6.. => unreachable!(),
+                    //};
+                    //if skip_face_dir {
+                    //    continue;
+                    //}
+                    // Base block faces
+                    if subchunk.block_face_start_vertices[i] != u32::MAX {
+                        block_face_draw_args.push(DrawIndirectArgs {
+                            num_vertices: 4,
+                            num_instances: subchunk.block_face_instance_groups[i].1,
+                            start_vertex: subchunk.block_face_start_vertices[i],
+                            start_instance: subchunk.block_face_instance_groups[i].0,
+                        });
+                    }
+                    // Tinted block faces
+                    if subchunk.tinted_block_face_start_vertices[i] != u32::MAX {
+                        tinted_block_face_draw_args.push(DrawIndirectArgs {
+                            num_vertices: 4,
+                            num_instances: subchunk.tinted_block_face_instance_groups[i].1,
+                            start_vertex: subchunk.tinted_block_face_start_vertices[i],
+                            start_instance: subchunk.tinted_block_face_instance_groups[i].0,
+                        });
+                    }
                 }
                 // Custom blocks
-                if let Some(custom_block_info) = subchunk.custom_block_info.as_ref() {
-                    render_pass.set_pipeline(&self.custom_block_render_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                    render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                    render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, custom_block_info.vertices.get_slice());
-                    render_pass.set_index_buffer(
-                        custom_block_info.indices.get_slice(),
-                        wgpu::IndexFormat::Uint32,
-                    );
-                    render_pass.set_vertex_buffer(1, custom_block_info.instances.get_slice());
-                    render_pass.multi_draw_indexed_indirect(
-                        custom_block_info.draw_args.get_buffer(),
-                        0,
-                        custom_block_info.draw_args.num_items(),
-                    );
+                for group in &subchunk.custom_block_groups {
+                    custom_block_draw_args.push(DrawIndexedIndirectArgs {
+                        num_indices: group.start_index_and_len.1,
+                        num_instances: group.start_instance_and_len.1,
+                        start_index: group.start_index_and_len.0,
+                        start_vertex: group.start_vertex,
+                        start_instance: group.start_instance_and_len.0,
+                    });
                 }
             }
             {
                 let subchunk_coord_set: AHashSet<_> = subchunks.keys().copied().collect();
-                subchunks_skipped = subchunk_coord_set.difference(&rendered_chunks).count();
+                subchunks_skipped = subchunk_coord_set.difference(&rendered_chunks).count()
             }
-            //'subchunk_loop: for subchunk in subchunks.values() {
-            //    // Frustum culling
-            //    {
-            //        let start_coords = subchunk.start_coords.map(|n| n as f32);
-            //        const AXIS_LEN: f32 = 16.0;
-            //        let end_coords = start_coords.map(|n| n + AXIS_LEN);
-            //        //for (normal, offset) in camera_clipping_planes {
-            //        for (i, clip_plane) in camera_clipping_planes.into_iter().enumerate() {
-            //            let (normal, offset) = clip_plane;
-            //            if i >= debug_state.cull_planes_active {
-            //                break;
-            //            }
-            //            let inward_point = Point3::new(
-            //                match normal.x > 0.0 {
-            //                    false => start_coords[0],
-            //                    true => end_coords[0],
-            //                },
-            //                match normal.y > 0.0 {
-            //                    false => start_coords[1],
-            //                    true => end_coords[1],
-            //                },
-            //                match normal.z > 0.0 {
-            //                    false => start_coords[2],
-            //                    true => end_coords[2],
-            //                },
-            //            );
-            //            if inward_point.coords.dot(&normal) + offset < 0.0 {
-            //                subchunks_skipped += 1;
-            //                continue 'subchunk_loop;
-            //            }
-            //        }
-            //    }
-            //    // Base block faces
-            //    {
-            //        render_pass.set_pipeline(&self.block_render_pipeline);
-            //        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            //        render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-            //        render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-            //        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            //        render_pass.set_vertex_buffer(1, subchunk.block_faces.get_slice());
-            //        render_pass.draw(0..4, 0..subchunk.block_faces.num_items());
-            //    }
-            //    // Tinted block faces
-            //    {
-            //        render_pass.set_pipeline(&self.tinted_block_render_pipeline);
-            //        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            //        render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-            //        render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-            //        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            //        render_pass.set_vertex_buffer(1, subchunk.tinted_block_faces.get_slice());
-            //        render_pass.draw(0..4, 0..subchunk.tinted_block_faces.num_items());
-            //    }
-            //    // Custom blocks
-            //    if let Some(custom_block_info) = subchunk.custom_block_info.as_ref() {
-            //        render_pass.set_pipeline(&self.custom_block_render_pipeline);
-            //        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            //        render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-            //        render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-            //        render_pass.set_vertex_buffer(0, custom_block_info.vertices.get_slice());
-            //        render_pass.set_index_buffer(
-            //            custom_block_info.indices.get_slice(),
-            //            wgpu::IndexFormat::Uint32,
-            //        );
-            //        render_pass.set_vertex_buffer(1, custom_block_info.instances.get_slice());
-            //        render_pass.multi_draw_indexed_indirect(
-            //            custom_block_info.draw_args.get_buffer(),
-            //            0,
-            //            custom_block_info.draw_args.num_items(),
-            //        );
-            //    }
-            //}
+            // Base block faces
+            if block_face_draw_args.len() > 0 {
+                block_face_draw_args_buffer = self.resources.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Block Face Draw Args Buffer"),
+                    contents: bytemuck::cast_slice(&block_face_draw_args),
+                    usage: wgpu::BufferUsages::INDIRECT,
+                });
+                render_pass.set_pipeline(&self.block_render_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.block_face_vertex_buffer_manager.get_slice());
+                render_pass.set_vertex_buffer(1, self.block_face_instance_buffer_manager.get_slice());
+                render_pass.multi_draw_indirect(
+                    &block_face_draw_args_buffer,
+                    0,
+                    block_face_draw_args.len().try_into().unwrap(),
+                );
+            }
+            // Tinted block faces
+            if tinted_block_face_draw_args.len() > 0 {
+                tinted_block_face_draw_args_buffer = self.resources.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Tinted Block Face Draw Args Buffer"),
+                    contents: bytemuck::cast_slice(&tinted_block_face_draw_args),
+                    usage: wgpu::BufferUsages::INDIRECT,
+                });
+                render_pass.set_pipeline(&self.tinted_block_render_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.tinted_block_face_vertex_buffer_manager.get_slice());
+                render_pass.set_vertex_buffer(1, self.tinted_block_face_instance_buffer_manager.get_slice());
+                render_pass.multi_draw_indirect(
+                    &tinted_block_face_draw_args_buffer,
+                    0,
+                    tinted_block_face_draw_args.len().try_into().unwrap(),
+                );
+            }
+            // Custom blocks
+            if custom_block_draw_args.len() > 0 {
+                custom_block_draw_args_buffer = self.resources.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Custom Block Draw Args Buffer"),
+                    contents: bytemuck::cast_slice(&custom_block_draw_args),
+                    usage: wgpu::BufferUsages::INDIRECT,
+                });
+                render_pass.set_pipeline(&self.custom_block_render_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.custom_block_vertices_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, self.custom_block_instance_buffer_manager.get_slice());
+                render_pass.set_index_buffer(
+                    self.custom_block_indices_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                render_pass.multi_draw_indexed_indirect(
+                    &custom_block_draw_args_buffer,
+                    0,
+                    custom_block_draw_args.len().try_into().unwrap(),
+                );
+            }
             // Debug crosshair
             {
                 render_pass.set_pipeline(&self.debug_crosshair_render_pipeline);
@@ -921,7 +967,6 @@ impl<'a> GraphicsState<'a> {
                 render_pass.set_vertex_buffer(0, self.debug_crosshair_vertex_buffer.slice(..));
                 render_pass.draw(0..6, 0..1);
             }
-            //println!("Skipped {subchunks_skipped} out of {}", subchunks.len());
             // egui
             self.egui_renderer
                 .render(&mut render_pass, &egui_render_data);

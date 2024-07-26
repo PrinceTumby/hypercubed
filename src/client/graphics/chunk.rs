@@ -8,20 +8,22 @@ use wgpu::{
     RenderPipelineDescriptor, SurfaceConfiguration, VertexAttribute,
 };
 
-pub struct Subchunk {
-    pub start_coords: [i32; 3],
-    pub block_faces: block_face::InstanceList,
-    pub tinted_block_faces: tinted_block_face::InstanceList,
-    pub custom_block_info: Option<SubchunkCustomBlockInfo>,
-    pub connected_faces: SubchunkConnectivity,
+pub struct CustomBlockGroup {
+    pub start_vertex: u32,
+    pub start_index_and_len: (u32, u32),
+    pub start_instance_and_len: (u32, u32),
 }
 
-pub struct SubchunkCustomBlockInfo {
-    // TODO: Pre-generate big buffers for all custom block vertices and indices
-    pub vertices: custom_block::VertexList,
-    pub indices: custom_block::IndexList,
-    pub instances: custom_block::InstanceList,
-    pub draw_args: custom_block::DrawArgsList,
+pub struct Subchunk {
+    pub start_coords: [i32; 3],
+    /// Equal to `u32::MAX` if the direction group contains no instances.
+    pub block_face_start_vertices: [u32; 6],
+    pub block_face_instance_groups: [(u32, u32); 6],
+    /// Equal to `u32::MAX` if the direction group contains no instances.
+    pub tinted_block_face_start_vertices: [u32; 6],
+    pub tinted_block_face_instance_groups: [(u32, u32); 6],
+    pub custom_block_groups: Vec<CustomBlockGroup>,
+    pub connected_faces: SubchunkConnectivity,
 }
 
 // Bits (least to most significant) store if each of these pairs of faces are connected:
@@ -254,6 +256,185 @@ impl<T: bytemuck::Pod> DrawArgsBuffer<T> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BufferArea {
+    pub usage: BufferAreaUsage,
+    pub num_chunks: u64,
+}
+
+impl BufferArea {
+    pub fn belongs_to(&self, subchunk_coords: [i32; 3]) -> bool {
+        matches!(self.usage, BufferAreaUsage::Used(coords) if coords == subchunk_coords)
+    }
+
+    pub fn is_free(&self) -> bool {
+        matches!(self.usage, BufferAreaUsage::Free)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BufferAreaUsage {
+    Free,
+    Used([i32; 3]),
+}
+
+#[derive(Debug)]
+pub struct BufferManager<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize> {
+    buffer: Buffer,
+    usage_map: Vec<BufferArea>,
+    phantom: PhantomData<([T; BUFFER_SIZE], [T; CHUNK_SIZE])>,
+}
+
+impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize> BufferManager<T, BUFFER_SIZE, CHUNK_SIZE> {
+    // Assert buffer contains a whole number of chunks
+    const _ASSERT1: () = assert!(BUFFER_SIZE % CHUNK_SIZE == 0);
+    // Assert vertices fit nicely into chunks
+    const _ASSERT2: () = assert!(CHUNK_SIZE % std::mem::size_of::<T>() == 0);
+
+    pub fn new(device: &wgpu::Device, usages: wgpu::BufferUsages) -> Self {
+        let num_chunks = (BUFFER_SIZE / CHUNK_SIZE) as u64;
+        Self {
+            buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: BUFFER_SIZE as u64,
+                usage: usages | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            usage_map: vec![BufferArea { usage: BufferAreaUsage::Free, num_chunks }],
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn alloc_area(
+        &mut self,
+        queue: &wgpu::Queue,
+        subchunk_coords: [i32; 3],
+        items: &[T],
+    ) -> u32 {
+        debug_assert!(items.len() > 0);
+        let items_byte_slice: &[u8] = bytemuck::cast_slice(items);
+        let byte_len = items_byte_slice.len();
+        let num_chunks_needed = byte_len.div_ceil(CHUNK_SIZE) as u64;
+        // Find free area large enough to hold items
+        let mut current_start_chunk: u64 = 0;
+        for i in 0..self.usage_map.len() {
+            let area = &mut self.usage_map[i];
+            if area.is_free() {
+                if area.num_chunks > num_chunks_needed {
+                    // Split area into used portion and leftover free protion
+                    let new_free_area = BufferArea {
+                        usage: BufferAreaUsage::Free,
+                        num_chunks: area.num_chunks - num_chunks_needed,
+                    };
+                    area.num_chunks = num_chunks_needed;
+                    area.usage = BufferAreaUsage::Used(subchunk_coords);
+                    self.usage_map.insert(i + 1, new_free_area);
+                } else if area.num_chunks == num_chunks_needed {
+                    // Mark entire area as used
+                    area.usage = BufferAreaUsage::Used(subchunk_coords);
+                } else {
+                    continue;
+                }
+                // Write items to buffer
+                let buffer_offset = current_start_chunk * CHUNK_SIZE as u64;
+                let mut buffer_window = queue.write_buffer_with(
+                    &self.buffer,
+                    buffer_offset,
+                    (byte_len as u64).try_into().unwrap(),
+                )
+                .unwrap();
+                buffer_window.copy_from_slice(items_byte_slice);
+                return (buffer_offset / std::mem::size_of::<T>() as u64).try_into().unwrap();
+            }
+            current_start_chunk += area.num_chunks;
+        }
+        todo!("Buffer pool growing");
+    }
+
+    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
+        // Mark all subchunk owned areas as free
+        for area in &mut self.usage_map {
+            if area.belongs_to(subchunk_coords) {
+                area.usage = BufferAreaUsage::Free;
+            }
+        }
+        // Merge free areas
+        let mut current_area_i: usize = 1;
+        while current_area_i < self.usage_map.len() {
+            if self.usage_map[current_area_i - 1].is_free() && self.usage_map[current_area_i].is_free() {
+                self.usage_map[current_area_i - 1].num_chunks += self.usage_map[current_area_i].num_chunks;
+                self.usage_map.remove(current_area_i);
+            } else {
+                current_area_i += 1;
+            }
+        }
+    }
+
+    pub fn get_slice(&self) -> BufferSlice {
+        self.buffer.slice(..)
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct VertexBufferManager<V: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>(
+    BufferManager<V, BUFFER_SIZE, CHUNK_SIZE>
+);
+
+impl<V: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize> VertexBufferManager<V, BUFFER_SIZE, CHUNK_SIZE> {
+    pub fn new(device: &wgpu::Device) -> Self {
+        Self(BufferManager::new(device, wgpu::BufferUsages::VERTEX))
+    }
+
+    /// Returns the `first_vertex` indirect draw argument.
+    pub fn alloc_area(
+        &mut self,
+        queue: &wgpu::Queue,
+        subchunk_coords: [i32; 3],
+        base_quad: [V; 4],
+    ) -> u32 {
+        self.0.alloc_area(queue, subchunk_coords, &base_quad)
+    }
+
+    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
+        self.0.free_subchunk_areas(subchunk_coords)
+    }
+
+    pub fn get_slice(&self) -> wgpu::BufferSlice {
+        self.0.get_slice()
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct InstanceBufferManager<I: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>(
+    BufferManager<I, BUFFER_SIZE, CHUNK_SIZE>
+);
+
+impl<I: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize> InstanceBufferManager<I, BUFFER_SIZE, CHUNK_SIZE> {
+    pub fn new(device: &wgpu::Device) -> Self {
+        Self(BufferManager::new(device, wgpu::BufferUsages::VERTEX))
+    }
+
+    /// Returns the `first_instance` indirect draw argument.
+    pub fn alloc_area(
+        &mut self,
+        queue: &wgpu::Queue,
+        subchunk_coords: [i32; 3],
+        instances: &[I],
+    ) -> u32 {
+        self.0.alloc_area(queue, subchunk_coords, instances)
+    }
+
+    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
+        self.0.free_subchunk_areas(subchunk_coords)
+    }
+
+    pub fn get_slice(&self) -> wgpu::BufferSlice {
+        self.0.get_slice()
+    }
+}
+
 pub mod block_face {
     use super::*;
 
@@ -304,49 +485,53 @@ pub mod block_face {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         })
     }
 
     pub mod face_matrices {
         use super::*;
 
-        pub fn generate_array() -> [[[f32; 4]; 3]; 6] {
-            let matrix_arrays: [[[f32; 3]; 3]; 6] = [
+        #[inline]
+        pub fn rotations() -> [Rotation3<f32>; 6] {
+            [
                 // Top
-                Matrix3::identity().into(),
+                Rotation3::identity(),
                 // Bottom
-                Matrix3::from(Rotation3::from_euler_angles(std::f32::consts::PI, 0.0, 0.0)).into(),
+                Rotation3::from_euler_angles(std::f32::consts::PI, 0.0, 0.0),
                 // North
-                Matrix3::from(Rotation3::from_euler_angles(
+                Rotation3::from_euler_angles(
                     -std::f32::consts::FRAC_PI_2,
                     0.0,
                     std::f32::consts::PI,
-                ))
-                .into(),
+                ),
                 // South
-                Matrix3::from(Rotation3::from_euler_angles(
+                Rotation3::from_euler_angles(
                     std::f32::consts::FRAC_PI_2,
                     0.0,
                     0.0,
-                ))
-                .into(),
+                ),
                 // East
-                Matrix3::from(Rotation3::from_euler_angles(
+                Rotation3::from_euler_angles(
                     0.0,
                     std::f32::consts::FRAC_PI_2,
                     -std::f32::consts::FRAC_PI_2,
-                ))
-                .into(),
+                ),
                 // West
-                Matrix3::from(Rotation3::from_euler_angles(
+                Rotation3::from_euler_angles(
                     0.0,
                     -std::f32::consts::FRAC_PI_2,
                     std::f32::consts::FRAC_PI_2,
-                ))
-                .into(),
-            ];
+                ),
+            ]
+        }
+
+        pub fn generate_array() -> [[[f32; 4]; 3]; 6] {
             // Alignment of each row in a mat3x3 is same as vec4, so we pad up to size
-            matrix_arrays.map(|matrix| matrix.map(|[x, y, z]| [x, y, z, 0.0]))
+            rotations()
+                .map(|rotation_matrix| Matrix3::from(rotation_matrix))
+                .map(|matrix| matrix.into())
+                .map(|matrix: [[f32; 3]; 3]| matrix.map(|[x, y, z]| [x, y, z, 0.0]))
         }
 
         pub mod indices {
@@ -427,19 +612,16 @@ pub mod block_face {
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Vertex {
-        pub pos: [f32; 3],
-        pub uvs: [f32; 2],
-        pub normal: [f32; 3],
+        subchunk_start_coords: [f32; 3],
+        face_matrix_index: u32,
     }
 
     impl Vertex {
         const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
-            // pos
+            // subchunk_start_coords
             0 => Float32x3,
-            // uvs
-            1 => Float32x2,
-            // normal
-            2 => Float32x3,
+            // face_matrix_index
+            1 => Uint32,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -449,27 +631,33 @@ pub mod block_face {
                 attributes: Self::ATTRIBUTES,
             }
         }
-    }
 
-    pub type InstanceList = VertexListBuffer<Instance>;
+        pub fn generate_base_quad(subchunk_start_coords: [i32; 3], face_matrix_index: usize) -> [Self; 4] {
+            let subchunk_start_coords = subchunk_start_coords.map(|n| n as f32);
+            let face_matrix_index = face_matrix_index as u32;
+            [Self { subchunk_start_coords, face_matrix_index }; 4]
+        }
+    }
 
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Instance {
-        pub pos: [f32; 3],
-        pub uvs: [u16; 4],
-        /// In order of: face matrix, X rotation matrix, Y rotation matrix, unused
-        pub matrix_indices: [u8; 4],
+        uvs: [u16; 4],
+        /// 0-3: X offset
+        /// 4-7: Y offset
+        /// 8-11: Z offset
+        /// 12-13: X rotation matrix index
+        /// 14-15: Y rotation matrix index
+        packed_xyz_and_matrix_indices: u16,
+        padding: [u8; 2],
     }
 
     impl Instance {
         const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
-            // pos
-            10 => Float32x3,
             // uvs
-            11 => Uint16x4,
-            // matrix_indices
-            12 => Uint8x4,
+            10 => Uint16x4,
+            // packed_xyz_and_matrix_indices
+            11 => Uint8x2,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -479,57 +667,39 @@ pub mod block_face {
                 attributes: Self::ATTRIBUTES,
             }
         }
+
+        pub fn new(subchunk_xyz: [u8; 3], uvs: [u16; 4], xy_matrix_indices: [u8; 2]) -> Self {
+            debug_assert!(subchunk_xyz[0] < 16);
+            debug_assert!(subchunk_xyz[1] < 16);
+            debug_assert!(subchunk_xyz[2] < 16);
+            debug_assert!(xy_matrix_indices[0] < 4);
+            debug_assert!(xy_matrix_indices[1] < 4);
+            Self {
+                uvs,
+                packed_xyz_and_matrix_indices: (subchunk_xyz[0] as u16) |
+                    ((subchunk_xyz[1] as u16) << 4) |
+                    ((subchunk_xyz[2] as u16) << 8) |
+                    ((xy_matrix_indices[0] as u16) << 12) |
+                    ((xy_matrix_indices[1] as u16) << 14),
+                padding: [0; 2],
+            }
+        }
     }
 
-    // Block top face vertices. Multiplied by face matrices to get other faces.
+    pub type BlockFaceVertexBufferManager = VertexBufferManager<
+        Vertex,
+        {std::mem::size_of::<[[Vertex; 4]; 1 << 20]>()},
+        {std::mem::size_of::<[Vertex; 4]>()},
+    >;
 
-    pub const VERTICES: &[Vertex] = &[
-        Vertex {
-            pos: [-0.5, 0.5, 0.5],
-            uvs: [0.0, 1.0],
-            normal: [0.0, 1.0, -0.0],
-        },
-        Vertex {
-            pos: [0.5, 0.5, 0.5],
-            uvs: [1.0, 1.0],
-            normal: [0.0, 1.0, -0.0],
-        },
-        Vertex {
-            pos: [-0.5, 0.5, -0.5],
-            uvs: [0.0, 0.0],
-            normal: [0.0, 1.0, -0.0],
-        },
-        Vertex {
-            pos: [0.5, 0.5, -0.5],
-            uvs: [1.0, 0.0],
-            normal: [0.0, 1.0, -0.0],
-        },
-    ];
-
-    //pub const INDICES: &[[u16; 3]] = &[
-    //    // Front
-    //    [0, 1, 2],
-    //    [2, 1, 3],
-    //    // // Back
-    //    // [4, 5, 6],
-    //    // [6, 5, 7],
-    //    // // Left
-    //    // [8, 9, 10],
-    //    // [10, 9, 11],
-    //    // // Right
-    //    // [12, 13, 14],
-    //    // [14, 13, 15],
-    //    // // Top
-    //    // [16, 17, 18],
-    //    // [18, 17, 19],
-    //    // // Bottom
-    //    // [20, 21, 22],
-    //    // [22, 21, 23],
-    //];
+    pub type BlockFaceInstanceBufferManager = InstanceBufferManager<
+        Instance,
+        {std::mem::size_of::<[[Instance; 4]; 1 << 20]>()},
+        {std::mem::size_of::<[Instance; 4]>()},
+    >;
 }
 
 pub mod tinted_block_face {
-    use super::block_face::Vertex;
     use super::*;
 
     pub fn create_render_pipeline(
@@ -579,28 +749,34 @@ pub mod tinted_block_face {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         })
     }
 
-    pub type InstanceList = VertexListBuffer<Instance>;
+    pub use super::block_face::Vertex;
 
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Instance {
-        pub pos: [f32; 3],
-        pub uvs: [u16; 4],
-        /// In order of: face matrix, X rotation matrix, Y rotation matrix, unused
-        pub matrix_indices: [u8; 4],
-        pub tint_color: [u8; 4],
+        uvs: [u16; 4],
+        tint_color: [u8; 4],
+        /// 0-3: X offset
+        /// 4-7: Y offset
+        /// 8-11: Z offset
+        /// 12-13: X rotation matrix index
+        /// 14-15: Y rotation matrix index
+        packed_xyz_and_matrix_indices: u16,
+        padding: [u8; 2],
     }
 
     impl Instance {
         const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
-            // pos
-            10 => Float32x3,
-            11 => Uint16x4,
-            12 => Uint8x4,
-            13 => Unorm8x4,
+            // uvs
+            10 => Uint16x4,
+            // tint_color
+            11 => Unorm8x4,
+            // packed_xyz_and_matrix_indices
+            12 => Uint8x2,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -610,7 +786,42 @@ pub mod tinted_block_face {
                 attributes: Self::ATTRIBUTES,
             }
         }
+
+        pub fn new(
+            subchunk_xyz: [u8; 3],
+            uvs: [u16; 4],
+            tint_color: [u8; 4],
+            xy_matrix_indices: [u8; 2],
+        ) -> Self {
+            debug_assert!(subchunk_xyz[0] < 16);
+            debug_assert!(subchunk_xyz[1] < 16);
+            debug_assert!(subchunk_xyz[2] < 16);
+            debug_assert!(xy_matrix_indices[0] < 4);
+            debug_assert!(xy_matrix_indices[1] < 4);
+            Self {
+                uvs,
+                tint_color,
+                packed_xyz_and_matrix_indices: (subchunk_xyz[0] as u16) |
+                    ((subchunk_xyz[1] as u16) << 4) |
+                    ((subchunk_xyz[2] as u16) << 8) |
+                    ((xy_matrix_indices[0] as u16) << 12) |
+                    ((xy_matrix_indices[1] as u16) << 14),
+                padding: [0; 2],
+            }
+        }
     }
+
+    pub type TintedBlockFaceVertexBufferManager = VertexBufferManager<
+        Vertex,
+        {std::mem::size_of::<[[Vertex; 4]; 1 << 20]>()},
+        {std::mem::size_of::<[Vertex; 4]>()},
+    >;
+
+    pub type TintedBlockFaceInstanceBufferManager = InstanceBufferManager<
+        Instance,
+        {std::mem::size_of::<[[Instance; 4]; 1 << 20]>()},
+        {std::mem::size_of::<[Instance; 4]>()},
+    >;
 }
 
 pub mod custom_block {
@@ -663,6 +874,7 @@ pub mod custom_block {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         })
     }
 
@@ -729,15 +941,9 @@ pub mod custom_block {
         }
     }
 
-    pub type DrawArgsList = DrawArgsBuffer<DrawIndexedIndirectArgs>;
-
-    #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-    #[repr(C)]
-    pub struct DrawIndexedIndirectArgs {
-        pub num_indices: u32,
-        pub num_instances: u32,
-        pub start_index: u32,
-        pub start_vertex: u32,
-        pub start_instance: u32,
-    }
+    pub type CustomBlockInstanceBufferManager = InstanceBufferManager<
+        Instance,
+        {std::mem::size_of::<[[Instance; 4]; 1 << 20]>()},
+        {std::mem::size_of::<[Instance; 4]>()},
+    >;
 }

@@ -27,7 +27,6 @@ pub fn load_blockstates(
     match file {
         File::Variants(variants) => load_blockstate_variants(
             block_index,
-            identifier,
             variants,
             custom_properties.unwrap_or(&[]),
             replacement_properties,
@@ -56,7 +55,6 @@ pub fn load_blockstates(
 
 fn load_blockstate_variants(
     block_index: RegistryIndex,
-    identifier: &Identifier,
     variants: IndexMap<String, Variant>,
     custom_properties: &[(&str, CustomPropertyType)],
     replacement_properties: Option<&[(&str, CustomPropertyType)]>,
@@ -692,7 +690,7 @@ pub fn load_full_custom_blockstates(
                             block_index,
                             properties: condition_map,
                             model_data: ModelData::Single(Model {
-                                model: model,
+                                model,
                                 x_rotation: model_info.x_rotation,
                                 y_rotation: model_info.y_rotation,
                             }),

@@ -11,9 +11,6 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     textures: AHashMap<TextureId, TextureData>,
     sampler_cache: AHashMap<epaint::textures::TextureOptions, wgpu::Sampler>,
-    vertex_bind_group_layout: wgpu::BindGroupLayout,
-    index_bind_group_layout: wgpu::BindGroupLayout,
-    data_to_render: Option<RenderData>,
 }
 
 struct TextureData {
@@ -193,27 +190,8 @@ impl Renderer {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         });
-        let layout_entries = &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }];
-        let vertex_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui Vertex Bind Group Layout"),
-                entries: layout_entries,
-            });
-        let index_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui Index Bind Group Layout"),
-                entries: layout_entries,
-            });
         Self {
             pipeline,
             screen_size_buffer,
@@ -221,9 +199,6 @@ impl Renderer {
             texture_bind_group_layout,
             textures: AHashMap::new(),
             sampler_cache: AHashMap::new(),
-            vertex_bind_group_layout,
-            index_bind_group_layout,
-            data_to_render: None,
         }
     }
 

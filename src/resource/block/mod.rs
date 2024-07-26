@@ -3010,8 +3010,9 @@ pub fn register_vanilla_blocks(
         };
         let mut blocks = IndexMap::new();
         for (id, info) in registry.global_palette.iter().enumerate() {
+            let identifier = registry.get_identifier_from_index(info.block_index).unwrap();
             let block_entry = blocks
-                .entry(info.identifier.to_string())
+                .entry(identifier.to_string())
                 .or_insert(JsonBlock {
                     properties: IndexMap::new(),
                     states: Vec::new(),
@@ -3021,7 +3022,7 @@ pub fn register_vanilla_blocks(
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            if let Some(custom_ordering) = custom_ordering_map.get(&info.identifier) {
+            if let Some(custom_ordering) = custom_ordering_map.get(&identifier) {
                 properties.sort_by_cached_key(|n1, _| {
                     custom_ordering.iter().position(|n2| n1 == n2).unwrap()
                 });
@@ -3037,8 +3038,7 @@ pub fn register_vanilla_blocks(
             }
             let default = registry
                 .data
-                .get_entry_from_identifier(&info.identifier)
-                .unwrap()
+                [info.block_index]
                 .default_blockstate
                 .as_usize()
                 == id;

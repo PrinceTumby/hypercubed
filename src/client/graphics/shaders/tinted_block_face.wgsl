@@ -18,24 +18,64 @@ var<uniform> x_rotation_matrices: array<mat3x3<f32>, 4>;
 var<uniform> y_rotation_matrices: array<mat3x3<f32>, 4>;
 
 struct VertexInput {
-    @location(0) pos: vec3<f32>,
-    @location(1) uvs: vec2<f32>,
-    @location(2) normal: vec3<f32>,
+    @builtin(vertex_index) index: u32,
+    @location(0) subchunk_start_coords: vec3<f32>,
+    @location(1) face_matrix_index: u32,
 }
 
 struct InstanceInput {
-    @location(10) pos: vec3<f32>,
-    @location(11) uvs: vec4<u32>,
-    @location(12) matrix_indices: vec4<u32>,
-    @location(13) tint_color: vec4<f32>,
+    @location(10) uvs: vec4<u32>,
+    @location(11) tint_color: vec4<f32>,
+    @location(12) packed_xyz_and_matrix_indices: vec2<u32>,
 }
 
 struct VertexOutput {
+    @invariant
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uvs: vec2<f32>,
     @interpolate(flat)
     @location(2) tint_color: vec4<f32>,
+}
+
+const base_normal: vec3<f32> = vec3(0.0, 1.0, 0.0);
+
+fn get_base_position(vertex_i: u32) -> vec3<f32> {
+    var out: vec3<f32>;
+    switch vertex_i % 4 {
+        case 0u: {
+            out = vec3<f32>(-0.5, 0.5, 0.5);
+        }
+        case 1u: {
+            out = vec3<f32>(0.5, 0.5, 0.5);
+        }
+        case 2u: {
+            out = vec3<f32>(-0.5, 0.5, -0.5);
+        }
+        case 3u, default: {
+            out = vec3<f32>(0.5, 0.5, -0.5);
+        }
+    }
+    return out;
+}
+
+fn get_uvs(vertex_i: u32) -> vec2<f32> {
+    var out: vec2<f32>;
+    switch vertex_i % 4 {
+        case 0u: {
+            out = vec2<f32>(0.0, 1.0);
+        }
+        case 1u: {
+            out = vec2<f32>(1.0, 1.0);
+        }
+        case 2u: {
+            out = vec2<f32>(0.0, 0.0);
+        }
+        case 3u, default: {
+            out = vec2<f32>(1.0, 0.0);
+        }
+    }
+    return out;
 }
 
 @vertex
@@ -44,19 +84,33 @@ fn vs_main(
     instance: InstanceInput,
 ) -> VertexOutput {
     var out: VertexOutput;
+    // Unpack instance data
+    let xyz_offset = vec3<f32>(
+        f32(instance.packed_xyz_and_matrix_indices[0] & 0xF),
+        f32((instance.packed_xyz_and_matrix_indices[0] >> 4) & 0xF),
+        f32(instance.packed_xyz_and_matrix_indices[1] & 0xF),
+    );
+    let matrix_indices = vec2<u32>(
+        (instance.packed_xyz_and_matrix_indices[1] >> 4) & 0x3,
+        (instance.packed_xyz_and_matrix_indices[1] >> 6) & 0x3,
+    );
     // Position
-    let face_matrix = face_matrices[instance.matrix_indices[0]];
-    let x_rotation_matrix = x_rotation_matrices[instance.matrix_indices[1]];
-    let y_rotation_matrix = y_rotation_matrices[instance.matrix_indices[2]];
+    let base_pos = get_base_position(block_vertex.index);
+    let base_uvs = get_uvs(block_vertex.index);
+    let face_matrix = face_matrices[block_vertex.face_matrix_index];
+    let x_rotation_matrix = x_rotation_matrices[matrix_indices[0]];
+    let y_rotation_matrix = y_rotation_matrices[matrix_indices[1]];
     let combined_matrix = y_rotation_matrix * x_rotation_matrix * face_matrix;
-    let global_pos = combined_matrix * block_vertex.pos + instance.pos + vec3(0.5, 0.5, 0.5);
+    let local_pos = combined_matrix * base_pos;
+    let block_centre_pos = block_vertex.subchunk_start_coords + xyz_offset;
+    let global_pos = local_pos + block_centre_pos + vec3(0.5, 0.5, 0.5);
     out.clip_pos = view_matrix * vec4(global_pos, 1.0);
     // UVs
     let start_uvs = vec2<f32>(instance.uvs.xy) / atlas_size;
     let end_uvs = vec2<f32>(instance.uvs.zw) / atlas_size;
-    out.uvs = mix(start_uvs, end_uvs, block_vertex.uvs);
+    out.uvs = mix(start_uvs, end_uvs, base_uvs);
     // Normal
-    out.normal = y_rotation_matrix * x_rotation_matrix * face_matrix * block_vertex.normal;
+    out.normal = combined_matrix * base_normal;
     // Tint Color
     out.tint_color = instance.tint_color;
     return out;
