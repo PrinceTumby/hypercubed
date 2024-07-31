@@ -2,34 +2,46 @@ pub mod chunk;
 pub mod debug;
 pub mod egui_renderer;
 
+use crate::basic_types::AxisDirection;
 use crate::resource;
+use ahash::{AHashMap, AHashSet};
 use nalgebra::{Isometry3, Matrix4, Point3, UnitQuaternion, Vector3};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
 use winit::window::Window;
-use ahash::{AHashMap, AHashSet};
-use std::collections::VecDeque;
-use crate::basic_types::AxisDirection;
 //use petgraph::graph::DiGraph;
 use chunk::{
-    block_face::{BlockFaceVertexBufferManager, BlockFaceInstanceBufferManager},
-    tinted_block_face::{TintedBlockFaceVertexBufferManager, TintedBlockFaceInstanceBufferManager},
+    block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
+    tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
     pub pos: Point3<f32>,
     pub proj_matrix: Matrix4<f32>,
-    /// Represented in degrees
+    /// Represented in degrees.
     pub yaw: f32,
-    /// Represented in degrees
+    /// Represented in degrees.
     pub pitch: f32,
-    /// Represented in degrees
+    /// Represented in degrees.
     pub roll: f32,
 }
 
 impl Camera {
+    pub fn get_mc_rot(&self) -> (f32, f32) {
+        (
+            (self.yaw - 180.0) % 360.0,
+            -self.pitch,
+        )
+    }
+
+    pub fn set_mc_rot(&mut self, yaw: f32, pitch: f32) {
+        self.yaw = (yaw + 180.0) % 360.0;
+        self.pitch = -pitch.clamp(-90.0, 90.0);
+    }
+
     pub fn get_rot(&self) -> UnitQuaternion<f32> {
         UnitQuaternion::from_euler_angles(
             self.pitch.to_radians(),
@@ -97,6 +109,7 @@ pub struct GraphicsResources<'a> {
     pub surface: wgpu::Surface<'a>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    pub block_registry: resource::block::Registry,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,9 +119,7 @@ pub struct GraphicsOptions {
 
 impl Default for GraphicsOptions {
     fn default() -> Self {
-        Self {
-            vsync: true,
-        }
+        Self { vsync: true }
     }
 }
 
@@ -121,8 +132,17 @@ impl GraphicsOptions {
     }
 }
 
+pub struct GraphicsBufferManagers {
+    pub block_face_vertex: BlockFaceVertexBufferManager,
+    pub block_face_instance: BlockFaceInstanceBufferManager,
+    pub tinted_block_face_vertex: TintedBlockFaceVertexBufferManager,
+    pub tinted_block_face_instance: TintedBlockFaceInstanceBufferManager,
+    pub custom_block_instance: CustomBlockInstanceBufferManager,
+}
+
 pub struct GraphicsState<'a> {
     pub resources: Arc<GraphicsResources<'a>>,
+    pub buffer_managers: GraphicsBufferManagers,
     pub config: wgpu::SurfaceConfiguration,
     pub graphics_options: GraphicsOptions,
     pub block_render_pipeline: wgpu::RenderPipeline,
@@ -131,15 +151,9 @@ pub struct GraphicsState<'a> {
     pub debug_crosshair_render_pipeline: wgpu::RenderPipeline,
     pub egui_renderer: egui_renderer::Renderer,
     pub depth_texture: Texture,
-    pub block_face_vertex_buffer_manager: BlockFaceVertexBufferManager,
-    pub block_face_instance_buffer_manager: BlockFaceInstanceBufferManager,
-    pub tinted_block_face_vertex_buffer_manager: TintedBlockFaceVertexBufferManager,
-    pub tinted_block_face_instance_buffer_manager: TintedBlockFaceInstanceBufferManager,
-    pub custom_block_instance_buffer_manager: CustomBlockInstanceBufferManager,
     pub custom_block_vertices_buffer: wgpu::Buffer,
     pub custom_block_indices_buffer: wgpu::Buffer,
     pub block_item_atlas_bind_group: wgpu::BindGroup,
-    pub block_registry: resource::block::Registry,
     pub camera: Camera,
     pub camera_buffer: wgpu::Buffer,
     pub camera_bind_group: wgpu::BindGroup,
@@ -515,7 +529,15 @@ impl<'a> GraphicsState<'a> {
                 surface,
                 device,
                 queue,
+                block_registry,
             }),
+            buffer_managers: GraphicsBufferManagers {
+                block_face_vertex: block_face_vertex_buffer_manager,
+                block_face_instance: block_face_instance_buffer_manager,
+                tinted_block_face_vertex: tinted_block_face_vertex_buffer_manager,
+                tinted_block_face_instance: tinted_block_face_instance_buffer_manager,
+                custom_block_instance: custom_block_instance_buffer_manager,
+            },
             config,
             graphics_options,
             block_render_pipeline,
@@ -524,15 +546,9 @@ impl<'a> GraphicsState<'a> {
             debug_crosshair_render_pipeline,
             egui_renderer,
             depth_texture,
-            block_face_vertex_buffer_manager,
-            block_face_instance_buffer_manager,
-            tinted_block_face_vertex_buffer_manager,
-            tinted_block_face_instance_buffer_manager,
-            custom_block_instance_buffer_manager,
             custom_block_vertices_buffer,
             custom_block_indices_buffer,
             block_item_atlas_bind_group,
-            block_registry,
             camera,
             camera_buffer,
             camera_bind_group,
@@ -575,6 +591,7 @@ impl<'a> GraphicsState<'a> {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn render(
         &mut self,
         subchunks: &AHashMap<[i32; 3], chunk::Subchunk>,
@@ -678,7 +695,7 @@ impl<'a> GraphicsState<'a> {
                         x_positive: None,
                         y_positive: None,
                         z_positive: None,
-                    }
+                    },
                 });
                 visited_chunks.insert(camera_chunk_coords);
                 //if subchunks.contains_key(&[camera_x, camera_y, camera_z]) {
@@ -718,18 +735,19 @@ impl<'a> GraphicsState<'a> {
                 let subchunk_maybe = subchunks.get(&chunk_coords);
                 // Visit neighbours
                 'neighbour_blk: {
-                    let (cur_x_flip, cur_y_flip, cur_z_flip) = if debug_state.cave_cull_check_unflipped {
-                        match chunk_flip_state {
-                            FlippingState::Unflipped {
-                                x_positive,
-                                y_positive,
-                                z_positive,
-                            } => (x_positive, y_positive, z_positive),
-                            FlippingState::Flipped => break 'neighbour_blk,
-                        }
-                    } else {
-                        (None, None, None)
-                    };
+                    let (cur_x_flip, cur_y_flip, cur_z_flip) =
+                        if debug_state.cave_cull_check_unflipped {
+                            match chunk_flip_state {
+                                FlippingState::Unflipped {
+                                    x_positive,
+                                    y_positive,
+                                    z_positive,
+                                } => (x_positive, y_positive, z_positive),
+                                FlippingState::Flipped => break 'neighbour_blk,
+                            }
+                        } else {
+                            (None, None, None)
+                        };
                     let [chunk_x, chunk_y, chunk_z] = chunk_coords;
                     let neighbour_chunks = [
                         ([chunk_x - 1, chunk_y, chunk_z], AxisDirection::West),
@@ -739,7 +757,8 @@ impl<'a> GraphicsState<'a> {
                         ([chunk_x, chunk_y - 1, chunk_z], AxisDirection::Down),
                         ([chunk_x, chunk_y + 1, chunk_z], AxisDirection::Up),
                     ];
-                    let facing_dir = debug_state.cull_camera
+                    let facing_dir = debug_state
+                        .cull_camera
                         .get_rot()
                         .transform_vector(&-Vector3::z());
                     'neighbour_loop: for (neighbour_coord, to_dir) in neighbour_chunks {
@@ -826,7 +845,10 @@ impl<'a> GraphicsState<'a> {
                                     cur_x_flip.zip(new_x_flip),
                                     cur_y_flip.zip(new_y_flip),
                                     cur_z_flip.zip(new_z_flip),
-                                ].iter().any(|&flips| flips.is_some_and(|(x, y)| x != y)) {
+                                ]
+                                .iter()
+                                .any(|&flips| flips.is_some_and(|(x, y)| x != y))
+                                {
                                     FlippingState::Flipped
                                 } else {
                                     FlippingState::Unflipped {
@@ -901,17 +923,20 @@ impl<'a> GraphicsState<'a> {
             }
             // Base block faces
             if block_face_draw_args.len() > 0 {
-                block_face_draw_args_buffer = self.resources.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Block Face Draw Args Buffer"),
-                    contents: bytemuck::cast_slice(&block_face_draw_args),
-                    usage: wgpu::BufferUsages::INDIRECT,
-                });
+                block_face_draw_args_buffer =
+                    self.resources
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Block Face Draw Args Buffer"),
+                            contents: bytemuck::cast_slice(&block_face_draw_args),
+                            usage: wgpu::BufferUsages::INDIRECT,
+                        });
                 render_pass.set_pipeline(&self.block_render_pipeline);
                 render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.block_face_vertex_buffer_manager.get_slice());
-                render_pass.set_vertex_buffer(1, self.block_face_instance_buffer_manager.get_slice());
+                render_pass.set_vertex_buffer(0, self.buffer_managers.block_face_vertex.get_slice());
+                render_pass.set_vertex_buffer(1, self.buffer_managers.block_face_instance.get_slice());
                 render_pass.multi_draw_indirect(
                     &block_face_draw_args_buffer,
                     0,
@@ -920,17 +945,22 @@ impl<'a> GraphicsState<'a> {
             }
             // Tinted block faces
             if tinted_block_face_draw_args.len() > 0 {
-                tinted_block_face_draw_args_buffer = self.resources.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Tinted Block Face Draw Args Buffer"),
-                    contents: bytemuck::cast_slice(&tinted_block_face_draw_args),
-                    usage: wgpu::BufferUsages::INDIRECT,
-                });
+                tinted_block_face_draw_args_buffer =
+                    self.resources
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Tinted Block Face Draw Args Buffer"),
+                            contents: bytemuck::cast_slice(&tinted_block_face_draw_args),
+                            usage: wgpu::BufferUsages::INDIRECT,
+                        });
                 render_pass.set_pipeline(&self.tinted_block_render_pipeline);
                 render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.tinted_block_face_vertex_buffer_manager.get_slice());
-                render_pass.set_vertex_buffer(1, self.tinted_block_face_instance_buffer_manager.get_slice());
+                render_pass
+                    .set_vertex_buffer(0, self.buffer_managers.tinted_block_face_vertex.get_slice());
+                render_pass
+                    .set_vertex_buffer(1, self.buffer_managers.tinted_block_face_instance.get_slice());
                 render_pass.multi_draw_indirect(
                     &tinted_block_face_draw_args_buffer,
                     0,
@@ -939,17 +969,20 @@ impl<'a> GraphicsState<'a> {
             }
             // Custom blocks
             if custom_block_draw_args.len() > 0 {
-                custom_block_draw_args_buffer = self.resources.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Custom Block Draw Args Buffer"),
-                    contents: bytemuck::cast_slice(&custom_block_draw_args),
-                    usage: wgpu::BufferUsages::INDIRECT,
-                });
+                custom_block_draw_args_buffer =
+                    self.resources
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Custom Block Draw Args Buffer"),
+                            contents: bytemuck::cast_slice(&custom_block_draw_args),
+                            usage: wgpu::BufferUsages::INDIRECT,
+                        });
                 render_pass.set_pipeline(&self.custom_block_render_pipeline);
                 render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.custom_block_vertices_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, self.custom_block_instance_buffer_manager.get_slice());
+                render_pass.set_vertex_buffer(1, self.buffer_managers.custom_block_instance.get_slice());
                 render_pass.set_index_buffer(
                     self.custom_block_indices_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,

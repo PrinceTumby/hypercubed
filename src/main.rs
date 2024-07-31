@@ -6,7 +6,7 @@ pub mod protocol;
 pub mod resource;
 pub mod world;
 
-use protocol::v765::prelude::*;
+use std::sync::Arc;
 
 const SERVER_ADDRESS: &str = "localhost";
 const SERVER_PORT: u16 = 25565;
@@ -14,8 +14,15 @@ const SERVER_PORT: u16 = 25565;
 fn main() -> anyhow::Result<()> {
     use protocol::v765::configuration;
     env_logger::init();
+    #[cfg(feature = "tracy")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default())
+        ).unwrap();
+    }
     println!("{}", request_status(765, SERVER_ADDRESS, SERVER_PORT)?);
-    let (mut connection, login_success_packet) = login(
+    let (server_connection, login_success_packet) = login(
         SERVER_ADDRESS,
         SERVER_PORT,
         configuration::ClientInformation {
@@ -30,55 +37,26 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
     println!("{login_success_packet:?}");
-    let mut test_chunks = ahash::AHashMap::new();
-    loop {
-        use protocol::v765::play::{serverbound, Clientbound};
-        match connection.read_packet()? {
-            Clientbound::ErrorDisconnect { reason } => println!("Disconnected: {reason}"),
-            Clientbound::BundleDelimiter => unreachable!(),
-            Clientbound::LoginPlay(_packet) => println!("Login play: {{<skipped>}}"),
-            Clientbound::UpdateRecipes(_recipes) => println!("Update recipes: [<skipped>]"),
-            Clientbound::UpdateTags(_tags) => println!("Update tags: [<skipped>]"),
-            Clientbound::DeclareCommands(_) => println!("Declare commands: [<todo>]"),
-            Clientbound::UpdateRecipeBook(_) => println!("Update recipes: {{<skipped>}}"),
-            Clientbound::ServerData(data) => println!("Server MOTD: {:?}", data.motd),
-            Clientbound::ChunkDataAndUpdateLight(data) => {
-                println!("Chunk data and light update: {{<skipped>}}");
-                let (rest, chunk_sections) = count(ChunkSection::deserialize, 24)(&data.chunk_data)
-                    .map_err(|err| err.to_owned())?;
-                assert_eq!(rest.len(), 0);
-                test_chunks.insert((data.chunk_x, data.chunk_z), chunk_sections);
-                if test_chunks.len() >= 256 {
-                    break;
-                }
-            }
-            Clientbound::ChunkBatchStart => println!("Chunk batch started"),
-            Clientbound::ChunkBatchEnd { num_chunks } => {
-                println!("Chunk batch ended, received {num_chunks} chunks");
-                connection.send_packet(serverbound::ChunkBatchReceived {
-                    desired_chunks_per_tick: 8.0,
-                })?;
-            }
-            other => println!("{other:?}"),
-        }
+    // TODO: Refactor this:
+    // - Change PlayConnection to have an internal thread sending packets on a channel
+    // - Make read_packet pull from the internal channel receiver
+    // Then we no longer need an Arc<PlayConnection> with a confusing read_packet method, and we
+    // can more easily make a try_read_packet method
+    let server_connection = Arc::new(server_connection);
+    let (clientbound_tx, clientbound_rx) = std::sync::mpsc::channel();
+    {
+        let server_connection = server_connection.clone();
+        std::thread::spawn(move || loop {
+            let packet = server_connection.read_packet()
+                .map_err(|err| format!("{err:.02X?}"))
+                .unwrap();
+            clientbound_tx.send(packet).unwrap();
+        });
     }
-    drop(connection);
-    pollster::block_on(client::window_run(test_chunks))?;
+    pollster::block_on(client::window_run(server_connection, clientbound_rx))?;
     Ok(())
 }
 
-// TODO We've saved a test chunk, get it rendering
-
-// fn main() -> anyhow::Result<()> {
-//     env_logger::init();
-//     // tracing_subscriber::fmt::fmt()
-//     //     .with_max_level(tracing::Level::TRACE)
-//     //     .pretty()
-//     //     .init();
-//     pollster::block_on(client::window_run(ahash::AHashMap::new()))
-// }
-
-use nom::multi::count;
 use nom::sequence::pair;
 use nom::Parser;
 use nom_supreme::tag::complete::tag;
@@ -211,21 +189,3 @@ enum Palette {
     Palette(Vec<GlobalPaletteIndex>),
     Direct,
 }
-
-// fn main() -> anyhow::Result<()> {
-//     // use protocol::v765::play::ChunkDataAndUpdateLight;
-//     // let test_chunk_json = std::fs::read_to_string("test_chunk.json")?;
-//     // let test_chunk = serde_json::from_str::<ChunkDataAndUpdateLight>(&test_chunk_json)?;
-//     let test_chunk_data_json = std::fs::read_to_string("test_chunk_data.json")?;
-//     let test_chunk_data: Vec<u8> = serde_json::from_str(&test_chunk_data_json)?;
-//     let (rest, chunk_sections) =
-//         count(ChunkSection::deserialize, 24)(&test_chunk_data).map_err(|err| err.to_owned())?;
-//     assert_eq!(rest.len(), 0);
-//     // for chunk_section in &chunk_sections {
-//     //     println!("{}", chunk_section.block_states);
-//     // }
-//     env_logger::init();
-//     pollster::block_on(client::window_run(chunk_sections))?;
-//     // TODO Get this test chunk rendering
-//     Ok(())
-// }

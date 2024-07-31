@@ -19,12 +19,18 @@ use bytebuffer::ByteBuffer;
 use std::collections::VecDeque;
 use std::io::prelude::*;
 use std::net::TcpStream;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct PlayConnection {
     stream: TcpStream,
     compression_threshold: Option<usize>,
+    read_state: Mutex<PlayConnectionReadState>,
+}
+
+#[derive(Debug)]
+struct PlayConnectionReadState {
     packet_queue: VecDeque<play::Clientbound>,
     bundle_queue: VecDeque<play::Clientbound>,
     inside_bundle: bool,
@@ -35,40 +41,48 @@ impl PlayConnection {
         Self {
             stream,
             compression_threshold,
-            packet_queue: VecDeque::new(),
-            bundle_queue: VecDeque::new(),
-            inside_bundle: false,
+            read_state: Mutex::new(PlayConnectionReadState {
+                packet_queue: VecDeque::new(),
+                bundle_queue: VecDeque::new(),
+                inside_bundle: false,
+            }),
         }
     }
 
-    pub fn read_packet(&mut self) -> std::io::Result<play::Clientbound> {
+    pub fn read_packet(&self) -> std::io::Result<play::Clientbound> {
         use play::Clientbound;
         use prelude::*;
+        let mut read_state_lock = self.read_state.lock().unwrap();
+        let read_state = &mut *read_state_lock;
+        let packet_queue = &mut read_state.packet_queue;
+        let bundle_queue = &mut read_state.bundle_queue;
+        let inside_bundle = &mut read_state.inside_bundle;
         loop {
-            if let Some(packet) = self.packet_queue.pop_front() {
+            if let Some(packet) = packet_queue.pop_front() {
                 return Ok(packet);
             }
-            match self.inside_bundle {
+            match inside_bundle {
                 false => {
-                    match Clientbound::read_from(self.compression_threshold, &mut self.stream)? {
-                        Clientbound::BundleDelimiter => self.inside_bundle = true,
-                        packet => self.packet_queue.push_back(packet),
+                    match Clientbound::read_from(self.compression_threshold, &mut &self.stream)? {
+                        Clientbound::BundleDelimiter => *inside_bundle = true,
+                        packet => packet_queue.push_back(packet),
                     }
                 }
-                true => match Clientbound::read_from(self.compression_threshold, &mut self.stream)?
-                {
-                    Clientbound::BundleDelimiter => {
-                        self.packet_queue.extend(self.bundle_queue.drain(..));
-                        self.inside_bundle = false;
+                true => {
+                    match Clientbound::read_from(self.compression_threshold, &mut &self.stream)? {
+                        Clientbound::BundleDelimiter => {
+                            packet_queue.extend(bundle_queue.drain(..));
+                            *inside_bundle = false;
+                        }
+                        packet => bundle_queue.push_back(packet),
                     }
-                    packet => self.bundle_queue.push_back(packet),
-                },
+                }
             }
         }
     }
 
-    pub fn send_packet<P: PacketWrite>(&mut self, packet: P) -> std::io::Result<()> {
-        packet.write_packet_into(&mut self.stream, self.compression_threshold)
+    pub fn send_packet<P: PacketWrite>(&self, packet: P) -> std::io::Result<()> {
+        packet.write_packet_into(&mut &self.stream, self.compression_threshold)
     }
 }
 
@@ -79,6 +93,9 @@ pub fn login(
 ) -> std::io::Result<(PlayConnection, login::LoginSuccess)> {
     use prelude::*;
     let mut stream = TcpStream::connect(format!("{address}:{port}"))?;
+    // We want to send packets as soon as possible, even if they're small.
+    // If we can't do that it's not a big deal though, so ignore any errors.
+    _ = stream.set_nodelay(true);
     // Send handshake packet
     handshaking::Handshake {
         protocol_version: 765,
@@ -87,7 +104,6 @@ pub fn login(
         next_state: handshaking::HandshakeNextState::Login,
     }
     .write_packet_into(&mut stream, None)?;
-    // TODO NEXT Implement configuration, move packet stuff into main folder
     login::LoginStart {
         username: "Sleepman",
         player_uuid: Uuid::new_v3(&OFFLINE_PLAYER_NAMESPACE, b"Sleepman"),
@@ -95,7 +111,6 @@ pub fn login(
     .write_packet_into(&mut stream, None)?;
     stream.flush()?;
     let mut compression_threshold = None;
-    // TODO Implement compressed serialization
     // Login phase
     let success_packet = loop {
         match login::Response::read_from(compression_threshold, &mut stream)? {

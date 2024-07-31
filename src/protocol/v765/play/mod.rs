@@ -8,6 +8,7 @@ pub use crate::protocol::v763::packet::play::{
     SetHealth, SpawnNonLivingEntity, SynchronizePlayerPosition, TagGroup, TeleportEntity,
     UpdateEntityAttributes, UpdateEntityPosition, UpdateEntityPositionAndRotation,
     UpdateEntityRotation, UpdatePlayerInfo, UpdateRecipeBook, UpdateSectionBlocks, UpdateTime,
+    PositionChange, RotationChange,
 };
 
 use super::prelude::*;
@@ -23,10 +24,11 @@ use nom_supreme::ParserExt;
 #[derive(Clone, Debug, PacketRead)]
 pub enum Clientbound {
     ErrorDisconnect {
-        reason: String,
+        reason: Chat,
     },
     BundleDelimiter,
     SpawnNonLivingEntity(SpawnNonLivingEntity),
+    SetEntityAnimation(SetEntityAnimation),
     SetBlockEntityData(SetBlockEntityData),
     BlockUpdate(BlockUpdate),
     ChangeDifficulty {
@@ -45,9 +47,17 @@ pub enum Clientbound {
         id: i32,
         status: u8,
     },
+    UnloadChunk {
+        chunk_x: i32,
+        chunk_z: i32,
+    },
     GameEvent(GameEvent),
     InitializeWorldBorder(InitializeWorldBorder),
+    KeepAlive {
+        id: u64,
+    },
     ChunkDataAndUpdateLight(ChunkDataAndUpdateLight),
+    WorldEvent(WorldEvent),
     UpdateLight(UpdateLight),
     LoginPlay(LoginPlay),
     UpdateEntityPosition(UpdateEntityPosition),
@@ -77,6 +87,10 @@ pub enum Clientbound {
     SetHealth(SetHealth),
     UpdateTime(UpdateTime),
     PlaySoundEffect(PlaySoundEffect),
+    SystemChatMessage {
+        content: Chat,
+        at_action_bar: bool,
+    },
     TeleportEntity(TeleportEntity),
     SetTickingState(SetTickingState),
     StepTicks(i32),
@@ -90,9 +104,10 @@ impl Deserialize for Clientbound {
     fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
         alt((
             var_int_tagged_parser!(
-                0x1B => String::deserialize.map(|reason| Self::ErrorDisconnect { reason }).context("ErrorDisconnect"),
+                0x1B => Chat::deserialize.map(|reason| Self::ErrorDisconnect { reason }).context("ErrorDisconnect"),
                 0x00 => value(Self::BundleDelimiter, tag(&[][..])).context("Bundle Delimiter"),
                 0x01 => SpawnNonLivingEntity::deserialize.map(Self::SpawnNonLivingEntity),
+                0x03 => SetEntityAnimation::deserialize.map(Self::SetEntityAnimation),
                 0x07 => SetBlockEntityData::deserialize.map(Self::SetBlockEntityData),
                 0x09 => BlockUpdate::deserialize.map(Self::BlockUpdate),
                 0x0B => <(Difficulty, bool)>::deserialize.map(
@@ -106,16 +121,21 @@ impl Deserialize for Clientbound {
                 0x19 => DamageEvent::deserialize.map(Self::DamageEvent),
                 0x1D =>
                     <(i32, u8)>::deserialize.map(|(id, status)| Self::EntityEvent { id, status }),
+                0x1F => <(i32, i32)>::deserialize.map(
+                    |(chunk_z, chunk_x)| Self::UnloadChunk { chunk_x, chunk_z }
+                ),
                 0x20 => GameEvent::deserialize.map(Self::GameEvent),
                 0x23 => InitializeWorldBorder::deserialize.map(Self::InitializeWorldBorder),
+                0x24 => u64::deserialize.map(|id| Self::KeepAlive { id }),
                 0x25 => ChunkDataAndUpdateLight::deserialize.map(Self::ChunkDataAndUpdateLight),
+                0x26 => WorldEvent::deserialize.map(Self::WorldEvent),
+            ),
+            var_int_tagged_parser!(
                 0x28 => UpdateLight::deserialize.map(Self::UpdateLight),
                 0x29 => LoginPlay::deserialize.map(Self::LoginPlay),
                 0x2C => UpdateEntityPosition::deserialize.map(Self::UpdateEntityPosition),
                 0x2D => UpdateEntityPositionAndRotation::deserialize.map(Self::UpdateEntityPositionAndRotation),
                 0x2E => UpdateEntityRotation::deserialize.map(Self::UpdateEntityRotation),
-            ),
-            var_int_tagged_parser!(
                 0x36 => <(u8, f32, f32)>::deserialize.map(
                     |(flags, fly_speed, fov_modifier)| Self::PlayerAbilities {
                         flags,
@@ -140,14 +160,17 @@ impl Deserialize for Clientbound {
                 0x58 => SetEntityVelocity::deserialize.map(Self::SetEntityVelocity),
                 0x59 => SetEquipment::deserialize.map(Self::SetEquipment),
                 0x5A => SetExperience::deserialize.map(Self::SetExperience),
+            ),
+            var_int_tagged_parser!(
                 0x5B => SetHealth::deserialize.map(Self::SetHealth),
                 0x62 => UpdateTime::deserialize.map(Self::UpdateTime),
                 0x66 => PlaySoundEffect::deserialize.map(Self::PlaySoundEffect),
+                0x69 => <(Chat, bool)>::deserialize.map(
+                    |(content, at_action_bar)| Self::SystemChatMessage { content, at_action_bar }
+                ),
                 0x6D => TeleportEntity::deserialize.map(Self::TeleportEntity),
                 0x6E => SetTickingState::deserialize.map(Self::SetTickingState),
                 0x6F => VarInt::deserialize.map(|ticks| Self::StepTicks(ticks.0)),
-            ),
-            var_int_tagged_parser!(
                 0x70 => UpdateAdvancements::deserialize.map(Self::UpdateAdvancements),
                 0x71 => UpdateEntityAttributes::deserialize.map(Self::UpdateEntityAttributes),
                 0x73 => <Vec<crafting::Recipe>>::deserialize.map(Self::UpdateRecipes),
@@ -157,7 +180,36 @@ impl Deserialize for Clientbound {
     }
 }
 
-// TODO Move to play/game_event.rs, give better types
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct SetEntityAnimation {
+    pub entity_id: VarInt,
+    pub animation: SetEntityAnimationType,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SetEntityAnimationType {
+    SwingPrimaryArm,
+    SwingSecondaryArm,
+    LeaveBed,
+    CriticalEffect,
+    MagicalCriticalEffect,
+}
+
+impl Deserialize for SetEntityAnimationType {
+    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+        verify(take(1usize), |variant: &[u8]| variant[0] <= 5 && variant[0] != 1)
+            .map(|variant: &[u8]| match variant[0] {
+                0 => Self::SwingPrimaryArm,
+                2 => Self::LeaveBed,
+                3 => Self::SwingSecondaryArm,
+                4 => Self::CriticalEffect,
+                5 => Self::MagicalCriticalEffect,
+                _ => unreachable!(),
+            })
+            .parse(input)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct GameEvent {
     pub event: GameEventType,
@@ -230,9 +282,17 @@ pub struct BlockEntity {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct WorldEvent {
+    pub event: u32,
+    pub location: Position,
+    pub extra_data: u32,
+    pub disable_volume_distance: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct UpdateLight {
-    pub chunk_x: i32,
-    pub chunk_z: i32,
+    pub chunk_x: VarInt,
+    pub chunk_z: VarInt,
     pub sky_light_mask: BitVec,
     pub block_light_mask: BitVec,
     pub empty_sky_light_mask: BitVec,
@@ -451,5 +511,30 @@ pub mod serverbound {
         pub main_hand: MainHand,
         pub text_filtering_enabled: bool,
         pub server_listings_allowed: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, Serialize, PacketWrite)]
+    #[packet_write(id = 0x15)]
+    pub struct KeepAliveResponse {
+        pub id: u64,
+    }
+
+    // Gameplay
+    
+    #[derive(Clone, Copy, Debug, Serialize, PacketWrite)]
+    #[packet_write(id = 0x00)]
+    pub struct ConfirmTeleportation {
+        pub id: VarInt,
+    }
+
+    #[derive(Clone, Copy, Debug, Serialize, PacketWrite)]
+    #[packet_write(id = 0x18)]
+    pub struct SetPlayerPositionAndRotation {
+        pub x: f64,
+        pub feet_y: f64,
+        pub z: f64,
+        pub mc_yaw: f32,
+        pub mc_pitch: f32,
+        pub on_ground: bool,
     }
 }

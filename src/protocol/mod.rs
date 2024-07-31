@@ -37,7 +37,7 @@ pub trait Deserialize: Sized {
 }
 
 pub trait Serialize: Sized {
-    // TODO Come up with better names for these
+    // TODO: Come up with better names for these
     fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()>;
 
     fn serialize_into<O: std::io::Write>(self, output: &mut O) -> std::io::Result<()> {

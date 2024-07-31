@@ -670,6 +670,8 @@ mod position_tests {
     }
 }
 
+// NBT
+
 impl Deserialize for NbtCompound {
     fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
         fn parser(input: &[u8]) -> IResult<&[u8], NbtCompound> {
@@ -735,10 +737,10 @@ impl Deserialize for AxisDirection {
 
 // Particle
 
-// TODO Can contain data or be parsed from a string, so convert to new type
+// TODO: Can contain data or be parsed from a string, so convert to new type
 pub type Particle = VarInt;
 
-// GlobalPos, represents an interdimensional location
+// GlobalPosition, represents an interdimensional location
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct GlobalPosition {

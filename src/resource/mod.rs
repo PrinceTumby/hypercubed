@@ -27,7 +27,9 @@ impl<T> RegistryData<T> {
     /// Panics if an entry is already registered with `identifier`.
     pub fn register(&mut self, identifier: Identifier, entry: T) -> RegistryIndex {
         let index = RegistryIndex(self.entries.len().try_into().unwrap());
-        if let Err((identifier, _index)) = self.identifier_map.insert_no_overwrite(identifier, index) {
+        if let Err((identifier, _index)) =
+            self.identifier_map.insert_no_overwrite(identifier, index)
+        {
             panic!("registry already contains key {identifier}");
         }
         self.entries.push(entry);

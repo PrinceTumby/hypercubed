@@ -104,7 +104,7 @@ pub trait PacketWrite: Serialize {
     }
 }
 
-pub trait PacketRead: Deserialize {
+pub trait PacketRead: Deserialize + std::fmt::Debug {
     /// If provided, ID VarInt will be removed from packet data passed to deserialize. Otherwise,
     /// is passed through.
     const ID: Option<i32> = None;
@@ -119,7 +119,7 @@ pub trait PacketRead: Deserialize {
         }
     }
 
-    // TODO Convert asserts into useful errors, fix data_left check using all_consuming
+    // TODO: Convert asserts into useful errors, fix data_left check using all_consuming
     fn read_uncompressed_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let (_, packet_length) = read_var_int_as_usize(reader)?;
         let mut raw_packet = match Self::ID {
@@ -189,7 +189,11 @@ pub trait PacketRead: Deserialize {
         {
             let (data_left, packet) = Self::deserialize(&uncompressed_packet)
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_owned()))?;
-            assert_eq!(data_left, &[] as &[u8]);
+            assert_eq!(
+                data_left,
+                &[] as &[u8],
+                "data left after packet - packet: {packet:?}, data_left: {data_left:?}",
+            );
             Ok(packet)
         }
         #[cfg(feature = "protocol_verbose")]

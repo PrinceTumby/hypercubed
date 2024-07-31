@@ -1,16 +1,17 @@
-use super::model::{CombinedModelPart, ModelCache, ModelType};
-use super::RightAngleRotation;
-use super::{texture, Identifier};
-use crate::resource::manager::{get_resource_file, ResourceType};
-use crate::resource::RegistryIndex;
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail, ensure, Context};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::fmt::Write;
-use std::rc::Rc;
 use string_cache::DefaultAtom as Atom;
+use std::sync::Arc;
+
+use super::model::{CombinedModelPart, ModelCache, ModelType};
+use super::RightAngleRotation;
+use super::{texture, Identifier};
+use crate::resource::manager::{get_resource_file, ResourceType};
+use crate::resource::RegistryIndex;
 
 pub fn load_blockstates(
     block_index: RegistryIndex,
@@ -932,14 +933,14 @@ pub enum ModelData {
 
 #[derive(Clone, Debug)]
 pub struct Model {
-    pub model: Rc<ModelType>,
+    pub model: Arc<ModelType>,
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
 }
 
 #[derive(Clone, Debug)]
 pub struct WeightedModel {
-    pub model: Rc<ModelType>,
+    pub model: Arc<ModelType>,
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
     pub weight: f32,

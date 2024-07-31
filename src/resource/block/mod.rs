@@ -3,7 +3,6 @@ pub mod model;
 
 use super::{texture, Identifier, RegistryData, RegistryIndex};
 use crate::client::graphics::chunk::block_face::rotation_matrices;
-use ahash::AHashMap;
 use anyhow::Context;
 use blockstate::CustomPropertyType;
 use model::ModelCache;
@@ -184,9 +183,13 @@ impl Registry {
     ) -> anyhow::Result<RegistryIndex> {
         let block_index = self.data.register_default(identifier.clone());
         properties.opaque = false;
-        let mut blockstates =
-            blockstate::load_liquid_blockstates(block_index, &identifier, model_cache, texture_atlas)
-                .with_context(|| format!("while parsing liquid blockstates for {identifier:?}"))?;
+        let mut blockstates = blockstate::load_liquid_blockstates(
+            block_index,
+            &identifier,
+            model_cache,
+            texture_atlas,
+        )
+        .with_context(|| format!("while parsing liquid blockstates for {identifier:?}"))?;
         #[cfg(debug_assertions)]
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
@@ -279,7 +282,37 @@ impl RightAngleRotation {
     }
 }
 
-// TODO Make model loading errors print out a warning and load missing texture block instead
+impl std::ops::Add for RightAngleRotation {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let total_angle = self as u16 + other as u16;
+        match total_angle % 360 {
+            0 => Self::Zero,
+            90 => Self::Ninety,
+            180 => Self::OneEighty,
+            270 => Self::TwoSeventy,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl std::ops::Sub for RightAngleRotation {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        let total_angle = self as u16 + (360 - other as u16);
+        match total_angle % 360 {
+            0 => Self::Zero,
+            90 => Self::Ninety,
+            180 => Self::OneEighty,
+            270 => Self::TwoSeventy,
+            _ => unreachable!(),
+        }
+    }
+}
+
+// TODO: Make model loading errors print out a warning and load missing texture block instead
 
 pub fn register_vanilla_blocks(
     registry: &mut Registry,
@@ -2978,6 +3011,7 @@ pub fn register_vanilla_blocks(
     // Helpful for adding new blocks
     #[cfg(debug_assertions)]
     {
+        use ahash::AHashMap;
         use indexmap::{IndexMap, IndexSet};
         #[derive(Clone, Debug, serde::Serialize)]
         struct JsonBlock {
@@ -3010,13 +3044,13 @@ pub fn register_vanilla_blocks(
         };
         let mut blocks = IndexMap::new();
         for (id, info) in registry.global_palette.iter().enumerate() {
-            let identifier = registry.get_identifier_from_index(info.block_index).unwrap();
-            let block_entry = blocks
-                .entry(identifier.to_string())
-                .or_insert(JsonBlock {
-                    properties: IndexMap::new(),
-                    states: Vec::new(),
-                });
+            let identifier = registry
+                .get_identifier_from_index(info.block_index)
+                .unwrap();
+            let block_entry = blocks.entry(identifier.to_string()).or_insert(JsonBlock {
+                properties: IndexMap::new(),
+                states: Vec::new(),
+            });
             let mut properties: IndexMap<_, _> = info
                 .properties
                 .iter()
@@ -3036,9 +3070,7 @@ pub fn register_vanilla_blocks(
                     .or_insert(IndexSet::new());
                 property_entry.insert(value.clone());
             }
-            let default = registry
-                .data
-                [info.block_index]
+            let default = registry.data[info.block_index]
                 .default_blockstate
                 .as_usize()
                 == id;

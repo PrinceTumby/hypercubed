@@ -496,7 +496,7 @@ pub struct SynchronizePlayerPosition {
     pub z: PositionChange,
     pub yaw: RotationChange,
     pub pitch: RotationChange,
-    pub teleport_id: TeleportId,
+    pub teleport_id: VarInt,
 }
 
 impl Deserialize for SynchronizePlayerPosition {
@@ -508,7 +508,7 @@ impl Deserialize for SynchronizePlayerPosition {
             f32::deserialize,
             f32::deserialize,
             u8::deserialize,
-            TeleportId::deserialize,
+            VarInt::deserialize,
         ))(input)?;
         let x = match flags & 0b00001 != 0 {
             false => PositionChange::Absolute(x),
@@ -555,9 +555,6 @@ pub enum RotationChange {
     Absolute(f32),
     Relative(f32),
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub struct TeleportId(VarInt);
 
 #[derive(Clone, Debug)]
 pub struct UpdateRecipeBook {

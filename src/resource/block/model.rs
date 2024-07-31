@@ -1,17 +1,18 @@
-use super::{texture, Identifier, RightAngleRotation};
-use crate::resource::manager::{get_resource_file, ResourceType};
-use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
 use ahash::AHashMap;
 use anyhow::{anyhow, bail, ensure, Context};
 use bitfield::bitfield;
 use nalgebra::{point, Matrix4, Point3, Rotation3, Vector3};
 use serde::Deserialize;
-use std::rc::Rc;
+use std::sync::Arc;
+
+use super::{texture, Identifier, RightAngleRotation};
+use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
+use crate::resource::manager::{get_resource_file, ResourceType};
 
 #[derive(Debug)]
 pub struct ModelCache {
-    pub completed_models: AHashMap<Identifier, Rc<ModelType>>,
-    pub templates: AHashMap<Identifier, Rc<Template>>,
+    pub completed_models: AHashMap<Identifier, Arc<ModelType>>,
+    pub templates: AHashMap<Identifier, Arc<Template>>,
     // Once all custom blocks have been loaded, these two lists are converted into GPU buffers for
     // rendering.
     pub custom_block_vertices: Vec<GraphicsCustomBlockVertex>,
@@ -28,12 +29,12 @@ impl ModelCache {
         }
     }
 
-    #[tracing::instrument(skip(self, texture_atlas))]
+    // #[tracing::instrument(skip(self, texture_atlas))]
     pub fn load_model(
         &mut self,
         location: &Identifier,
         texture_atlas: &mut texture::AtlasBuilder,
-    ) -> anyhow::Result<Rc<ModelType>> {
+    ) -> anyhow::Result<Arc<ModelType>> {
         match self.get_or_load_model(location, texture_atlas, false)? {
             ModelState::Complete(model) => Ok(model),
             ModelState::Template(_) => Err(anyhow!("Model is a template, not a complete model")),
@@ -41,12 +42,12 @@ impl ModelCache {
         }
     }
 
-    #[tracing::instrument(skip(self, texture_atlas))]
+    // #[tracing::instrument(skip(self, texture_atlas))]
     pub fn load_liquid(
         &mut self,
         location: &Identifier,
         texture_atlas: &mut texture::AtlasBuilder,
-    ) -> anyhow::Result<Rc<ModelType>> {
+    ) -> anyhow::Result<Arc<ModelType>> {
         if let Some(model_type) = self.completed_models.get(location) {
             ensure!(
                 matches!(model_type.as_ref(), &ModelType::Liquid(_)),
@@ -81,21 +82,21 @@ impl ModelCache {
                 .get_or_load_texture(&particle_identifier)
                 .context("Failed to load \"particle\" texture")?
                 .uvs;
-            let model_info = Rc::new(ModelType::Liquid(LiquidInfo { uvs }));
+            let model_info = Arc::new(ModelType::Liquid(LiquidInfo { uvs }));
             self.completed_models
                 .insert(location.clone(), model_info.clone());
             Ok(model_info)
         }
     }
 
-    #[tracing::instrument(skip(self, texture_atlas))]
+    // #[tracing::instrument(skip(self, texture_atlas))]
     pub fn load_combined_model(
         &mut self,
         parts: &[CombinedModelPart],
         texture_atlas: &mut texture::AtlasBuilder,
-    ) -> anyhow::Result<Rc<ModelType>> {
+    ) -> anyhow::Result<Arc<ModelType>> {
         if parts.is_empty() {
-            return Ok(Rc::new(ModelType::None));
+            return Ok(Arc::new(ModelType::None));
         }
         let mut current_template: Option<Template> = None;
         for CombinedModelPart {
@@ -131,12 +132,13 @@ impl ModelCache {
         if !complete {
             bail!("combined template {final_template:?} cannot be finalized");
         }
-        self.finalize_model(final_template, texture_atlas).map(Rc::new)
+        self.finalize_model(final_template, texture_atlas, None)
+            .map(Arc::new)
     }
 
     /// If `skip_finalizing_model` is specified, this will return the model's template instead of
     /// attempting to finalize and return the completed model.
-    #[tracing::instrument(skip(self, texture_atlas))]
+    // #[tracing::instrument(skip(self, texture_atlas))]
     fn get_or_load_model(
         &mut self,
         location: &Identifier,
@@ -228,7 +230,7 @@ impl ModelCache {
         let stored_template = if let Some(stored_template) = cached_template {
             stored_template
         } else {
-            let stored_template = Rc::new(model_template.clone());
+            let stored_template = Arc::new(model_template.clone());
             assert!(
                 self.templates
                     .insert(location.clone(), stored_template.clone())
@@ -239,7 +241,7 @@ impl ModelCache {
         };
         // If template is complete, then we convert it to a finished model
         if !skip_finalizing_model && complete {
-            let completed_model = Rc::new(self.finalize_model(model_template, texture_atlas)?);
+            let completed_model = Arc::new(self.finalize_model(model_template, texture_atlas, Some(location))?);
             assert!(
                 self.completed_models
                     .insert(location.clone(), completed_model.clone())
@@ -252,11 +254,12 @@ impl ModelCache {
         }
     }
 
-    #[tracing::instrument(skip(texture_atlas))]
+    // #[tracing::instrument(skip(texture_atlas))]
     fn finalize_model(
         &mut self,
         model_template: Template,
         texture_atlas: &mut texture::AtlasBuilder,
+        debug_identifier: Option<&Identifier>,
     ) -> anyhow::Result<ModelType> {
         // Try various specialisations on model
         'specialize_empty: {
@@ -280,7 +283,7 @@ impl ModelCache {
             if element.start_pos != point![0., 0., 0.] || element.end_pos != point![16., 16., 16.] {
                 break 'specialize_block;
             }
-            if element.rotation.is_some() || element.blockstate_rotation.is_some() {
+            if element.rotation.is_some() {
                 break 'specialize_block;
             }
             if element.faces.iter().any(|(_, face)| face.is_none()) {
@@ -294,22 +297,36 @@ impl ModelCache {
                 break 'specialize_block;
             }
             if element.blockstate_rotation.is_some() {
-                todo!("Support blockstate rotation for standard blocks")
+                // Currently blockstate rotation is applied at the template level for blocks.
+                // You pretty much never see multipart models just consisting of a single block.
+                unimplemented!(
+                    "Element blockstate rotations for standard block {debug_identifier:?}"
+                );
             }
+            let faces = [
+                element.faces.top.as_ref().unwrap(),
+                element.faces.bottom.as_ref().unwrap(),
+                element.faces.north.as_ref().unwrap(),
+                element.faces.south.as_ref().unwrap(),
+                element.faces.east.as_ref().unwrap(),
+                element.faces.west.as_ref().unwrap(),
+            ];
             // Load textures
             let per_face_atlas_uvs = [
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.top.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.bottom.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.north.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.south.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.east.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.west.as_ref().unwrap())?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[0])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[1])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[2])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[3])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[4])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[5])?,
             ];
+            let per_face_uv_rotations = faces.map(|face| face.rotation);
             let mut flags = BlockFlags(0);
             flags.set_ambient_occlusion(model_template.ambient_occlusion);
             return Ok(ModelType::Block(BlockInfo {
                 flags,
                 per_face_atlas_uvs,
+                per_face_uv_rotations,
             }));
         }
         'specialize_tinted_block: {
@@ -322,7 +339,7 @@ impl ModelCache {
             if element.start_pos != point![0., 0., 0.] || element.end_pos != point![16., 16., 16.] {
                 break 'specialize_tinted_block;
             }
-            if element.rotation.is_some() || element.blockstate_rotation.is_some() {
+            if element.rotation.is_some() {
                 break 'specialize_tinted_block;
             }
             if element.faces.iter().any(|(_, face)| face.is_none()) {
@@ -338,20 +355,30 @@ impl ModelCache {
             if element.blockstate_rotation.is_some() {
                 todo!("Support blockstate rotation for tinted blocks")
             }
+            let faces = [
+                element.faces.top.as_ref().unwrap(),
+                element.faces.bottom.as_ref().unwrap(),
+                element.faces.north.as_ref().unwrap(),
+                element.faces.south.as_ref().unwrap(),
+                element.faces.east.as_ref().unwrap(),
+                element.faces.west.as_ref().unwrap(),
+            ];
             // Load textures
             let per_face_atlas_uvs = [
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.top.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.bottom.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.north.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.south.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.east.as_ref().unwrap())?,
-                Self::load_face_atlas_uvs(texture_atlas, element.faces.west.as_ref().unwrap())?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[0])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[1])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[2])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[3])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[4])?,
+                Self::load_face_atlas_uvs(texture_atlas, faces[5])?,
             ];
+            let per_face_uv_rotations = faces.map(|face| face.rotation);
             let mut flags = BlockFlags(0);
             flags.set_ambient_occlusion(model_template.ambient_occlusion);
             return Ok(ModelType::TintedBlock(BlockInfo {
                 flags,
                 per_face_atlas_uvs,
+                per_face_uv_rotations,
             }));
         }
         'specialize_overlayed_block: {
@@ -371,27 +398,19 @@ impl ModelCache {
                 .iter()
                 .any(|element| element.blockstate_rotation.is_some())
             {
-                break 'specialize_overlayed_block;
+                todo!("Support blockstate rotation for overlayed block {debug_identifier:?}");
             }
             let mut faces = Vec::new();
             for element in elements {
-                // TODO The functions for these are already done, just port over from standard block
+                // TODO: The functions for these are already done, just port over from standard block
                 // specialization
-                if element
-                    .faces
-                    .iter()
-                    .filter_map(|(i, f)| f.map(|f| (i, f)))
-                    .any(|(_, face)| face.rotation != RightAngleRotation::Zero)
-                {
-                    todo!("Support block face texture rotation");
-                }
                 if element
                     .faces
                     .iter()
                     .filter_map(|(i, f)| f.map(|f| (i, f)))
                     .any(|(_, face)| face.uvs.is_some() && face.uvs != Some([0.0, 0.0, 16.0, 16.0]))
                 {
-                    todo!("Support block face texture rotation");
+                    todo!("Support overlayed block custom UVs");
                 }
                 for (index, face) in element.faces.iter() {
                     if let Some(face) = face {
@@ -407,6 +426,7 @@ impl ModelCache {
                             atlas_uvs: texture_atlas
                                 .get_or_load_texture(&Identifier::parse(&face.texture)?)?
                                 .uvs,
+                            uv_rotation: face.rotation,
                         });
                     }
                 }
@@ -593,79 +613,82 @@ impl ModelCache {
                     normal: complete_matrix.transform_vector(&face_normal),
                     tint: converted_face.tint,
                 });
-                transformed_vertices[0].uvs = [converted_face.uvs[2], converted_face.uvs[3]];
-                transformed_vertices[1].uvs = [converted_face.uvs[0], converted_face.uvs[3]];
-                transformed_vertices[2].uvs = [converted_face.uvs[2], converted_face.uvs[1]];
-                transformed_vertices[3].uvs = [converted_face.uvs[0], converted_face.uvs[1]];
+                // transformed_vertices[0].uvs = [converted_face.uvs[2], converted_face.uvs[3]];
+                // transformed_vertices[1].uvs = [converted_face.uvs[0], converted_face.uvs[3]];
+                // transformed_vertices[2].uvs = [converted_face.uvs[2], converted_face.uvs[1]];
+                // transformed_vertices[3].uvs = [converted_face.uvs[0], converted_face.uvs[1]];
+                let rotated_uvs = {
+                    let uvs_f32 = converted_face.uvs.map(|uv| uv as f32);
+                    let midpoint_x = (uvs_f32[0] + uvs_f32[2]) / 2.0;
+                    let midpoint_y = (uvs_f32[1] + uvs_f32[3]) / 2.0;
+                    let tranformed_uvs = [
+                        uvs_f32[0] - midpoint_x,
+                        uvs_f32[1] - midpoint_y,
+                        uvs_f32[2] - midpoint_x,
+                        uvs_f32[3] - midpoint_y,
+                    ];
+                    let transformed_rotated_uvs = match converted_face.uv_rotation {
+                        RightAngleRotation::Zero => tranformed_uvs,
+                        RightAngleRotation::Ninety => [
+                            -tranformed_uvs[1],
+                            tranformed_uvs[0],
+                            -tranformed_uvs[3],
+                            tranformed_uvs[2],
+                        ],
+                        RightAngleRotation::OneEighty => [
+                            -tranformed_uvs[0],
+                            -tranformed_uvs[1],
+                            -tranformed_uvs[2],
+                            -tranformed_uvs[3],
+                        ],
+                        RightAngleRotation::TwoSeventy => [
+                            tranformed_uvs[1],
+                            -tranformed_uvs[0],
+                            tranformed_uvs[3],
+                            -tranformed_uvs[2],
+                        ],
+                    };
+                    [
+                        (transformed_rotated_uvs[0] + midpoint_x) as u16,
+                        (transformed_rotated_uvs[1] + midpoint_y) as u16,
+                        (transformed_rotated_uvs[2] + midpoint_x) as u16,
+                        (transformed_rotated_uvs[3] + midpoint_y) as u16,
+                    ]
+                };
+                transformed_vertices[0].uvs = [rotated_uvs[2], rotated_uvs[3]];
+                transformed_vertices[1].uvs = [rotated_uvs[0], rotated_uvs[3]];
+                transformed_vertices[2].uvs = [rotated_uvs[2], rotated_uvs[1]];
+                transformed_vertices[3].uvs = [rotated_uvs[0], rotated_uvs[1]];
                 converted_vertices.extend(transformed_vertices.into_iter());
                 converted_indices.extend(face_indices.into_iter());
             }
         }
         // Add converted model for later rendering
-        let start_vertex: u32 =
-            self.custom_block_vertices.len().try_into().unwrap();
-        let start_index: u32 =
-            self.custom_block_indices.len().try_into().unwrap();
-        let num_indices: u32 =
-            converted_indices.len().try_into().unwrap();
-        self.custom_block_vertices.extend(converted_vertices.iter().map(
-            |v| GraphicsCustomBlockVertex {
-                pos: *v.local_pos.coords.as_ref(),
-                uvs: v.uvs,
-                normal: *v.normal.as_ref(),
-                tint_percentage: match v.tint {
-                    None => 0.0,
-                    Some(Tint::Biome) => 1.0,
-                },
-            },
-        ));
-        self.custom_block_indices.extend(converted_indices.iter().copied());
+        let start_vertex: u32 = self.custom_block_vertices.len().try_into().unwrap();
+        let start_index: u32 = self.custom_block_indices.len().try_into().unwrap();
+        let num_indices: u32 = converted_indices.len().try_into().unwrap();
+        self.custom_block_vertices
+            .extend(
+                converted_vertices
+                    .iter()
+                    .map(|v| GraphicsCustomBlockVertex {
+                        pos: *v.local_pos.coords.as_ref(),
+                        uvs: v.uvs,
+                        normal: *v.normal.as_ref(),
+                        tint_percentage: match v.tint {
+                            None => 0.0,
+                            Some(Tint::Biome) => 1.0,
+                        },
+                    }),
+            );
+        self.custom_block_indices
+            .extend(converted_indices.iter().copied());
         Ok(ModelType::Other(OtherInfo {
             vertices: converted_vertices,
             indices: converted_indices,
             start_vertex,
             start_index_and_len: (start_index, num_indices),
         }))
-    }
-
-    /// Rotates `texture_uvs` around its centre by `angle`.
-    fn rotate_uvs(texture_uvs: [u16; 4], angle: RightAngleRotation) -> [u16; 4] {
-        let uvs_f32 = texture_uvs.map(|uv| uv as f32);
-        let midpoint_x = (uvs_f32[0] + uvs_f32[2]) / 2.0;
-        let midpoint_y = (uvs_f32[1] + uvs_f32[3]) / 2.0;
-        let tranformed_uvs = [
-            uvs_f32[0] - midpoint_x,
-            uvs_f32[1] - midpoint_y,
-            uvs_f32[2] - midpoint_x,
-            uvs_f32[3] - midpoint_y,
-        ];
-        let transformed_rotated_uvs = match angle {
-            RightAngleRotation::Zero => tranformed_uvs,
-            RightAngleRotation::Ninety => [
-                -tranformed_uvs[1],
-                tranformed_uvs[0],
-                -tranformed_uvs[3],
-                tranformed_uvs[2],
-            ],
-            RightAngleRotation::OneEighty => [
-                -tranformed_uvs[0],
-                -tranformed_uvs[1],
-                -tranformed_uvs[2],
-                -tranformed_uvs[3],
-            ],
-            RightAngleRotation::TwoSeventy => [
-                tranformed_uvs[1],
-                -tranformed_uvs[0],
-                tranformed_uvs[3],
-                -tranformed_uvs[2],
-            ],
-        };
-        [
-            (transformed_rotated_uvs[0] + midpoint_x) as u16,
-            (transformed_rotated_uvs[1] + midpoint_y) as u16,
-            (transformed_rotated_uvs[2] + midpoint_x) as u16,
-            (transformed_rotated_uvs[3] + midpoint_y) as u16,
-        ]
     }
 
     /// Transforms UVs from the texture map using element UVs (0 to 16).
@@ -686,7 +709,7 @@ impl ModelCache {
         ]
     }
 
-    #[tracing::instrument(skip(atlas))]
+    // #[tracing::instrument(skip(atlas))]
     fn load_face_atlas_uvs(
         atlas: &mut texture::AtlasBuilder,
         face: &TemplateElementFace,
@@ -710,8 +733,7 @@ impl ModelCache {
                 ]
             }
         };
-        let rotated_uvs = Self::rotate_uvs(custom_uvs, face.rotation);
-        Ok(rotated_uvs)
+        Ok(custom_uvs)
     }
 
     fn convert_face(
@@ -727,22 +749,21 @@ impl ModelCache {
             None => texture_uvs,
             Some(uvs) => Self::transform_uvs(texture_uvs, uvs),
         };
-        let rotated_uvs = match blockstate_rotation {
-            Some(TemplateElementBlockstateRotation {
-                x_rotation,
-                y_rotation,
-                uv_lock,
-            }) if uv_lock => match index {
-                BlockFace::Top => Self::rotate_uvs(transformed_uvs, y_rotation),
-                BlockFace::Bottom => Self::rotate_uvs(transformed_uvs, y_rotation),
-                BlockFace::East => Self::rotate_uvs(transformed_uvs, x_rotation),
-                BlockFace::West => Self::rotate_uvs(transformed_uvs, x_rotation),
-                _ => transformed_uvs,
-            },
-            _ => transformed_uvs,
+        let uv_rotation = match blockstate_rotation {
+            // Some(TemplateElementBlockstateRotation {
+            //     x_rotation,
+            //     y_rotation,
+            //     uv_lock,
+            // }) if uv_lock => match index {
+            //     BlockFace::Top | BlockFace::Bottom => face.rotation - y_rotation,
+            //     BlockFace::East | BlockFace::West => face.rotation - x_rotation,
+            //     _ => face.rotation,
+            // },
+            _ => face.rotation,
         };
         Ok(ModelElementFace {
-            uvs: rotated_uvs,
+            uvs: transformed_uvs,
+            uv_rotation,
             cullface: face.cullface.unwrap_or(index),
             tint: match face.tint_index {
                 -1 => None,
@@ -767,14 +788,10 @@ pub struct CombinedModelPart {
     pub uv_lock: bool,
 }
 
-// TODO Change Pending to have a Rayon ThreadPool thread index, implement parallel model loading
-// // FIXME This method of loading models does not detect cycles between threads, so freezes can occur
-// // if assets contain cycles.
-
 #[derive(Clone, Debug)]
 pub enum ModelState {
-    Complete(Rc<ModelType>),
-    Template(Rc<Template>),
+    Complete(Arc<ModelType>),
+    Template(Arc<Template>),
     /// Model is currently being loaded
     Pending,
 }
@@ -787,8 +804,6 @@ pub enum ModelType {
     Block(BlockInfo),
     /// Tinted block, has all six faces, and only one element. All faces are tinted. Example: Leaves
     TintedBlock(BlockInfo),
-    // TODO Make this just have a vec of faces, each face has optional tint index, then make flags
-    // just BlockFlags
     /// Block with extra faces containing transparent pixels drawn on top. Example: Grass block
     OverlayedBlock(OverlayedBlockInfo),
     /// Contains two double sided 2D elements at 45 degrees. Example: Dandelion
@@ -806,6 +821,7 @@ pub struct BlockInfo {
     pub flags: BlockFlags,
     /// In order of top, bottom, north, south, east and west.
     pub per_face_atlas_uvs: [[u16; 4]; 6],
+    pub per_face_uv_rotations: [RightAngleRotation; 6],
 }
 
 bitfield! {
@@ -827,6 +843,7 @@ pub struct OverlayedBlockFace {
     pub tint: Option<Tint>,
     /// In order of top, bottom, north, south, east and west.
     pub atlas_uvs: [u16; 4],
+    pub uv_rotation: RightAngleRotation,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -847,7 +864,7 @@ pub struct OtherInfo {
     pub start_index_and_len: (u32, u32),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ModelVertex {
     pub local_pos: Point3<f32>,
     pub uvs: [u16; 2],
@@ -894,6 +911,7 @@ impl std::hash::Hash for ModelVertex {
 #[derive(Clone, Copy, Debug)]
 struct ModelElementFace {
     pub uvs: [u16; 4],
+    pub uv_rotation: RightAngleRotation,
     pub cullface: BlockFace,
     pub tint: Option<Tint>,
 }
@@ -961,7 +979,7 @@ impl Template {
 
     /// Applies blockstate rotations `x_rotation` and `y_rotation` to every element in the
     /// template.
-    #[tracing::instrument(skip(self))]
+    // #[tracing::instrument(skip(self))]
     pub fn apply_blockstate_rotations(
         &mut self,
         x_rotation: RightAngleRotation,

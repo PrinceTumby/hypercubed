@@ -64,7 +64,7 @@ impl Deserialize for OptionalNbt {
     }
 }
 
-// TODO Implement Display
+// TODO: Implement Display
 #[derive(Clone, Debug, PartialEq)]
 pub enum Chat {
     Basic(String),
@@ -80,7 +80,7 @@ impl Deserialize for Chat {
             )))
         } else {
             match input[0] {
-                // TODO The `Verify` error's fine, but there's probably a way of passing along a
+                // TODO: The `Verify` error's fine, but there's probably a way of passing along a
                 // more descriptive error for invalid UTF-8
                 8 => length_value(u16::deserialize.map(|len| len as usize), |slice| {
                     std::str::from_utf8(slice)
@@ -108,7 +108,7 @@ impl Deserialize for Chat {
     }
 }
 
-// TODO Figure out a way to re-export macros from another module so we don't have to do this
+// TODO: Figure out a way to re-export macros from another module so we don't have to do this
 
 macro_rules! byte_enum_parser {
     ($( $tag_byte:expr => $value:expr $(,)? )+) => {{

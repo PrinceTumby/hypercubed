@@ -26,6 +26,7 @@ struct VertexInput {
 struct InstanceInput {
     @location(10) uvs: vec4<u32>,
     @location(11) packed_xyz_and_matrix_indices: vec2<u32>,
+    @location(12) uv_rotation_and_padding: vec2<u32>,
 }
 
 struct VertexOutput {
@@ -56,9 +57,25 @@ fn get_base_position(vertex_i: u32) -> vec3<f32> {
     return out;
 }
 
-fn get_uvs(vertex_i: u32) -> vec2<f32> {
+fn get_uvs(vertex_i: u32, face_rotation_i: u32) -> vec2<f32> {
     var out: vec2<f32>;
-    switch vertex_i % 4 {
+    var uv_rotation_vec: vec4<u32>;
+    switch face_rotation_i {
+        case 0u: {
+            uv_rotation_vec = vec4<u32>(0, 1, 2, 3);
+        }
+        case 1u: {
+            uv_rotation_vec = vec4<u32>(1, 3, 0, 2);
+        }
+        case 2u: {
+            uv_rotation_vec = vec4<u32>(3, 2, 1, 0);
+        }
+        case 3u, default: {
+            uv_rotation_vec = vec4<u32>(2, 0, 3, 1);
+        }
+    }
+    let new_vertex_i = uv_rotation_vec[vertex_i % 4];
+    switch new_vertex_i {
         case 0u: {
             out = vec2<f32>(0.0, 1.0);
         }
@@ -93,7 +110,7 @@ fn vs_main(
     );
     // Position
     let base_pos = get_base_position(block_vertex.index);
-    let base_uvs = get_uvs(block_vertex.index);
+    let base_uvs = get_uvs(block_vertex.index, instance.uv_rotation_and_padding[0]);
     let face_matrix = face_matrices[block_vertex.face_matrix_index];
     let x_rotation_matrix = x_rotation_matrices[matrix_indices[0]];
     let y_rotation_matrix = y_rotation_matrices[matrix_indices[1]];
