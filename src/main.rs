@@ -50,7 +50,9 @@ fn main() -> anyhow::Result<()> {
             let packet = server_connection.read_packet()
                 .map_err(|err| format!("{err:.02X?}"))
                 .unwrap();
-            clientbound_tx.send(packet).unwrap();
+            if let Err(_) = clientbound_tx.send(packet) {
+                break;
+            };
         });
     }
     pollster::block_on(client::window_run(server_connection, clientbound_rx))?;

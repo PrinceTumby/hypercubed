@@ -2,7 +2,6 @@ pub mod blockstate;
 pub mod model;
 
 use super::{texture, Identifier, RegistryData, RegistryIndex};
-use crate::client::graphics::chunk::block_face::rotation_matrices;
 use anyhow::Context;
 use blockstate::CustomPropertyType;
 use model::ModelCache;
@@ -261,7 +260,7 @@ impl Default for Properties {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize_repr)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq, Deserialize_repr)]
 #[repr(u16)]
 pub enum RightAngleRotation {
     #[default]
@@ -269,17 +268,6 @@ pub enum RightAngleRotation {
     Ninety = 90,
     OneEighty = 180,
     TwoSeventy = 270,
-}
-
-impl RightAngleRotation {
-    pub fn matrix_index(&self) -> u8 {
-        match self {
-            &RightAngleRotation::Zero => rotation_matrices::indices::ZERO,
-            &RightAngleRotation::Ninety => rotation_matrices::indices::NINETY,
-            &RightAngleRotation::OneEighty => rotation_matrices::indices::ONE_EIGHTY,
-            &RightAngleRotation::TwoSeventy => rotation_matrices::indices::TWO_SEVENTY,
-        }
-    }
 }
 
 impl std::ops::Add for RightAngleRotation {
@@ -309,6 +297,18 @@ impl std::ops::Sub for RightAngleRotation {
             270 => Self::TwoSeventy,
             _ => unreachable!(),
         }
+    }
+}
+
+impl std::ops::AddAssign for RightAngleRotation {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl std::ops::SubAssign for RightAngleRotation {
+    fn sub_assign(&mut self, other: Self) {
+        *self = *self - other;
     }
 }
 

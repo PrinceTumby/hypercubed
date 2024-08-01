@@ -1,7 +1,7 @@
 use super::Texture;
 use crate::basic_types::AxisDirection;
 use crate::resource::block::RightAngleRotation;
-use nalgebra::{Matrix3, Rotation3, Vector3};
+use nalgebra::{Matrix3, Rotation3};
 use std::marker::PhantomData;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
@@ -560,71 +560,6 @@ pub mod block_face {
         }
     }
 
-    pub mod rotation_matrices {
-        use super::*;
-
-        pub fn generate_x_rotation_array() -> [[[f32; 4]; 3]; 4] {
-            let matrix_arrays: [[[f32; 3]; 3]; 4] = [
-                // Zero
-                Matrix3::identity().into(),
-                // Ninety
-                Matrix3::from(Rotation3::from_axis_angle(
-                    &Vector3::x_axis(),
-                    std::f32::consts::FRAC_PI_2,
-                ))
-                .into(),
-                // One-Eighty
-                Matrix3::from(Rotation3::from_axis_angle(
-                    &Vector3::x_axis(),
-                    std::f32::consts::PI,
-                ))
-                .into(),
-                // Two-Seventy
-                Matrix3::from(Rotation3::from_axis_angle(
-                    &Vector3::x_axis(),
-                    -std::f32::consts::FRAC_PI_2,
-                ))
-                .into(),
-            ];
-            // Alignment of each row in a mat3x3 is same as vec4, so we pad up to size
-            matrix_arrays.map(|matrix| matrix.map(|[x, y, z]| [x, y, z, 0.0]))
-        }
-
-        pub fn generate_y_rotation_array() -> [[[f32; 4]; 3]; 4] {
-            let matrix_arrays: [[[f32; 3]; 3]; 4] = [
-                // Zero
-                Matrix3::identity().into(),
-                // Ninety
-                Matrix3::from(Rotation3::from_axis_angle(
-                    &Vector3::y_axis(),
-                    -std::f32::consts::FRAC_PI_2,
-                ))
-                .into(),
-                // One-Eighty
-                Matrix3::from(Rotation3::from_axis_angle(
-                    &Vector3::y_axis(),
-                    std::f32::consts::PI,
-                ))
-                .into(),
-                // Two-Seventy
-                Matrix3::from(Rotation3::from_axis_angle(
-                    &Vector3::y_axis(),
-                    std::f32::consts::FRAC_PI_2,
-                ))
-                .into(),
-            ];
-            // Alignment of each row in a mat3x3 is same as vec4, so we pad up to size
-            matrix_arrays.map(|matrix| matrix.map(|[x, y, z]| [x, y, z, 0.0]))
-        }
-
-        pub mod indices {
-            pub const ZERO: u8 = 0;
-            pub const NINETY: u8 = 1;
-            pub const ONE_EIGHTY: u8 = 2;
-            pub const TWO_SEVENTY: u8 = 3;
-        }
-    }
-
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Vertex {
@@ -668,9 +603,8 @@ pub mod block_face {
         /// 0-3: X offset
         /// 4-7: Y offset
         /// 8-11: Z offset
-        /// 12-13: X rotation matrix index
-        /// 14-15: Y rotation matrix index
-        packed_xyz_and_matrix_indices: u16,
+        /// 12-15: Unused
+        packed_xyz: u16,
         uv_rotation_and_padding: [u8; 2],
     }
 
@@ -678,7 +612,7 @@ pub mod block_face {
         const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
             // uvs
             10 => Uint16x4,
-            // packed_xyz_and_matrix_indices
+            // packed_xyz
             11 => Uint8x2,
             // uv_rotation_and_padding
             12 => Uint8x2,
@@ -696,20 +630,15 @@ pub mod block_face {
             subchunk_xyz: [u8; 3],
             uvs: [u16; 4],
             uv_rotation: RightAngleRotation,
-            xy_matrix_indices: [u8; 2],
         ) -> Self {
             debug_assert!(subchunk_xyz[0] < 16);
             debug_assert!(subchunk_xyz[1] < 16);
             debug_assert!(subchunk_xyz[2] < 16);
-            debug_assert!(xy_matrix_indices[0] < 4);
-            debug_assert!(xy_matrix_indices[1] < 4);
             Self {
                 uvs,
-                packed_xyz_and_matrix_indices: (subchunk_xyz[0] as u16)
+                packed_xyz: (subchunk_xyz[0] as u16)
                     | ((subchunk_xyz[1] as u16) << 4)
-                    | ((subchunk_xyz[2] as u16) << 8)
-                    | ((xy_matrix_indices[0] as u16) << 12)
-                    | ((xy_matrix_indices[1] as u16) << 14),
+                    | ((subchunk_xyz[2] as u16) << 8),
                 uv_rotation_and_padding: [
                     match uv_rotation {
                         RightAngleRotation::Zero => 0,
@@ -800,9 +729,8 @@ pub mod tinted_block_face {
         /// 0-3: X offset
         /// 4-7: Y offset
         /// 8-11: Z offset
-        /// 12-13: X rotation matrix index
-        /// 14-15: Y rotation matrix index
-        packed_xyz_and_matrix_indices: u16,
+        /// 12-15: Unused
+        packed_xyz: u16,
         uv_rotation_and_padding: [u8; 2],
     }
 
@@ -812,7 +740,7 @@ pub mod tinted_block_face {
             10 => Uint16x4,
             // tint_color
             11 => Unorm8x4,
-            // packed_xyz_and_matrix_indices
+            // packed_xyz
             12 => Uint8x2,
             // uv_rotation_and_padding
             13 => Uint8x2,
@@ -831,21 +759,16 @@ pub mod tinted_block_face {
             uvs: [u16; 4],
             uv_rotation: RightAngleRotation,
             tint_color: [u8; 4],
-            xy_matrix_indices: [u8; 2],
         ) -> Self {
             debug_assert!(subchunk_xyz[0] < 16);
             debug_assert!(subchunk_xyz[1] < 16);
             debug_assert!(subchunk_xyz[2] < 16);
-            debug_assert!(xy_matrix_indices[0] < 4);
-            debug_assert!(xy_matrix_indices[1] < 4);
             Self {
                 uvs,
                 tint_color,
-                packed_xyz_and_matrix_indices: (subchunk_xyz[0] as u16)
+                packed_xyz: (subchunk_xyz[0] as u16)
                     | ((subchunk_xyz[1] as u16) << 4)
-                    | ((subchunk_xyz[2] as u16) << 8)
-                    | ((xy_matrix_indices[0] as u16) << 12)
-                    | ((xy_matrix_indices[1] as u16) << 14),
+                    | ((subchunk_xyz[2] as u16) << 8),
                 uv_rotation_and_padding: [
                     match uv_rotation {
                         RightAngleRotation::Zero => 0,
@@ -965,8 +888,6 @@ pub mod custom_block {
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Instance {
         pub pos: [f32; 3],
-        /// In order of: X rotation matrix, Y rotation matrix, unused, unused
-        pub matrix_indices: [u8; 4],
         pub tint_color: [u8; 4],
     }
 
@@ -974,10 +895,8 @@ pub mod custom_block {
         const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
             // pos
             10 => Float32x3,
-            // matrix_indices
-            11 => Uint8x4,
             // tint_color
-            12 => Unorm8x4,
+            11 => Unorm8x4,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {

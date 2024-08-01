@@ -7,7 +7,7 @@ use std::fmt::Write;
 use string_cache::DefaultAtom as Atom;
 use std::sync::Arc;
 
-use super::model::{CombinedModelPart, ModelCache, ModelType};
+use super::model::{CombinedModelPart, ModelCache, ModelType, ModelRotationInfo};
 use super::RightAngleRotation;
 use super::{texture, Identifier};
 use crate::resource::manager::{get_resource_file, ResourceType};
@@ -166,7 +166,15 @@ fn load_blockstate_variants(
                             format!("Failed to parse {:?} as identifier", &model_info.model)
                         })?;
                     let model = model_cache
-                        .load_model(&model_location, texture_atlas)
+                        .load_model(
+                            &model_location,
+                            &ModelRotationInfo {
+                                x_rotation: model_info.x_rotation,
+                                y_rotation: model_info.y_rotation,
+                                uv_lock: model_info.uv_lock,
+                            },
+                            texture_atlas,
+                        )
                         .with_context(|| format!("Failed to load model {model_location:?}"))?;
                     while !is_final_custom_state {
                         if custom_properties.is_empty() {
@@ -200,11 +208,7 @@ fn load_blockstate_variants(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
-                            model_data: ModelData::Single(Model {
-                                model: model.clone(),
-                                x_rotation: model_info.x_rotation,
-                                y_rotation: model_info.y_rotation,
-                            }),
+                            model_data: ModelData::Single(model.clone()),
                         });
                     }
                     is_final_custom_state = false;
@@ -214,11 +218,17 @@ fn load_blockstate_variants(
                         .into_iter()
                         .map(|model_info| {
                             let model_location = Identifier::parse(&model_info.model)?;
-                            let model = model_cache.load_model(&model_location, texture_atlas)?;
+                            let model = model_cache.load_model(
+                                &model_location,
+                                &ModelRotationInfo {
+                                    x_rotation: model_info.x_rotation,
+                                    y_rotation: model_info.y_rotation,
+                                    uv_lock: model_info.uv_lock,
+                                },
+                                texture_atlas,
+                            )?;
                             Ok(WeightedModel {
                                 model,
-                                x_rotation: model_info.x_rotation,
-                                y_rotation: model_info.y_rotation,
                                 weight: model_info.weight,
                             })
                         })
@@ -291,7 +301,15 @@ fn load_blockstate_variants(
                             format!("Failed to parse {:?} as identifier", &model_info.model)
                         })?;
                     let model = model_cache
-                        .load_model(&model_location, texture_atlas)
+                        .load_model(
+                            &model_location,
+                            &ModelRotationInfo {
+                                x_rotation: model_info.x_rotation,
+                                y_rotation: model_info.y_rotation,
+                                uv_lock: model_info.uv_lock,
+                            },
+                            texture_atlas,
+                        )
                         .with_context(|| format!("Failed to load model {model_location:?}"))?;
                     while !is_final_custom_state {
                         if custom_properties.is_empty() {
@@ -325,11 +343,7 @@ fn load_blockstate_variants(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
-                            model_data: ModelData::Single(Model {
-                                model: model.clone(),
-                                x_rotation: model_info.x_rotation,
-                                y_rotation: model_info.y_rotation,
-                            }),
+                            model_data: ModelData::Single(model.clone()),
                         });
                     }
                     is_final_custom_state = false;
@@ -339,11 +353,17 @@ fn load_blockstate_variants(
                         .into_iter()
                         .map(|model_info| {
                             let model_location = Identifier::parse(&model_info.model)?;
-                            let model = model_cache.load_model(&model_location, texture_atlas)?;
+                            let model = model_cache.load_model(
+                                &model_location,
+                                &ModelRotationInfo {
+                                    x_rotation: model_info.x_rotation,
+                                    y_rotation: model_info.y_rotation,
+                                    uv_lock: model_info.uv_lock,
+                                },
+                                texture_atlas,
+                            )?;
                             Ok(WeightedModel {
                                 model,
-                                x_rotation: model_info.x_rotation,
-                                y_rotation: model_info.y_rotation,
                                 weight: model_info.weight,
                             })
                         })
@@ -538,11 +558,7 @@ fn load_blockstate_multipart_cases(
             blockstates.push(Blockstate {
                 block_index,
                 properties: condition_map,
-                model_data: ModelData::Single(Model {
-                    model,
-                    x_rotation: RightAngleRotation::Zero,
-                    y_rotation: RightAngleRotation::Zero,
-                }),
+                model_data: ModelData::Single(model),
             });
         } else {
             // Multiple possible models, generate one for each possibility
@@ -556,8 +572,6 @@ fn load_blockstate_multipart_cases(
                         })?;
                     Ok(WeightedModel {
                         model,
-                        x_rotation: RightAngleRotation::Zero,
-                        y_rotation: RightAngleRotation::Zero,
                         weight: group.weight,
                     })
                 })
@@ -685,16 +699,20 @@ pub fn load_full_custom_blockstates(
                                 format!("Failed to parse {:?} as identifier", &model_info.model)
                             })?;
                         let model = model_cache
-                            .load_model(&model_location, texture_atlas)
+                            .load_model(
+                                &model_location,
+                                &ModelRotationInfo {
+                                    x_rotation: model_info.x_rotation,
+                                    y_rotation: model_info.y_rotation,
+                                    uv_lock: model_info.uv_lock,
+                                },
+                                texture_atlas,
+                            )
                             .with_context(|| format!("Failed to load model {model_location:?}"))?;
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
-                            model_data: ModelData::Single(Model {
-                                model,
-                                x_rotation: model_info.x_rotation,
-                                y_rotation: model_info.y_rotation,
-                            }),
+                            model_data: ModelData::Single(model),
                         });
                     }
                     Variant::List(models) => {
@@ -703,11 +721,17 @@ pub fn load_full_custom_blockstates(
                             .map(|model_info| {
                                 let model_location = Identifier::parse(&model_info.model)?;
                                 let model =
-                                    model_cache.load_model(&model_location, texture_atlas)?;
+                                    model_cache.load_model(
+                                        &model_location,
+                                        &ModelRotationInfo {
+                                            x_rotation: model_info.x_rotation,
+                                            y_rotation: model_info.y_rotation,
+                                            uv_lock: model_info.uv_lock,
+                                        },
+                                        texture_atlas,
+                                    )?;
                                 Ok(WeightedModel {
                                     model,
-                                    x_rotation: model_info.x_rotation,
-                                    y_rotation: model_info.y_rotation,
                                     weight: model_info.weight,
                                 })
                             })
@@ -780,11 +804,7 @@ pub fn load_liquid_blockstates(
             properties: [(Atom::from("level"), Atom::from(format!("{i}")))]
                 .into_iter()
                 .collect(),
-            model_data: ModelData::Single(Model {
-                model: model.clone(),
-                x_rotation: RightAngleRotation::Zero,
-                y_rotation: RightAngleRotation::Zero,
-            }),
+            model_data: ModelData::Single(model.clone()),
         });
     }
     Ok(blockstates)
@@ -931,18 +951,11 @@ pub enum ModelData {
     RandomChoice(Box<[WeightedModel]>),
 }
 
-#[derive(Clone, Debug)]
-pub struct Model {
-    pub model: Arc<ModelType>,
-    pub x_rotation: RightAngleRotation,
-    pub y_rotation: RightAngleRotation,
-}
+pub type Model = Arc<ModelType>;
 
 #[derive(Clone, Debug)]
 pub struct WeightedModel {
     pub model: Arc<ModelType>,
-    pub x_rotation: RightAngleRotation,
-    pub y_rotation: RightAngleRotation,
     pub weight: f32,
 }
 

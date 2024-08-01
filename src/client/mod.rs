@@ -17,7 +17,6 @@ use super::resource;
 use crate::identifier;
 use resource::block::blockstate;
 use resource::block::model::{ModelType, Tint};
-use resource::block::RightAngleRotation;
 
 use crate::protocol::v765::play::{
     serverbound as serverbound_packets, Clientbound as ClientboundPacket,
@@ -747,13 +746,14 @@ pub(crate) async fn window_run(
                                     PositionChange::Absolute(new_z) => new_z as f32,
                                     PositionChange::Relative(z_diff) => camera_pos.z + z_diff as f32,
                                 };
+                                let (cam_yaw, cam_pitch) = camera.get_mc_rot();
                                 let new_yaw = match pos_info.yaw {
                                     RotationChange::Absolute(new_yaw) => new_yaw,
-                                    RotationChange::Relative(yaw_diff) => camera.yaw + yaw_diff,
+                                    RotationChange::Relative(yaw_diff) => cam_yaw + yaw_diff,
                                 };
                                 let new_pitch = match pos_info.pitch {
-                                    RotationChange::Absolute(new_pitch) => -new_pitch,
-                                    RotationChange::Relative(pitch_diff) => camera.pitch - pitch_diff,
+                                    RotationChange::Absolute(new_pitch) => new_pitch,
+                                    RotationChange::Relative(pitch_diff) => cam_pitch + pitch_diff,
                                 };
                                 camera.set_mc_rot(new_yaw, new_pitch);
                                 server_connection
@@ -1058,10 +1058,8 @@ fn process_chunk(
                     let global_palette_index = chunk_section.block_states.get(x, y, z);
                     let blockstate_info = &graphics_resources.block_registry.global_palette
                         [usize::from(global_palette_index)];
-                    let (model, x_rot, y_rot) = match &blockstate_info.model_data {
-                        blockstate::ModelData::Single(model) => {
-                            (&model.model, model.x_rotation, model.y_rotation)
-                        }
+                    let model = match &blockstate_info.model_data {
+                        blockstate::ModelData::Single(model) => model,
                         blockstate::ModelData::RandomChoice(models) => 'model_blk: {
                             // Find weight for model by hash
                             block_hasher.write_i32(global_x_i32);
@@ -1071,22 +1069,16 @@ fn process_chunk(
                             let mut current_percentage = (hash % 257) as f32 / 256.0;
                             for model in models.iter() {
                                 if current_percentage <= model.weight {
-                                    break 'model_blk (
-                                        &model.model,
-                                        model.x_rotation,
-                                        model.y_rotation,
-                                    );
+                                    break 'model_blk &model.model;
                                 } else {
                                     current_percentage -= model.weight;
                                 }
                             }
                             // Should be unreachable
                             let model = &models[models.len() - 1];
-                            (&model.model, model.x_rotation, model.y_rotation)
+                            &model.model
                         }
                     };
-                    let x_rot_mat = x_rot.matrix_index();
-                    let y_rot_mat = y_rot.matrix_index();
                     let direction_map = [
                         (x as i32, y as i32 + 1, z as i32),
                         (x as i32, y as i32 - 1, z as i32),
@@ -1127,63 +1119,6 @@ fn process_chunk(
                             &graphics_resources.block_registry[blockstate_info.block_index];
                         face_cull_map[i] = block_info.properties.opaque;
                     }
-                    // Rotate face cull map by block rotation
-                    {
-                        face_cull_map = match x_rot {
-                            RightAngleRotation::Zero => face_cull_map,
-                            RightAngleRotation::Ninety => [
-                                face_cull_map[2],
-                                face_cull_map[3],
-                                face_cull_map[1],
-                                face_cull_map[5],
-                                face_cull_map[4],
-                                face_cull_map[5],
-                            ],
-                            RightAngleRotation::OneEighty => [
-                                face_cull_map[1],
-                                face_cull_map[0],
-                                face_cull_map[3],
-                                face_cull_map[2],
-                                face_cull_map[4],
-                                face_cull_map[5],
-                            ],
-                            RightAngleRotation::TwoSeventy => [
-                                face_cull_map[3],
-                                face_cull_map[2],
-                                face_cull_map[5],
-                                face_cull_map[1],
-                                face_cull_map[4],
-                                face_cull_map[5],
-                            ],
-                        };
-                        face_cull_map = match y_rot {
-                            RightAngleRotation::Zero => face_cull_map,
-                            RightAngleRotation::Ninety => [
-                                face_cull_map[0],
-                                face_cull_map[1],
-                                face_cull_map[4],
-                                face_cull_map[5],
-                                face_cull_map[3],
-                                face_cull_map[2],
-                            ],
-                            RightAngleRotation::OneEighty => [
-                                face_cull_map[0],
-                                face_cull_map[1],
-                                face_cull_map[3],
-                                face_cull_map[2],
-                                face_cull_map[5],
-                                face_cull_map[4],
-                            ],
-                            RightAngleRotation::TwoSeventy => [
-                                face_cull_map[0],
-                                face_cull_map[1],
-                                face_cull_map[5],
-                                face_cull_map[4],
-                                face_cull_map[2],
-                                face_cull_map[3],
-                            ],
-                        };
-                    }
                     // Spruce Leaves are hardcoded, so override tint colour here
                     let tint_color = match blockstate_info.block_index {
                         ident if ident == spruce_leaves_registry_index => [0x61, 0x99, 0x61, 0xFF],
@@ -1200,7 +1135,6 @@ fn process_chunk(
                                     [x as u8, y as u8, z as u8],
                                     info.per_face_atlas_uvs[i],
                                     info.per_face_uv_rotations[i],
-                                    [x_rot_mat, y_rot_mat],
                                 ));
                             }
                         }
@@ -1215,7 +1149,6 @@ fn process_chunk(
                                         info.per_face_atlas_uvs[i],
                                         info.per_face_uv_rotations[i],
                                         tint_color,
-                                        [x_rot_mat, y_rot_mat],
                                     ),
                                 );
                             }
@@ -1233,7 +1166,6 @@ fn process_chunk(
                                             face.atlas_uvs,
                                             face.uv_rotation,
                                             tint_color,
-                                            [x_rot_mat, y_rot_mat],
                                         ),
                                     );
                                 } else {
@@ -1242,7 +1174,6 @@ fn process_chunk(
                                             [x as u8, y as u8, z as u8],
                                             face.atlas_uvs,
                                             face.uv_rotation,
-                                            [x_rot_mat, y_rot_mat],
                                         ),
                                     );
                                 }
@@ -1254,7 +1185,6 @@ fn process_chunk(
                                 .or_insert_with(Vec::new);
                             block_instances.push(graphics::chunk::custom_block::Instance {
                                 pos: [global_x, global_y, global_z],
-                                matrix_indices: [x_rot_mat, y_rot_mat, 0, 0],
                                 tint_color,
                             });
                         }

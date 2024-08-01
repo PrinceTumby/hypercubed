@@ -273,26 +273,6 @@ impl<'a> GraphicsState<'a> {
                         },
                         count: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
                 ],
             });
         let atlas_bind_group_layout =
@@ -466,22 +446,6 @@ impl<'a> GraphicsState<'a> {
             contents: bytemuck::cast_slice(&chunk::block_face::face_matrices::generate_array()),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let x_rotation_matrices_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("X Rotation Matrices Buffer"),
-                contents: bytemuck::cast_slice(
-                    &chunk::block_face::rotation_matrices::generate_x_rotation_array(),
-                ),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let y_rotation_matrices_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Y Rotation Matrices Buffer"),
-                contents: bytemuck::cast_slice(
-                    &chunk::block_face::rotation_matrices::generate_y_rotation_array(),
-                ),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
         let matrices_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("matrices_bind_group"),
             layout: &matrices_bind_group_layout,
@@ -489,14 +453,6 @@ impl<'a> GraphicsState<'a> {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: face_matrices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: x_rotation_matrices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: y_rotation_matrices_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -680,7 +636,7 @@ impl<'a> GraphicsState<'a> {
             }
             //let mut subchunk_graph: DiGraph<QueuedChunk, ()> = DiGraph::new();
             let mut chunk_queue: VecDeque<QueuedChunk> = VecDeque::new();
-            {
+            let camera_chunk_coords = {
                 const MIN_HEIGHT_I32: i32 = -64;
                 let camera_pos = debug_state.cull_camera.pos;
                 let camera_x = (camera_pos.x.floor() as i32).div_euclid(16);
@@ -698,12 +654,8 @@ impl<'a> GraphicsState<'a> {
                     },
                 });
                 visited_chunks.insert(camera_chunk_coords);
-                //if subchunks.contains_key(&[camera_x, camera_y, camera_z]) {
-                //    chunk_queue.push_back(([camera_x, camera_y, camera_z], None));
-                //} else {
-                //    chunk_queue.extend(subchunks.iter().map(|(coords, _)| (*coords, None)));
-                //}
-            }
+                camera_chunk_coords
+            };
             let mut num_subchunks_rendered = 0;
             #[repr(C)]
             #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -872,21 +824,18 @@ impl<'a> GraphicsState<'a> {
                 }
                 rendered_chunks.insert(chunk_coords);
                 for i in 0..6 {
-                    // TODO: This is meant to hide faces you can't see, but it doesn't work with
-                    //       blocks that have blockstate rotations.
-                    //
-                    //let skip_face_dir = match i {
-                    //    0 => chunk_coords[1] > camera_chunk_coords[1],
-                    //    1 => chunk_coords[1] < camera_chunk_coords[1],
-                    //    2 => chunk_coords[2] < camera_chunk_coords[2],
-                    //    3 => chunk_coords[2] > camera_chunk_coords[2],
-                    //    4 => chunk_coords[0] > camera_chunk_coords[0],
-                    //    5 => chunk_coords[0] < camera_chunk_coords[0],
-                    //    6.. => unreachable!(),
-                    //};
-                    //if skip_face_dir {
-                    //    continue;
-                    //}
+                    let skip_face_dir = match i {
+                        0 => chunk_coords[1] > camera_chunk_coords[1],
+                        1 => chunk_coords[1] < camera_chunk_coords[1],
+                        2 => chunk_coords[2] < camera_chunk_coords[2],
+                        3 => chunk_coords[2] > camera_chunk_coords[2],
+                        4 => chunk_coords[0] > camera_chunk_coords[0],
+                        5 => chunk_coords[0] < camera_chunk_coords[0],
+                        6.. => unreachable!(),
+                    };
+                    if skip_face_dir {
+                        continue;
+                    }
                     // Base block faces
                     if subchunk.block_face_start_vertices[i] != u32::MAX {
                         block_face_draw_args.push(DrawIndirectArgs {
