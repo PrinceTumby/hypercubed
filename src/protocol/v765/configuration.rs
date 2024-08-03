@@ -62,10 +62,10 @@ pub enum MainHand {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, PacketWrite)]
 #[packet_write(id = 0x01)]
-pub struct ServerboundPluginMessage<'a, 'b> {
+pub struct ServerboundPluginMessage<'a> {
     // TODO Change this to Identifier
     pub channel: &'a str,
-    pub data: &'b [u8],
+    pub data: ProtocolRawSlice<'a, u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, PacketWrite)]

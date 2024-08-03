@@ -4,10 +4,10 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::fmt::Write;
-use string_cache::DefaultAtom as Atom;
 use std::sync::Arc;
+use string_cache::DefaultAtom as Atom;
 
-use super::model::{CombinedModelPart, ModelCache, ModelType, ModelRotationInfo};
+use super::model::{CombinedModelPart, ModelCache, ModelRotationInfo, ModelType};
 use super::RightAngleRotation;
 use super::{texture, Identifier};
 use crate::resource::manager::{get_resource_file, ResourceType};
@@ -720,16 +720,15 @@ pub fn load_full_custom_blockstates(
                             .into_iter()
                             .map(|model_info| {
                                 let model_location = Identifier::parse(&model_info.model)?;
-                                let model =
-                                    model_cache.load_model(
-                                        &model_location,
-                                        &ModelRotationInfo {
-                                            x_rotation: model_info.x_rotation,
-                                            y_rotation: model_info.y_rotation,
-                                            uv_lock: model_info.uv_lock,
-                                        },
-                                        texture_atlas,
-                                    )?;
+                                let model = model_cache.load_model(
+                                    &model_location,
+                                    &ModelRotationInfo {
+                                        x_rotation: model_info.x_rotation,
+                                        y_rotation: model_info.y_rotation,
+                                        uv_lock: model_info.uv_lock,
+                                    },
+                                    texture_atlas,
+                                )?;
                                 Ok(WeightedModel {
                                     model,
                                     weight: model_info.weight,

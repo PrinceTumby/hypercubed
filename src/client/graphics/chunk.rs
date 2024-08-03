@@ -626,11 +626,7 @@ pub mod block_face {
             }
         }
 
-        pub fn new(
-            subchunk_xyz: [u8; 3],
-            uvs: [u16; 4],
-            uv_rotation: RightAngleRotation,
-        ) -> Self {
+        pub fn new(subchunk_xyz: [u8; 3], uvs: [u16; 4], uv_rotation: RightAngleRotation) -> Self {
             debug_assert!(subchunk_xyz[0] < 16);
             debug_assert!(subchunk_xyz[1] < 16);
             debug_assert!(subchunk_xyz[2] < 16);
@@ -647,7 +643,7 @@ pub mod block_face {
                         RightAngleRotation::TwoSeventy => 3,
                     },
                     0,
-                ]
+                ],
             }
         }
     }
@@ -777,7 +773,7 @@ pub mod tinted_block_face {
                         RightAngleRotation::TwoSeventy => 3,
                     },
                     0,
-                ]
+                ],
             }
         }
     }

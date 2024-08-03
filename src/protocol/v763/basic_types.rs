@@ -599,7 +599,27 @@ macro_rules! var_int_tagged_parser {
 
 impl<T: Serialize> Serialize for &[T] {
     fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        // Length
+        VarInt(
+            self.len()
+                .try_into()
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
+        )
+        .serialize_into(writer)?;
+        // Data
         for element in *self {
+            element.serialize_to(writer)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProtocolRawSlice<'a, T: Serialize>(pub &'a [T]);
+
+impl<T: Serialize> Serialize for ProtocolRawSlice<'_, T> {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        for element in self.0 {
             element.serialize_to(writer)?;
         }
         Ok(())

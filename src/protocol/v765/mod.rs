@@ -14,38 +14,88 @@ pub use crate::protocol::v763::packet::{
     handshaking, read_var_int_as_usize, status, ByteView, PacketRead, PacketWrite, PluginMessage,
 };
 
-use super::OFFLINE_PLAYER_NAMESPACE;
-use bytebuffer::ByteBuffer;
+use cfb8::cipher::{BlockDecryptMut, BlockEncryptMut};
 use std::collections::VecDeque;
-use std::io::prelude::*;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Mutex;
-use uuid::Uuid;
 
-#[derive(Debug)]
+pub type Aes128Cfb8Enc = cfb8::Encryptor<aes::Aes128>;
+pub type Aes128Cfb8Dec = cfb8::Decryptor<aes::Aes128>;
+
 pub struct PlayConnection {
     stream: TcpStream,
     compression_threshold: Option<usize>,
     read_state: Mutex<PlayConnectionReadState>,
+    write_state: Mutex<PlayConnectionWriteState>,
 }
 
-#[derive(Debug)]
+struct PlayConnectionWriteState {
+    encryptor: Option<Aes128Cfb8Enc>,
+}
+
 struct PlayConnectionReadState {
+    decryptor: Option<Aes128Cfb8Dec>,
     packet_queue: VecDeque<play::Clientbound>,
     bundle_queue: VecDeque<play::Clientbound>,
     inside_bundle: bool,
 }
 
+struct EncryptedTcpStreamReader<'a> {
+    tcp_stream: &'a TcpStream,
+    decryptor: &'a mut Aes128Cfb8Dec,
+}
+
+impl<'a> Read for EncryptedTcpStreamReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let bytes_read = self.tcp_stream.read(buf)?;
+        for i in 0..bytes_read {
+            self.decryptor.decrypt_block_mut((&mut buf[i..=i]).into());
+        }
+        Ok(bytes_read)
+    }
+}
+
+struct EncryptedTcpStreamWriter<'a> {
+    tcp_stream: &'a TcpStream,
+    encryptor: &'a mut Aes128Cfb8Enc,
+    encryption_buffer: Vec<u8>,
+}
+
+impl<'a> Write for EncryptedTcpStreamWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.encryption_buffer.extend_from_slice(buf);
+        for i in 0..self.encryption_buffer.len() {
+            self.encryptor
+                .encrypt_block_mut((&mut self.encryption_buffer[i..=i]).into());
+        }
+        let write_result = self.tcp_stream.write_all(self.encryption_buffer.as_slice());
+        self.encryption_buffer.clear();
+        write_result.map(|()| buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.tcp_stream.flush()
+    }
+}
+
 impl PlayConnection {
-    pub fn new(stream: TcpStream, compression_threshold: Option<usize>) -> Self {
+    pub fn new(
+        stream: TcpStream,
+        compression_threshold: Option<usize>,
+        encryptor: Option<Aes128Cfb8Enc>,
+        decryptor: Option<Aes128Cfb8Dec>,
+    ) -> Self {
         Self {
             stream,
             compression_threshold,
             read_state: Mutex::new(PlayConnectionReadState {
+                decryptor,
                 packet_queue: VecDeque::new(),
                 bundle_queue: VecDeque::new(),
                 inside_bundle: false,
             }),
+            write_state: Mutex::new(PlayConnectionWriteState { encryptor }),
         }
     }
 
@@ -57,19 +107,30 @@ impl PlayConnection {
         let packet_queue = &mut read_state.packet_queue;
         let bundle_queue = &mut read_state.bundle_queue;
         let inside_bundle = &mut read_state.inside_bundle;
+        let mut decrypting_reader;
+        let mut read_stream = match read_state.decryptor.as_mut() {
+            None => &mut &self.stream as &mut dyn Read,
+            Some(decryptor) => {
+                decrypting_reader = EncryptedTcpStreamReader {
+                    tcp_stream: &self.stream,
+                    decryptor,
+                };
+                &mut decrypting_reader as &mut dyn Read
+            }
+        };
         loop {
             if let Some(packet) = packet_queue.pop_front() {
                 return Ok(packet);
             }
             match inside_bundle {
                 false => {
-                    match Clientbound::read_from(self.compression_threshold, &mut &self.stream)? {
+                    match Clientbound::read_from(self.compression_threshold, &mut read_stream)? {
                         Clientbound::BundleDelimiter => *inside_bundle = true,
                         packet => packet_queue.push_back(packet),
                     }
                 }
                 true => {
-                    match Clientbound::read_from(self.compression_threshold, &mut &self.stream)? {
+                    match Clientbound::read_from(self.compression_threshold, &mut read_stream)? {
                         Clientbound::BundleDelimiter => {
                             packet_queue.extend(bundle_queue.drain(..));
                             *inside_bundle = false;
@@ -82,114 +143,24 @@ impl PlayConnection {
     }
 
     pub fn send_packet<P: PacketWrite>(&self, packet: P) -> std::io::Result<()> {
-        packet.write_packet_into(&mut &self.stream, self.compression_threshold)
-    }
-}
-
-pub fn login(
-    address: &str,
-    port: u16,
-    client_information: configuration::ClientInformation,
-) -> std::io::Result<(PlayConnection, login::LoginSuccess)> {
-    use prelude::*;
-    let mut stream = TcpStream::connect(format!("{address}:{port}"))?;
-    // We want to send packets as soon as possible, even if they're small.
-    // If we can't do that it's not a big deal though, so ignore any errors.
-    _ = stream.set_nodelay(true);
-    // Send handshake packet
-    handshaking::Handshake {
-        protocol_version: 765,
-        address,
-        server_port: port,
-        next_state: handshaking::HandshakeNextState::Login,
-    }
-    .write_packet_into(&mut stream, None)?;
-    login::LoginStart {
-        username: "Sleepman",
-        player_uuid: Uuid::new_v3(&OFFLINE_PLAYER_NAMESPACE, b"Sleepman"),
-    }
-    .write_packet_into(&mut stream, None)?;
-    stream.flush()?;
-    let mut compression_threshold = None;
-    // Login phase
-    let success_packet = loop {
-        match login::Response::read_from(compression_threshold, &mut stream)? {
-            login::Response::Success(success_packet) => {
-                login::LoginAcknowledged.write_packet_into(&mut stream, compression_threshold)?;
-                break success_packet;
-            }
-            login::Response::SetCompression { threshold } => {
-                log::debug!("Compression threshold set to {}", threshold.0);
-                compression_threshold = match threshold.0 {
-                    ..=-1 => None,
-                    0.. => Some(threshold.0 as usize),
+        let mut write_state_lock = self.write_state.lock().unwrap();
+        let write_state = &mut *write_state_lock;
+        let mut encrypting_writer;
+        let mut write_stream = match write_state.encryptor.as_mut() {
+            None => &mut &self.stream as &mut dyn Write,
+            Some(encryptor) => {
+                encrypting_writer = EncryptedTcpStreamWriter {
+                    tcp_stream: &self.stream,
+                    encryptor,
+                    encryption_buffer: Vec::new(),
                 };
+                &mut encrypting_writer as &mut dyn Write
             }
-            login::Response::ErrorDisconnect { reason } => {
-                return Err(std::io::Error::other(reason));
-            }
-        }
-    };
-    // Configuration phase
-    loop {
-        match configuration::Response::read_from(compression_threshold, &mut stream)? {
-            configuration::Response::Finish => {
-                client_information.write_packet_into(&mut stream, compression_threshold)?;
-                configuration::AcknowledgeFinish
-                    .write_packet_into(&mut stream, compression_threshold)?;
-                return Ok((
-                    PlayConnection::new(stream, compression_threshold),
-                    success_packet,
-                ));
-            }
-            configuration::Response::PluginMessage(message) => match message.channel.as_str() {
-                "minecraft:brand" => {
-                    const CLIENT_BRAND: &str = "rust_minecraft_client";
-                    let (extra_data, server_brand) = String::deserialize(&message.data)
-                        .map_err(|err| std::io::Error::other(format!("{err}")))?;
-                    if extra_data.len() != 0 {
-                        return Err(std::io::Error::other(format!(
-                            "Invalid extra data while deserializing server brand: {extra_data:?}"
-                        )));
-                    }
-                    log::debug!(
-                        "Server sent brand {}, replying as having client brand {}",
-                        server_brand,
-                        CLIENT_BRAND,
-                    );
-                    let mut client_brand_data = ByteBuffer::new();
-                    String::from(CLIENT_BRAND).serialize_into(&mut client_brand_data)?;
-                    configuration::ServerboundPluginMessage {
-                        channel: "minecraft:brand",
-                        data: client_brand_data.as_bytes(),
-                    }
-                    .write_packet_into(&mut stream, compression_threshold)?;
-                }
-                _ => log::warn!(
-                    "Received plugin message from unknown channel while configuring: {message:?}"
-                ),
-            },
-            configuration::Response::KeepAlive(id) => {
-                configuration::KeepAliveResponse(id).serialize_into(&mut stream)?;
-            }
-            configuration::Response::Ping(id) => {
-                configuration::Pong(id).serialize_into(&mut stream)?;
-            }
-            configuration::Response::RegistryData(_registry_data) => log::warn!(
-                "Server registry data handling currently unimplemented, ignoring for now"
-            ),
-            configuration::Response::EnableFeatures(features) => {
-                if &features != &[String::from("minecraft:vanilla")] {
-                    todo!("Support alternative features: {:?}", features);
-                }
-            }
-            configuration::Response::UpdateTags(_registry_tags) => log::warn!(
-                "Server registry tags data handling currently unimplemented, ignoring for now"
-            ),
-            configuration::Response::ErrorDisconnect { reason } => {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, reason))
-            }
-            other => todo!("Handle configuration packet: {other:?}"),
-        }
+        };
+        packet.write_packet_into(&mut write_stream, self.compression_threshold)
+    }
+
+    pub fn flush(&self) -> std::io::Result<()> {
+        (&mut &self.stream).flush()
     }
 }

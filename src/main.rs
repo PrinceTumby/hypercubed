@@ -6,6 +6,11 @@ pub mod protocol;
 pub mod resource;
 pub mod world;
 
+use nom::sequence::pair;
+use nom::Parser;
+use nom_supreme::tag::complete::tag;
+use protocol::v765::prelude::*;
+use resource::block::GlobalPaletteIndex;
 use std::sync::Arc;
 
 const SERVER_ADDRESS: &str = "localhost";
@@ -18,11 +23,15 @@ fn main() -> anyhow::Result<()> {
     {
         use tracing_subscriber::layer::SubscriberExt;
         tracing::subscriber::set_global_default(
-            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default())
-        ).unwrap();
+            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default()),
+        )
+        .unwrap();
     }
     println!("{}", request_status(765, SERVER_ADDRESS, SERVER_PORT)?);
-    let (server_connection, login_success_packet) = login(
+    let session_info: Option<login::SessionInfo> = std::fs::read_to_string("session.json")
+        .map(|session_json| serde_json::from_str(&session_json).unwrap())
+        .ok();
+    let (server_connection, login_success_packet) = login::login(
         SERVER_ADDRESS,
         SERVER_PORT,
         configuration::ClientInformation {
@@ -35,6 +44,7 @@ fn main() -> anyhow::Result<()> {
             text_filtering_enabled: false,
             server_listings_allowed: true,
         },
+        session_info.as_ref(),
     )?;
     println!("{login_success_packet:?}");
     // TODO: Refactor this:
@@ -47,7 +57,8 @@ fn main() -> anyhow::Result<()> {
     {
         let server_connection = server_connection.clone();
         std::thread::spawn(move || loop {
-            let packet = server_connection.read_packet()
+            let packet = server_connection
+                .read_packet()
                 .map_err(|err| format!("{err:.02X?}"))
                 .unwrap();
             if let Err(_) = clientbound_tx.send(packet) {
@@ -58,12 +69,6 @@ fn main() -> anyhow::Result<()> {
     pollster::block_on(client::window_run(server_connection, clientbound_rx))?;
     Ok(())
 }
-
-use nom::sequence::pair;
-use nom::Parser;
-use nom_supreme::tag::complete::tag;
-use protocol::v765::prelude::*;
-use resource::block::GlobalPaletteIndex;
 
 #[derive(Clone, Deserialize)]
 struct ChunkSection {

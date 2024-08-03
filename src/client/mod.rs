@@ -24,15 +24,6 @@ use crate::protocol::v765::play::{
 use crate::protocol::v765::prelude::PlayConnection;
 use crate::protocol::Deserialize;
 
-// fn rotate_uvs([u1, v1, u2, v2]: [u16; 4], rotation: &RightAngleRotation) -> [u16; 4] {
-//     match rotation {
-//         &RightAngleRotation::Zero => [u1, v1, u2, v2],
-//         &RightAngleRotation::Ninety => [v2, u1, u2, v1],
-//         &RightAngleRotation::OneEighty => [u2, v2, u1, v1],
-//         &RightAngleRotation::TwoSeventy => [u1, v2, u2, v1],
-//     }
-// }
-
 struct ClientPlayState {
     pub raw_chunks: Arc<AHashMap<[i32; 2], Arc<[crate::ChunkSection]>>>,
     // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
@@ -296,7 +287,7 @@ pub(crate) async fn window_run(
                                 }
                             });
                             ui.collapsing("Frametimes", |ui| {
-                                use egui_plot::{Plot, Line, PlotPoints};
+                                use egui_plot::{Line, Plot, PlotPoints};
                                 Plot::new("frame_time_plot")
                                     .allow_zoom(false)
                                     .allow_drag(false)
@@ -651,10 +642,9 @@ pub(crate) async fn window_run(
                                 println!("Login play: {{<skipped>}}")
                             }
                             ClientboundPacket::KeepAlive { id } => {
-                                server_connection.send_packet(
-                                    serverbound_packets::KeepAliveResponse { id }
-                                )
-                                .unwrap();
+                                server_connection
+                                    .send_packet(serverbound_packets::KeepAliveResponse { id })
+                                    .unwrap();
                             }
                             // Configuration
                             ClientboundPacket::UpdateRecipes(_recipes) => {
@@ -710,7 +700,7 @@ pub(crate) async fn window_run(
                                 }
                             }
                             ClientboundPacket::UpdateLight(_) => {
-                                println!("Update chunk lighting: {{<skipped>}}")
+                                println!("Update chunk lighting: {{<todo>}}")
                             }
                             ClientboundPacket::UnloadChunk { chunk_x, chunk_z } => {
                                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
@@ -736,15 +726,21 @@ pub(crate) async fn window_run(
                                 let camera_pos = camera.pos.coords;
                                 camera.pos.coords.x = match pos_info.x {
                                     PositionChange::Absolute(new_x) => new_x as f32,
-                                    PositionChange::Relative(x_diff) => camera_pos.x + x_diff as f32,
+                                    PositionChange::Relative(x_diff) => {
+                                        camera_pos.x + x_diff as f32
+                                    }
                                 };
                                 camera.pos.coords.y = match pos_info.y {
                                     PositionChange::Absolute(new_y) => new_y as f32 + 1.62,
-                                    PositionChange::Relative(y_diff) => camera_pos.y + y_diff as f32,
+                                    PositionChange::Relative(y_diff) => {
+                                        camera_pos.y + y_diff as f32
+                                    }
                                 };
                                 camera.pos.coords.z = match pos_info.z {
                                     PositionChange::Absolute(new_z) => new_z as f32,
-                                    PositionChange::Relative(z_diff) => camera_pos.z + z_diff as f32,
+                                    PositionChange::Relative(z_diff) => {
+                                        camera_pos.z + z_diff as f32
+                                    }
                                 };
                                 let (cam_yaw, cam_pitch) = camera.get_mc_rot();
                                 let new_yaw = match pos_info.yaw {
@@ -762,8 +758,7 @@ pub(crate) async fn window_run(
                                     })
                                     .unwrap();
                             }
-                            _ => {}
-                            // other => println!("{other:?}"),
+                            _ => {} // other => println!("{other:?}"),
                         }
                     }
                     if thread_pool.panic_count() > 0 {
@@ -777,12 +772,14 @@ pub(crate) async fn window_run(
                             let graphics_resources = graphics_state.resources.clone();
                             let raw_chunks = play_state.raw_chunks.clone();
                             let play_state_update_tx = play_state_update_tx.clone();
-                            thread_pool.execute(move || process_chunk(
+                            thread_pool.execute(move || {
+                                process_chunk(
                                     &graphics_resources,
                                     &raw_chunks,
                                     play_state_update_tx,
                                     chunk_coords,
-                            ));
+                                )
+                            });
                         }
                     }
                     // Receive play state updates
@@ -805,24 +802,40 @@ pub(crate) async fn window_run(
                                 let [chunk_x, chunk_z] = chunk_coords;
                                 // Remove old subchunks
                                 if play_state.visible_chunks.contains(&chunk_coords) {
-                                    let span = tracing::trace_span!("remove_old_chunks", ?chunk_coords);
+                                    let span =
+                                        tracing::trace_span!("remove_old_chunks", ?chunk_coords);
                                     let _enter = span.enter();
                                     for subchunk_y in 0..24 {
                                         use std::collections::hash_map::Entry;
                                         let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
-                                        let span = tracing::trace_span!("remove_old_subchunk", ?subchunk_coords);
+                                        let span = tracing::trace_span!(
+                                            "remove_old_subchunk",
+                                            ?subchunk_coords
+                                        );
                                         let _enter = span.enter();
-                                        if let Entry::Occupied(entry) = play_state.subchunks.entry(subchunk_coords) {
+                                        if let Entry::Occupied(entry) =
+                                            play_state.subchunks.entry(subchunk_coords)
+                                        {
                                             entry.remove();
-                                            graphics_state.buffer_managers.block_face_vertex
+                                            graphics_state
+                                                .buffer_managers
+                                                .block_face_vertex
                                                 .free_subchunk_areas(subchunk_coords);
-                                            graphics_state.buffer_managers.block_face_instance
+                                            graphics_state
+                                                .buffer_managers
+                                                .block_face_instance
                                                 .free_subchunk_areas(subchunk_coords);
-                                            graphics_state.buffer_managers.tinted_block_face_vertex
+                                            graphics_state
+                                                .buffer_managers
+                                                .tinted_block_face_vertex
                                                 .free_subchunk_areas(subchunk_coords);
-                                            graphics_state.buffer_managers.tinted_block_face_instance
+                                            graphics_state
+                                                .buffer_managers
+                                                .tinted_block_face_instance
                                                 .free_subchunk_areas(subchunk_coords);
-                                            graphics_state.buffer_managers.custom_block_instance
+                                            graphics_state
+                                                .buffer_managers
+                                                .custom_block_instance
                                                 .free_subchunk_areas(subchunk_coords);
                                         }
                                     }
@@ -847,73 +860,98 @@ pub(crate) async fn window_run(
                                     let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
                                     // Base block faces
                                     let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-                                    let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
+                                    let mut block_face_instance_groups: [(u32, u32); 6] =
+                                        Default::default();
                                     for i in 0..6 {
-                                        let Some(base_quad) = raw_subchunk.block_face_quads[i] else {
+                                        let Some(base_quad) = raw_subchunk.block_face_quads[i]
+                                        else {
                                             continue;
                                         };
-                                        let quad_start_vertex = buffer_managers.block_face_vertex.alloc_area(
-                                            &graphics_state.resources.queue,
-                                            subchunk_coords,
-                                            base_quad,
-                                        );
-                                        let instance_group = &raw_subchunk.block_face_instance_groups[i];
-                                        let instance_group_start = buffer_managers.block_face_instance.alloc_area(
-                                            &graphics_state.resources.queue,
-                                            subchunk_coords,
-                                            instance_group,
-                                        );
-                                        let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-                                        block_face_start_vertices[i] = quad_start_vertex;
-                                        block_face_instance_groups[i] = (instance_group_start, instance_group_len);
-                                    }
-                                    // Tinted block faces
-                                    let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-                                    let mut tinted_block_face_instance_groups: [(u32, u32); 6] = Default::default();
-                                    for i in 0..6 {
-                                        let Some(base_quad) = raw_subchunk.tinted_block_face_quads[i] else {
-                                            continue;
-                                        };
-                                        let quad_start_vertex = buffer_managers.tinted_block_face_vertex.alloc_area(
-                                            &graphics_state.resources.queue,
-                                            subchunk_coords,
-                                            base_quad,
-                                        );
-                                        let instance_group = &raw_subchunk.tinted_block_face_instance_groups[i];
-                                        let instance_group_start = buffer_managers.tinted_block_face_instance.alloc_area(
-                                            &graphics_state.resources.queue,
-                                            subchunk_coords,
-                                            instance_group,
-                                        );
-                                        let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-                                        tinted_block_face_start_vertices[i] = quad_start_vertex;
-                                        tinted_block_face_instance_groups[i] = (instance_group_start, instance_group_len);
-                                    }
-                                    let custom_block_groups = raw_subchunk.custom_block_groups
-                                        .into_iter()
-                                        .map(|group| {
-                                            let start_instance = buffer_managers.custom_block_instance.alloc_area(
+                                        let quad_start_vertex =
+                                            buffer_managers.block_face_vertex.alloc_area(
                                                 &graphics_state.resources.queue,
                                                 subchunk_coords,
-                                                &group.instances,
+                                                base_quad,
                                             );
-                                            let num_instances: u32 = group.instances.len().try_into().unwrap();
+                                        let instance_group =
+                                            &raw_subchunk.block_face_instance_groups[i];
+                                        let instance_group_start =
+                                            buffer_managers.block_face_instance.alloc_area(
+                                                &graphics_state.resources.queue,
+                                                subchunk_coords,
+                                                instance_group,
+                                            );
+                                        let instance_group_len: u32 =
+                                            instance_group.len().try_into().unwrap();
+                                        block_face_start_vertices[i] = quad_start_vertex;
+                                        block_face_instance_groups[i] =
+                                            (instance_group_start, instance_group_len);
+                                    }
+                                    // Tinted block faces
+                                    let mut tinted_block_face_start_vertices: [u32; 6] =
+                                        [u32::MAX; 6];
+                                    let mut tinted_block_face_instance_groups: [(u32, u32); 6] =
+                                        Default::default();
+                                    for i in 0..6 {
+                                        let Some(base_quad) =
+                                            raw_subchunk.tinted_block_face_quads[i]
+                                        else {
+                                            continue;
+                                        };
+                                        let quad_start_vertex =
+                                            buffer_managers.tinted_block_face_vertex.alloc_area(
+                                                &graphics_state.resources.queue,
+                                                subchunk_coords,
+                                                base_quad,
+                                            );
+                                        let instance_group =
+                                            &raw_subchunk.tinted_block_face_instance_groups[i];
+                                        let instance_group_start =
+                                            buffer_managers.tinted_block_face_instance.alloc_area(
+                                                &graphics_state.resources.queue,
+                                                subchunk_coords,
+                                                instance_group,
+                                            );
+                                        let instance_group_len: u32 =
+                                            instance_group.len().try_into().unwrap();
+                                        tinted_block_face_start_vertices[i] = quad_start_vertex;
+                                        tinted_block_face_instance_groups[i] =
+                                            (instance_group_start, instance_group_len);
+                                    }
+                                    let custom_block_groups = raw_subchunk
+                                        .custom_block_groups
+                                        .into_iter()
+                                        .map(|group| {
+                                            let start_instance =
+                                                buffer_managers.custom_block_instance.alloc_area(
+                                                    &graphics_state.resources.queue,
+                                                    subchunk_coords,
+                                                    &group.instances,
+                                                );
+                                            let num_instances: u32 =
+                                                group.instances.len().try_into().unwrap();
                                             graphics::chunk::CustomBlockGroup {
                                                 start_vertex: group.start_vertex,
                                                 start_index_and_len: group.start_index_and_len,
-                                                start_instance_and_len: (start_instance, num_instances),
+                                                start_instance_and_len: (
+                                                    start_instance,
+                                                    num_instances,
+                                                ),
                                             }
                                         })
                                         .collect();
-                                    play_state.subchunks.insert(subchunk_coords, graphics::chunk::Subchunk {
-                                        start_coords: raw_subchunk.start_coords,
-                                        block_face_start_vertices,
-                                        block_face_instance_groups,
-                                        tinted_block_face_start_vertices,
-                                        tinted_block_face_instance_groups,
-                                        custom_block_groups,
-                                        connected_faces: raw_subchunk.connected_faces,
-                                    });
+                                    play_state.subchunks.insert(
+                                        subchunk_coords,
+                                        graphics::chunk::Subchunk {
+                                            start_coords: raw_subchunk.start_coords,
+                                            block_face_start_vertices,
+                                            block_face_instance_groups,
+                                            tinted_block_face_start_vertices,
+                                            tinted_block_face_instance_groups,
+                                            custom_block_groups,
+                                            connected_faces: raw_subchunk.connected_faces,
+                                        },
+                                    );
                                 }
                                 chunks_processed_this_frame += 1;
                                 if chunks_processed_this_frame >= 1 {
@@ -941,6 +979,7 @@ pub(crate) async fn window_run(
                                 on_ground: false,
                             })
                             .unwrap();
+                        server_connection.flush().unwrap();
                     }
                 }
                 tracing_tracy::client::frame_mark();
@@ -1005,11 +1044,12 @@ fn process_chunk(
 ) {
     let [chunk_x, chunk_z] = chunk_coords;
     let Some(chunk_sections) = raw_chunks.get(&chunk_coords) else {
-        play_state_update_tx.send(ClientPlayStateUpdate::PlaceChunk {
-            chunk_coords,
-            new_raw_subchunks: Vec::new(),
-        })
-        .unwrap();
+        play_state_update_tx
+            .send(ClientPlayStateUpdate::PlaceChunk {
+                chunk_coords,
+                new_raw_subchunks: Vec::new(),
+            })
+            .unwrap();
         return;
     };
     // Skip chunks with missing neighbours, so that for every chunk we actually render, it
@@ -1024,11 +1064,12 @@ fn process_chunk(
         ];
         for chunk in surrounding_chunk_coords {
             if !raw_chunks.contains_key(&chunk) {
-                play_state_update_tx.send(ClientPlayStateUpdate::PlaceChunk {
-                    chunk_coords,
-                    new_raw_subchunks: Vec::new(),
-                })
-                .unwrap();
+                play_state_update_tx
+                    .send(ClientPlayStateUpdate::PlaceChunk {
+                        chunk_coords,
+                        new_raw_subchunks: Vec::new(),
+                    })
+                    .unwrap();
                 return;
             }
         }
@@ -1389,12 +1430,10 @@ fn process_chunk(
         // Custom block groups
         let custom_block_groups = custom_block_instance_groups
             .into_iter()
-            .map(|(info, instances)| {
-                RawCustomBlockGroup {
-                    start_vertex: info.start_vertex,
-                    start_index_and_len: info.start_index_and_len,
-                    instances,
-                }
+            .map(|(info, instances)| RawCustomBlockGroup {
+                start_vertex: info.start_vertex,
+                start_index_and_len: info.start_index_and_len,
+                instances,
             })
             .collect();
         new_raw_subchunks.push((
@@ -1410,11 +1449,12 @@ fn process_chunk(
             },
         ));
     }
-    play_state_update_tx.send(ClientPlayStateUpdate::PlaceChunk {
-        chunk_coords,
-        new_raw_subchunks,
-    })
-    .unwrap();
+    play_state_update_tx
+        .send(ClientPlayStateUpdate::PlaceChunk {
+            chunk_coords,
+            new_raw_subchunks,
+        })
+        .unwrap();
 }
 
 use graphics::Camera;

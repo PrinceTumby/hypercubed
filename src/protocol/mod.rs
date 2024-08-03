@@ -25,12 +25,12 @@ pub mod error_tree {
         GenericErrorTree<I, &'static [u8], &'static str, Box<dyn Error + Send + Sync + 'static>>;
 }
 
+pub const OFFLINE_PLAYER_NAMESPACE: Uuid = uuid!("071e6668-28ee-39de-8f51-f257ec5f77a9");
+
 use prelude::IResult;
 use std::io::prelude::*;
 use std::net::TcpStream;
 use uuid::{uuid, Uuid};
-
-const OFFLINE_PLAYER_NAMESPACE: Uuid = uuid!("071e6668-28ee-39de-8f51-f257ec5f77a9");
 
 pub trait Deserialize: Sized {
     fn deserialize(input: &[u8]) -> IResult<&[u8], Self>;

@@ -1,6 +1,6 @@
 pub use crate::protocol::v763::basic_types::{
     Angle, AxisDirection, BitVec, EntityId, GlobalPosition, Identifier, OptionalEntityId, Particle,
-    Position, VarInt, VarLong,
+    Position, ProtocolRawSlice, VarInt, VarLong,
 };
 
 use super::prelude::*;

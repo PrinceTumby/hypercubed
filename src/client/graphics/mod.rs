@@ -31,10 +31,7 @@ pub struct Camera {
 
 impl Camera {
     pub fn get_mc_rot(&self) -> (f32, f32) {
-        (
-            (self.yaw - 180.0) % 360.0,
-            -self.pitch,
-        )
+        ((self.yaw - 180.0) % 360.0, -self.pitch)
     }
 
     pub fn set_mc_rot(&mut self, yaw: f32, pitch: f32) {
@@ -262,18 +259,16 @@ impl<'a> GraphicsState<'a> {
         let matrices_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("matrices_bind_group_layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                ],
+                    count: None,
+                }],
             });
         let atlas_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -411,8 +406,10 @@ impl<'a> GraphicsState<'a> {
         // Buffer managers
         let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device);
         let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device);
-        let tinted_block_face_vertex_buffer_manager = TintedBlockFaceVertexBufferManager::new(&device);
-        let tinted_block_face_instance_buffer_manager = TintedBlockFaceInstanceBufferManager::new(&device);
+        let tinted_block_face_vertex_buffer_manager =
+            TintedBlockFaceVertexBufferManager::new(&device);
+        let tinted_block_face_instance_buffer_manager =
+            TintedBlockFaceInstanceBufferManager::new(&device);
         let custom_block_instance_buffer_manager = CustomBlockInstanceBufferManager::new(&device);
         // Buffers
         let proj_matrix = Matrix4::new_perspective(
@@ -449,12 +446,10 @@ impl<'a> GraphicsState<'a> {
         let matrices_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("matrices_bind_group"),
             layout: &matrices_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: face_matrices_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: face_matrices_buffer.as_entire_binding(),
+            }],
         });
         // Debug buffers
         let debug_crosshair_camera_buffer =
@@ -884,8 +879,10 @@ impl<'a> GraphicsState<'a> {
                 render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.buffer_managers.block_face_vertex.get_slice());
-                render_pass.set_vertex_buffer(1, self.buffer_managers.block_face_instance.get_slice());
+                render_pass
+                    .set_vertex_buffer(0, self.buffer_managers.block_face_vertex.get_slice());
+                render_pass
+                    .set_vertex_buffer(1, self.buffer_managers.block_face_instance.get_slice());
                 render_pass.multi_draw_indirect(
                     &block_face_draw_args_buffer,
                     0,
@@ -906,10 +903,14 @@ impl<'a> GraphicsState<'a> {
                 render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-                render_pass
-                    .set_vertex_buffer(0, self.buffer_managers.tinted_block_face_vertex.get_slice());
-                render_pass
-                    .set_vertex_buffer(1, self.buffer_managers.tinted_block_face_instance.get_slice());
+                render_pass.set_vertex_buffer(
+                    0,
+                    self.buffer_managers.tinted_block_face_vertex.get_slice(),
+                );
+                render_pass.set_vertex_buffer(
+                    1,
+                    self.buffer_managers.tinted_block_face_instance.get_slice(),
+                );
                 render_pass.multi_draw_indirect(
                     &tinted_block_face_draw_args_buffer,
                     0,
@@ -931,7 +932,8 @@ impl<'a> GraphicsState<'a> {
                 render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.custom_block_vertices_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, self.buffer_managers.custom_block_instance.get_slice());
+                render_pass
+                    .set_vertex_buffer(1, self.buffer_managers.custom_block_instance.get_slice());
                 render_pass.set_index_buffer(
                     self.custom_block_indices_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,

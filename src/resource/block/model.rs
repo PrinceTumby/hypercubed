@@ -159,8 +159,13 @@ impl ModelCache {
         if !complete {
             bail!("combined template {final_template:?} cannot be finalised");
         }
-        self.finalise_model(final_template, &ModelRotationInfo::default(), texture_atlas, None)
-            .map(Arc::new)
+        self.finalise_model(
+            final_template,
+            &ModelRotationInfo::default(),
+            texture_atlas,
+            None,
+        )
+        .map(Arc::new)
     }
 
     /// If `skip_finalising_model` is specified, this will return the model's template instead of
@@ -175,7 +180,10 @@ impl ModelCache {
     ) -> anyhow::Result<ModelState> {
         // HACK: See above on liquid loading for why we have to clone the location.
         let location_and_rotation = (location.clone(), *rotation);
-        if let (false, Some(model)) = (skip_finalising_model, self.completed_models.get(&location_and_rotation)) {
+        if let (false, Some(model)) = (
+            skip_finalising_model,
+            self.completed_models.get(&location_and_rotation),
+        ) {
             return Ok(ModelState::Complete(model.clone()));
         }
         let (mut model_template, cached_template) = if let Some(template) =
@@ -271,7 +279,12 @@ impl ModelCache {
         };
         // If template is complete, then we convert it to a finished model
         if !skip_finalising_model && complete {
-            let completed_model = Arc::new(self.finalise_model(model_template, rotation, texture_atlas, Some(&location))?);
+            let completed_model = Arc::new(self.finalise_model(
+                model_template,
+                rotation,
+                texture_atlas,
+                Some(&location),
+            )?);
             assert!(
                 self.completed_models
                     .insert((location.clone(), *rotation), completed_model.clone())
@@ -832,19 +845,23 @@ impl ModelCache {
                         }
                     }
                 };
-                if template_element.blockstate_rotation.is_some() && rotation != ModelRotationInfo::default() {
+                if template_element.blockstate_rotation.is_some()
+                    && rotation != ModelRotationInfo::default()
+                {
                     // If this needs implementing, see the TODO above in `load_combined_model`.
                     // Basically, we want to get rid of template element blockstate rotation info,
                     // and just rotate the template elements before they reach here, so this only
                     // has to deal with final model blockstate rotations.
                     unimplemented!("Combined element and and global blockstate rotations");
                 }
-                let blockstate_rotation = template_element.blockstate_rotation
-                    .map_or(rotation, |rotation| ModelRotationInfo {
-                        x_rotation: rotation.x_rotation,
-                        y_rotation: rotation.y_rotation,
-                        uv_lock: rotation.uv_lock,
-                    });
+                let blockstate_rotation =
+                    template_element
+                        .blockstate_rotation
+                        .map_or(rotation, |rotation| ModelRotationInfo {
+                            x_rotation: rotation.x_rotation,
+                            y_rotation: rotation.y_rotation,
+                            uv_lock: rotation.uv_lock,
+                        });
                 let complete_matrix = match blockstate_rotation {
                     zero_rot if zero_rot == ModelRotationInfo::default() => basic_rotation,
                     ModelRotationInfo {
@@ -956,15 +973,11 @@ impl ModelCache {
         let transformed_uvs = uvs_f32.map(|[u, v]| [u - midpoint[0], v - midpoint[1]]);
         let transformed_rotated_uvs = match rotation {
             RightAngleRotation::Zero => transformed_uvs,
-            RightAngleRotation::Ninety => transformed_uvs
-                .map(|[u, v]| [v, -u]),
-            RightAngleRotation::OneEighty => transformed_uvs
-                .map(|[u, v]| [-u, -v]),
-            RightAngleRotation::TwoSeventy => transformed_uvs
-                .map(|[u, v]| [-v, u]),
+            RightAngleRotation::Ninety => transformed_uvs.map(|[u, v]| [v, -u]),
+            RightAngleRotation::OneEighty => transformed_uvs.map(|[u, v]| [-u, -v]),
+            RightAngleRotation::TwoSeventy => transformed_uvs.map(|[u, v]| [-v, u]),
         };
-        let rotated_uvs = transformed_rotated_uvs
-            .map(|[u, v]| [u + midpoint[0], v + midpoint[1]]);
+        let rotated_uvs = transformed_rotated_uvs.map(|[u, v]| [u + midpoint[0], v + midpoint[1]]);
         rotated_uvs.map(|[u, v]| [u as u16, v as u16])
     }
 
@@ -1007,37 +1020,22 @@ impl ModelCache {
             .get_or_load_texture(&Identifier::parse(&face.texture)?)?
             .uvs;
         let element_uvs = face.uvs.unwrap_or_else(|| match index {
-            BlockFace::Top | BlockFace::Bottom => [
-                start_pos[0],
-                start_pos[2],
-                end_pos[0],
-                end_pos[2],
-            ],
-            BlockFace::North | BlockFace::South => [
-                start_pos[0],
-                start_pos[1],
-                end_pos[0],
-                end_pos[1],
-            ],
-            BlockFace::East | BlockFace::West => [
-                start_pos[2],
-                start_pos[1],
-                end_pos[2],
-                end_pos[1],
-            ],
+            BlockFace::Top | BlockFace::Bottom => {
+                [start_pos[0], start_pos[2], end_pos[0], end_pos[2]]
+            }
+            BlockFace::North | BlockFace::South => {
+                [start_pos[0], start_pos[1], end_pos[0], end_pos[1]]
+            }
+            BlockFace::East | BlockFace::West => {
+                [start_pos[2], start_pos[1], end_pos[2], end_pos[1]]
+            }
         });
         let combined_rotation = match (model_rotation.uv_lock, index) {
-            (true, BlockFace::Top | BlockFace::Bottom) =>
-                face.rotation - model_rotation.y_rotation,
-            (true, BlockFace::East | BlockFace::West) =>
-                face.rotation - model_rotation.x_rotation,
+            (true, BlockFace::Top | BlockFace::Bottom) => face.rotation - model_rotation.y_rotation,
+            (true, BlockFace::East | BlockFace::West) => face.rotation - model_rotation.x_rotation,
             _ => face.rotation,
         };
-        let transformed_uvs = Self::transform_uvs(
-            texture_uvs,
-            element_uvs,
-            combined_rotation,
-        );
+        let transformed_uvs = Self::transform_uvs(texture_uvs, element_uvs, combined_rotation);
         Ok(ModelElementFace {
             uvs: transformed_uvs,
             cullface: face.cullface.unwrap_or(index),

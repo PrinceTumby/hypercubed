@@ -3,12 +3,12 @@ pub mod crafting;
 pub use super::configuration::{ChatMode, MainHand};
 pub use crate::protocol::v763::packet::play::{
     entity_metadata, BlockUpdate, DamageEvent, Difficulty, EquipmentSlot, GameMode,
-    InitializeWorldBorder, SetBlockEntityData, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetEntityMetadata, SetEntityVelocity, SetExperience, SetHeadRotation,
-    SetHealth, SpawnNonLivingEntity, SynchronizePlayerPosition, TagGroup, TeleportEntity,
-    UpdateEntityAttributes, UpdateEntityPosition, UpdateEntityPositionAndRotation,
-    UpdateEntityRotation, UpdatePlayerInfo, UpdateRecipeBook, UpdateSectionBlocks, UpdateTime,
-    PositionChange, RotationChange,
+    InitializeWorldBorder, PositionChange, RotationChange, SetBlockEntityData, SetCenterChunk,
+    SetContainerContent, SetDefaultSpawnPosition, SetEntityMetadata, SetEntityVelocity,
+    SetExperience, SetHeadRotation, SetHealth, SpawnNonLivingEntity, SynchronizePlayerPosition,
+    TagGroup, TeleportEntity, UpdateEntityAttributes, UpdateEntityPosition,
+    UpdateEntityPositionAndRotation, UpdateEntityRotation, UpdatePlayerInfo, UpdateRecipeBook,
+    UpdateSectionBlocks, UpdateTime,
 };
 
 use super::prelude::*;
@@ -20,6 +20,7 @@ use nom::sequence::{pair, tuple};
 use nom::Parser;
 use nom_supreme::tag::complete::tag;
 use nom_supreme::ParserExt;
+use uuid::Uuid;
 
 #[derive(Clone, Debug, PacketRead)]
 pub enum Clientbound {
@@ -68,6 +69,7 @@ pub enum Clientbound {
         fly_speed: f32,
         fov_modifier: f32,
     },
+    RemovePlayersInfo(Vec<Uuid>),
     UpdatePlayerInfo(UpdatePlayerInfo),
     SynchronizePlayerPosition(SynchronizePlayerPosition),
     UpdateRecipeBook(UpdateRecipeBook),
@@ -143,6 +145,7 @@ impl Deserialize for Clientbound {
                         fov_modifier,
                     }
                 ),
+                0x3B => <Vec<Uuid>>::deserialize.map(Self::RemovePlayersInfo),
                 0x3C => UpdatePlayerInfo::deserialize.map(Self::UpdatePlayerInfo),
                 0x3E =>
                     SynchronizePlayerPosition::deserialize.map(Self::SynchronizePlayerPosition),
@@ -197,16 +200,18 @@ pub enum SetEntityAnimationType {
 
 impl Deserialize for SetEntityAnimationType {
     fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        verify(take(1usize), |variant: &[u8]| variant[0] <= 5 && variant[0] != 1)
-            .map(|variant: &[u8]| match variant[0] {
-                0 => Self::SwingPrimaryArm,
-                2 => Self::LeaveBed,
-                3 => Self::SwingSecondaryArm,
-                4 => Self::CriticalEffect,
-                5 => Self::MagicalCriticalEffect,
-                _ => unreachable!(),
-            })
-            .parse(input)
+        verify(take(1usize), |variant: &[u8]| {
+            variant[0] <= 5 && variant[0] != 1
+        })
+        .map(|variant: &[u8]| match variant[0] {
+            0 => Self::SwingPrimaryArm,
+            2 => Self::LeaveBed,
+            3 => Self::SwingSecondaryArm,
+            4 => Self::CriticalEffect,
+            5 => Self::MagicalCriticalEffect,
+            _ => unreachable!(),
+        })
+        .parse(input)
     }
 }
 
@@ -520,7 +525,7 @@ pub mod serverbound {
     }
 
     // Gameplay
-    
+
     #[derive(Clone, Copy, Debug, Serialize, PacketWrite)]
     #[packet_write(id = 0x00)]
     pub struct ConfirmTeleportation {
