@@ -13,6 +13,7 @@ use nom_supreme::tag::complete::tag;
 use nom_supreme::ParserExt;
 use quartz_nbt::NbtCompound;
 use uuid::Uuid;
+use crate::resource::block::GlobalPaletteIndex;
 
 #[derive(Clone, Debug, PacketRead)]
 pub enum Clientbound {
@@ -650,10 +651,36 @@ pub struct SetHeadRotation {
     pub head_yaw: Angle,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct UpdateSectionBlocks {
-    pub chunk_section_and_position: u64,
-    pub blocks: Vec<VarLong>,
+    pub subchunk_coords: [i32; 3],
+    pub blocks: Vec<([u8; 3], GlobalPaletteIndex)>,
+}
+
+impl Deserialize for UpdateSectionBlocks {
+    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+        <(i64, Vec<VarLong>)>::deserialize
+            .map(|(packed_coords, packed_blocks)| UpdateSectionBlocks {
+                subchunk_coords: [
+                    (packed_coords >> 42) as i32,
+                    (packed_coords << 44 >> 44) as i32,
+                    (packed_coords << 22 >> 42) as i32,
+                ],
+                blocks: packed_blocks
+                    .into_iter()
+                    .map(|packed_block| (
+                        [
+                            ((packed_block.0 >> 8) & 0xF) as u8,
+                            (packed_block.0 & 0xF) as u8,
+                            ((packed_block.0 >> 4) & 0xF) as u8,
+                        ],
+                        (packed_block.0 >> 12).try_into().unwrap(),
+                    ))
+                    .collect(),
+            })
+            .context("UpdateSectionBlocks")
+            .parse(input)
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -123,7 +123,12 @@ macro_rules! byte_enum_parser {
 macro_rules! var_int_tagged_parser {
     ($( $tag_value:expr => $deserializer:expr $(,)? )+) => {{
         nom::branch::alt((
-            $( nom::sequence::preceded(VarInt::tag($tag_value), $deserializer), )+
+            $(
+                nom::sequence::preceded(
+                    VarInt::tag($tag_value),
+                    nom::combinator::cut($deserializer),
+                ),
+            )+
         ))
     }}
 }

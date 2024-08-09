@@ -348,7 +348,7 @@ impl Deserialize for SetEquipment {
             pair(
                 many_till(
                     EquipmentPiece::deserialize,
-                    verify(take(1usize), |input: &[u8]| input[0] & 0b1000000 == 0),
+                    verify(take(1usize), |input: &[u8]| input[0] & 0b10000000 == 0),
                 ),
                 EquipmentPiece::deserialize,
             )
@@ -370,7 +370,7 @@ impl Deserialize for SetEquipment {
 #[derive(Clone, Debug, Deserialize)]
 pub struct EquipmentPiece {
     pub slot: EquipmentSlot,
-    pub item: crafting::PresentSlot,
+    pub item: crafting::Slot,
 }
 
 #[derive(Clone, Debug)]

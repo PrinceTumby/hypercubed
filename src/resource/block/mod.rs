@@ -2,6 +2,7 @@ pub mod blockstate;
 pub mod model;
 
 use super::{texture, Identifier, RegistryData, RegistryIndex};
+use ahash::AHashSet;
 use anyhow::Context;
 use blockstate::CustomPropertyType;
 use model::ModelCache;
@@ -11,11 +12,12 @@ use string_cache::DefaultAtom as Atom;
 #[derive(Debug)]
 pub struct Registry {
     data: RegistryData<Info>,
-    pub global_palette: Vec<blockstate::Blockstate>,
+    global_palette: Vec<blockstate::Blockstate>,
+    air_blockstates: AHashSet<GlobalPaletteIndex>,
 }
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct GlobalPaletteIndex(u16);
 
 impl GlobalPaletteIndex {
@@ -25,6 +27,11 @@ impl GlobalPaletteIndex {
 
     pub fn as_raw(&self) -> u16 {
         self.0
+    }
+
+    #[inline(always)]
+    pub fn as_usize(&self) -> usize {
+        self.0 as usize
     }
 }
 
@@ -59,18 +66,12 @@ impl_palette_index_try_from!(i32);
 impl_palette_index_try_from!(i64);
 impl_palette_index_try_from!(isize);
 
-impl GlobalPaletteIndex {
-    #[inline(always)]
-    pub fn as_usize(&self) -> usize {
-        self.0 as usize
-    }
-}
-
 impl Registry {
     pub fn new() -> Self {
         Self {
             data: RegistryData::new(),
             global_palette: Vec::new(),
+            air_blockstates: AHashSet::new(),
         }
     }
 
@@ -95,7 +96,6 @@ impl Registry {
             texture_atlas,
         )
         .with_context(|| format!("Failed to parse blockstates for {identifier:?}"))?;
-        #[cfg(debug_assertions)]
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
         let default_index = match default_override {
@@ -117,8 +117,14 @@ impl Registry {
             default_blockstate: GlobalPaletteIndex(default_index.try_into().unwrap()),
             properties,
             #[cfg(debug_assertions)]
-            blockstate_id_range,
+            blockstate_id_range: blockstate_id_range.clone(),
         };
+        if properties.air_like {
+            for blockstate_id_usize in blockstate_id_range {
+                let blockstate_id = GlobalPaletteIndex::try_from(blockstate_id_usize).unwrap();
+                self.air_blockstates.insert(blockstate_id);
+            }
+        }
         Ok(block_index)
     }
 
@@ -146,7 +152,6 @@ impl Registry {
             texture_atlas,
         )
         .with_context(|| format!("Failed to parse blockstates for {identifier:?}"))?;
-        #[cfg(debug_assertions)]
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
         let default_index = match default_override {
@@ -168,8 +173,14 @@ impl Registry {
             default_blockstate: GlobalPaletteIndex(default_index.try_into().unwrap()),
             properties,
             #[cfg(debug_assertions)]
-            blockstate_id_range,
+            blockstate_id_range: blockstate_id_range.clone(),
         };
+        if properties.air_like {
+            for blockstate_id_usize in blockstate_id_range {
+                let blockstate_id = GlobalPaletteIndex::try_from(blockstate_id_usize).unwrap();
+                self.air_blockstates.insert(blockstate_id);
+            }
+        }
         Ok(block_index)
     }
 
@@ -189,7 +200,6 @@ impl Registry {
             texture_atlas,
         )
         .with_context(|| format!("while parsing liquid blockstates for {identifier:?}"))?;
-        #[cfg(debug_assertions)]
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
         let default_index = self.global_palette.len();
@@ -198,8 +208,14 @@ impl Registry {
             default_blockstate: GlobalPaletteIndex(default_index.try_into().unwrap()),
             properties,
             #[cfg(debug_assertions)]
-            blockstate_id_range,
+            blockstate_id_range: blockstate_id_range.clone(),
         };
+        if properties.air_like {
+            for blockstate_id_usize in blockstate_id_range {
+                let blockstate_id = GlobalPaletteIndex::try_from(blockstate_id_usize).unwrap();
+                self.air_blockstates.insert(blockstate_id);
+            }
+        }
         Ok(block_index)
     }
 
@@ -214,6 +230,12 @@ impl Registry {
     pub fn get_identifier_from_index(&self, index: RegistryIndex) -> Option<&Identifier> {
         self.data.get_identifier_from_index(index)
     }
+
+    /// Returns `true` if all of the blockstate belongs to an air-type block.
+    /// In vanilla, this is just air, cave air, and void air.
+    pub fn is_blockstate_air_like(&self, global_palette_index: GlobalPaletteIndex) -> bool {
+        self.air_blockstates.contains(&global_palette_index)
+    }
 }
 
 impl std::ops::Index<RegistryIndex> for Registry {
@@ -227,6 +249,20 @@ impl std::ops::Index<RegistryIndex> for Registry {
 impl std::ops::IndexMut<RegistryIndex> for Registry {
     fn index_mut(&mut self, index: RegistryIndex) -> &mut Self::Output {
         &mut self.data[index]
+    }
+}
+
+impl std::ops::Index<GlobalPaletteIndex> for Registry {
+    type Output = blockstate::Blockstate;
+
+    fn index(&self, index: GlobalPaletteIndex) -> &blockstate::Blockstate {
+        &self.global_palette[index.as_usize()]
+    }
+}
+
+impl std::ops::IndexMut<GlobalPaletteIndex> for Registry {
+    fn index_mut(&mut self, index: GlobalPaletteIndex) -> &mut Self::Output {
+        &mut self.global_palette[index.as_usize()]
     }
 }
 
@@ -252,11 +288,15 @@ impl Default for Info {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Properties {
     pub opaque: bool,
+    pub air_like: bool,
 }
 
 impl Default for Properties {
     fn default() -> Self {
-        Self { opaque: true }
+        Self {
+            opaque: true,
+            air_like: false,
+        }
     }
 }
 
@@ -913,7 +953,7 @@ pub fn register_vanilla_blocks(
         };
     }
 
-    register!("air", opaque = false)?;
+    register!("air", opaque = false, air_like = true)?;
     register!("stone")?;
     register!("granite")?;
     register!("polished_granite")?;
@@ -2340,8 +2380,8 @@ pub fn register_vanilla_blocks(
         opaque = false
     )?;
     register!("potted_bamboo", opaque = false)?;
-    register!("void_air", opaque = false)?;
-    register!("cave_air", opaque = false)?;
+    register!("void_air", opaque = false, air_like = true)?;
+    register!("cave_air", opaque = false, air_like = true)?;
     register!("bubble_column", &[("drag", Bool)], opaque = false)?;
     register_stairs!("polished_granite_stairs")?;
     register_stairs!("smooth_red_sandstone_stairs")?;

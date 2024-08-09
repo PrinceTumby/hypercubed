@@ -134,7 +134,10 @@ pub trait PacketRead: Deserialize + std::fmt::Debug {
         #[cfg(not(feature = "protocol_verbose"))]
         {
             let (data_left, packet) = Self::deserialize(&raw_packet)
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_owned()))?;
+                .map_err(|err| std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("failed to deserialise input {raw_packet:X?}: {err}"),
+                ))?;
             assert_eq!(data_left, &[] as &[u8]);
             Ok(packet)
         }
@@ -188,7 +191,10 @@ pub trait PacketRead: Deserialize + std::fmt::Debug {
         #[cfg(not(feature = "protocol_verbose"))]
         {
             let (data_left, packet) = Self::deserialize(&uncompressed_packet)
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_owned()))?;
+                .map_err(|err| std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("failed to deserialise input {uncompressed_packet:X?}: {err}"),
+                ))?;
             assert_eq!(
                 data_left,
                 &[] as &[u8],

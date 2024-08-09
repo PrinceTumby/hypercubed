@@ -12,12 +12,14 @@ use threadpool::ThreadPool;
 use winit::event::{Event, StartCause, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
+use indexmap::IndexMap;
 
 use super::resource;
 use crate::identifier;
-use resource::block::blockstate;
 use resource::block::model::{ModelType, Tint};
+use resource::block::{blockstate, GlobalPaletteIndex};
 
+use crate::protocol::v765::chunk as protocol_chunk;
 use crate::protocol::v765::play::{
     serverbound as serverbound_packets, Clientbound as ClientboundPacket,
 };
@@ -25,18 +27,20 @@ use crate::protocol::v765::prelude::PlayConnection;
 use crate::protocol::Deserialize;
 
 struct ClientPlayState {
-    pub raw_chunks: Arc<AHashMap<[i32; 2], Arc<[crate::ChunkSection]>>>,
+    pub raw_chunks: Arc<AHashMap<[i32; 2], Arc<[protocol_chunk::ChunkSection]>>>,
     // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
     //       coordinate. Consider changing to actually be the Y coordinate.
     pub subchunks: AHashMap<[i32; 3], graphics::chunk::Subchunk>,
     pub visible_chunks: AHashSet<[i32; 2]>,
+    pub pending_subchunk_update_ids: AHashMap<[i32; 3], usize>,
 }
 
 #[derive(Debug)]
 enum ClientPlayStateUpdate {
-    PlaceChunk {
-        chunk_coords: [i32; 2],
-        new_raw_subchunks: Vec<(i32, RawSubchunk)>,
+    RemoveChunk([i32; 2]),
+    PlaceSubchunks {
+        update_id: usize,
+        new_raw_subchunks: Vec<([i32; 3], RawSubchunk)>,
     },
 }
 
@@ -80,6 +84,7 @@ pub(crate) async fn window_run(
         raw_chunks: Arc::new(AHashMap::new()),
         subchunks: AHashMap::new(),
         visible_chunks: AHashSet::new(),
+        pending_subchunk_update_ids: AHashMap::new(),
     };
     let (play_state_update_tx, play_state_update_rx) = mpsc::channel::<ClientPlayStateUpdate>();
     let mut last_mouse_pos = egui::Pos2::new(0.0, 0.0);
@@ -107,6 +112,7 @@ pub(crate) async fn window_run(
             .map(|num_threads_non_zero| num_threads_non_zero.get())
             .unwrap_or(2),
     );
+    let mut current_update_id: usize = 0;
     let mut previous_frame_times = std::collections::VecDeque::new();
     let mut last_frame_time = Instant::now();
     let mut current_time_s: f64 = 0.0;
@@ -194,10 +200,22 @@ pub(crate) async fn window_run(
                                 &mut debug_state.rendering_view_frustum,
                                 "Render view frustum",
                             );
+                            let old_cull_camera_moving_with_player =
+                                debug_state.cull_camera_moving_with_player;
                             ui.checkbox(
                                 &mut debug_state.cull_camera_moving_with_player,
                                 "Move cull camera with player camera",
                             );
+                            if debug_state.cull_camera_moving_with_player
+                                && !old_cull_camera_moving_with_player
+                            {
+                                // Reset camera position instead of sending a massive (invalid)
+                                // movement request to the server.
+                                graphics_state.camera.pos = debug_state.cull_camera.pos;
+                                graphics_state.camera.yaw = debug_state.cull_camera.yaw;
+                                graphics_state.camera.pitch = debug_state.cull_camera.pitch;
+                                graphics_state.camera.roll = debug_state.cull_camera.roll;
+                            }
                             ui.collapsing("Cave Culling", |ui| {
                                 ui.checkbox(
                                     &mut debug_state.cave_cull_check_unflipped,
@@ -250,9 +268,8 @@ pub(crate) async fn window_run(
                                         let chunk_section = &chunk[section_i];
                                         let global_palette_index =
                                             chunk_section.block_states.get(x, y, z);
-                                        let blockstate =
-                                            &graphics_state.resources.block_registry.global_palette
-                                                [usize::from(global_palette_index)];
+                                        let blockstate = &graphics_state.resources.block_registry
+                                            [global_palette_index];
                                         let identifier = graphics_state
                                             .resources
                                             .block_registry
@@ -623,7 +640,7 @@ pub(crate) async fn window_run(
                     let span = tracing::trace_span!("process_game_events");
                     let _enter = span.enter();
                     let mut raw_chunks;
-                    let mut chunks_to_dispatch: AHashSet<[i32; 2]> = AHashSet::new();
+                    let mut subchunks_to_dispatch: AHashMap<[i32; 3], usize> = AHashMap::new();
                     loop {
                         let packet = match clientbound_rx.try_recv() {
                             Ok(packet) => packet,
@@ -663,9 +680,10 @@ pub(crate) async fn window_run(
                                 println!("Server MOTD: {:?}", data.motd)
                             }
                             // Gameplay
-                            ClientboundPacket::ChunkBatchStart => println!("Chunk batch started"),
-                            ClientboundPacket::ChunkBatchEnd { num_chunks } => {
-                                println!("Chunk batch ended, received {num_chunks} chunks");
+                            ClientboundPacket::ChunkBatchStart => {}
+                            ClientboundPacket::ChunkBatchEnd { num_chunks: _ } => {
+                                // TODO: Calculate time taken since batch started, send back value
+                                // to use half of available bandwidth
                                 server_connection
                                     .send_packet(serverbound_packets::ChunkBatchReceived {
                                         desired_chunks_per_tick: 4.0,
@@ -673,28 +691,47 @@ pub(crate) async fn window_run(
                                     .unwrap();
                             }
                             ClientboundPacket::ChunkDataAndUpdateLight(data) => {
+                                let (chunk_x, chunk_z) = (data.chunk_x, data.chunk_z);
                                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
-                                println!("Update chunk data and lighting: {{<skipped>}}");
+                                // println!("Update chunk data and lighting: {{<skipped>}}");
                                 let (rest, chunk_sections) =
-                                    nom::multi::count(crate::ChunkSection::deserialize, 24)(
-                                        &data.chunk_data,
-                                    )
+                                    nom::multi::count(
+                                        protocol_chunk::ChunkSection::deserialize,
+                                        24,
+                                    )(&data.chunk_data)
                                     .map_err(|err| err.to_owned())
                                     .unwrap();
                                 assert_eq!(rest.len(), 0);
-                                let chunk_coords = [data.chunk_x, data.chunk_z];
-                                raw_chunks.insert(chunk_coords, chunk_sections.into());
-                                chunks_to_dispatch.insert(chunk_coords);
+                                raw_chunks.insert([chunk_x, chunk_z], chunk_sections.into());
+                                {
+                                    let update_id = current_update_id;
+                                    current_update_id = current_update_id.wrapping_add(1);
+                                    for subchunk_y in 0..24 {
+                                        let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                                        subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                        play_state
+                                            .pending_subchunk_update_ids
+                                            .insert(subchunk_coords, update_id);
+                                    }
+                                }
                                 let neighbouring_chunks = [
-                                    [data.chunk_x - 1, data.chunk_z],
-                                    [data.chunk_x + 1, data.chunk_z],
-                                    [data.chunk_x, data.chunk_z - 1],
-                                    [data.chunk_x, data.chunk_z + 1],
+                                    [chunk_x - 1, chunk_z],
+                                    [chunk_x + 1, chunk_z],
+                                    [chunk_x, chunk_z - 1],
+                                    [chunk_x, chunk_z + 1],
                                 ];
                                 for neighbour_chunk_coords in neighbouring_chunks {
                                     if raw_chunks.contains_key(&neighbour_chunk_coords) {
                                         if !visible_chunks.contains(&neighbour_chunk_coords) {
-                                            chunks_to_dispatch.insert(neighbour_chunk_coords);
+                                            let update_id = current_update_id;
+                                            current_update_id = current_update_id.wrapping_add(1);
+                                            let [x, z] = neighbour_chunk_coords;
+                                            for y in 0..24 {
+                                                subchunks_to_dispatch.insert([x, y, z], update_id);
+                                                play_state
+                                                    .pending_subchunk_update_ids
+                                                    .insert([x, y, z], update_id);
+                                            }
                                         }
                                     }
                                 }
@@ -702,11 +739,167 @@ pub(crate) async fn window_run(
                             ClientboundPacket::UpdateLight(_) => {
                                 println!("Update chunk lighting: {{<todo>}}")
                             }
+                            ClientboundPacket::BlockUpdate(update) => {
+                                raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
+                                let pos = update.position;
+                                let chunk_x = pos.x.div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                let chunk_z = pos.z.div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                let section_i: usize = (pos.y - MIN_HEIGHT_I32)
+                                    .div_euclid(SUBCHUNK_AXIS_LEN_I32)
+                                    .try_into()
+                                    .unwrap();
+                                let Some(chunk) = raw_chunks.get_mut(&[chunk_x, chunk_z]) else {
+                                    continue;
+                                };
+                                let chunk_mut = match Arc::get_mut(chunk) {
+                                    Some(chunk_mut) => chunk_mut,
+                                    None => {
+                                        // We have to clone the chunk manually instead of using
+                                        // `make_mut` as that doesn't work with boxed slices.
+                                        *chunk = Arc::from(chunk.as_ref());
+                                        Arc::get_mut(chunk).unwrap()
+                                    }
+                                };
+                                let chunk_section = &mut chunk_mut[section_i];
+                                let x = pos.x.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                let x_usize: usize = x.try_into().unwrap();
+                                let y = pos.y.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                let y_usize: usize = y.try_into().unwrap();
+                                let z = pos.z.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                let z_usize: usize = z.try_into().unwrap();
+                                // Update block section, increment or decrement block count
+                                {
+                                    let new_block_id: GlobalPaletteIndex =
+                                        update.block_id.0.try_into().unwrap();
+                                    let old_block_id = chunk_section.block_states.replace(
+                                        x_usize,
+                                        y_usize,
+                                        z_usize,
+                                        new_block_id,
+                                    );
+                                    let old_block_air = graphics_state
+                                        .resources
+                                        .block_registry
+                                        .is_blockstate_air_like(old_block_id);
+                                    let new_block_air = graphics_state
+                                        .resources
+                                        .block_registry
+                                        .is_blockstate_air_like(new_block_id);
+                                    match (old_block_air, new_block_air) {
+                                        (true, false) => chunk_section.block_count += 1,
+                                        (false, true) => chunk_section.block_count -= 1,
+                                        (true, true) => continue,
+                                        _ => {}
+                                    }
+                                }
+                                let subchunk_y = section_i as i32;
+                                let update_id = current_update_id;
+                                current_update_id = current_update_id.wrapping_add(1);
+                                subchunks_to_dispatch
+                                    .insert([chunk_x, subchunk_y, chunk_z], update_id);
+                                play_state
+                                    .pending_subchunk_update_ids
+                                    .insert([chunk_x, subchunk_y, chunk_z], update_id);
+                                // Update neighbours
+                                let in_chunk_coords = [x, y, z];
+                                for axis_i in 0..3 {
+                                    let axis = in_chunk_coords[axis_i];
+                                    let mut subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                                    if axis == 0 {
+                                        subchunk_coords[axis_i] -= 1;
+                                        subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                        play_state
+                                            .pending_subchunk_update_ids
+                                            .insert(subchunk_coords, update_id);
+                                    } else if axis == 15 {
+                                        subchunk_coords[axis_i] += 1;
+                                        subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                        play_state
+                                            .pending_subchunk_update_ids
+                                            .insert(subchunk_coords, update_id);
+                                    }
+                                }
+                            }
+                            ClientboundPacket::UpdateSectionBlocks(update) => {
+                                raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
+                                let [chunk_x, subchunk_y, chunk_z] = update.subchunk_coords;
+                                let section_i: usize =
+                                    (subchunk_y - MIN_HEIGHT_I32.div_euclid(SUBCHUNK_AXIS_LEN_I32))
+                                    .try_into()
+                                    .unwrap();
+                                let Some(chunk) = raw_chunks.get_mut(&[chunk_x, chunk_z]) else {
+                                    continue;
+                                };
+                                let chunk_mut = match Arc::get_mut(chunk) {
+                                    Some(chunk_mut) => chunk_mut,
+                                    None => {
+                                        // We have to clone the chunk manually instead of using
+                                        // `make_mut` as that doesn't work with boxed slices.
+                                        *chunk = Arc::from(chunk.as_ref());
+                                        Arc::get_mut(chunk).unwrap()
+                                    }
+                                };
+                                let chunk_section = &mut chunk_mut[section_i];
+                                let update_id = current_update_id;
+                                current_update_id = current_update_id.wrapping_add(1);
+                                let subchunk_y = section_i as i32;
+                                subchunks_to_dispatch
+                                    .insert([chunk_x, subchunk_y, chunk_z], update_id);
+                                play_state
+                                    .pending_subchunk_update_ids
+                                    .insert([chunk_x, subchunk_y, chunk_z], update_id);
+                                for ([x, y, z], new_block_id) in update.blocks {
+                                    // Update block section, increment or decrement block count
+                                    {
+                                        let old_block_id = chunk_section.block_states.replace(
+                                            x as usize,
+                                            y as usize,
+                                            z as usize,
+                                            new_block_id,
+                                        );
+                                        let is_old_block_air = graphics_state
+                                            .resources
+                                            .block_registry
+                                            .is_blockstate_air_like(old_block_id);
+                                        let is_new_block_air = graphics_state
+                                            .resources
+                                            .block_registry
+                                            .is_blockstate_air_like(new_block_id);
+                                        match (is_old_block_air, is_new_block_air) {
+                                            (true, false) => chunk_section.block_count += 1,
+                                            (false, true) => chunk_section.block_count -= 1,
+                                            (true, true) => continue,
+                                            _ => {}
+                                        }
+                                    }
+                                    // Update neighbours
+                                    let in_chunk_coords = [x, y, z];
+                                    for axis_i in 0..3 {
+                                        let axis = in_chunk_coords[axis_i];
+                                        let mut subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                                        if axis == 0 {
+                                            subchunk_coords[axis_i] -= 1;
+                                            subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                            play_state
+                                                .pending_subchunk_update_ids
+                                                .insert(subchunk_coords, update_id);
+                                        } else if axis == 15 {
+                                            subchunk_coords[axis_i] += 1;
+                                            subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                            play_state
+                                                .pending_subchunk_update_ids
+                                                .insert(subchunk_coords, update_id);
+                                        }
+                                    }
+                                }
+                            }
                             ClientboundPacket::UnloadChunk { chunk_x, chunk_z } => {
                                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
                                 let chunk_coords = [chunk_x, chunk_z];
                                 raw_chunks.remove(&chunk_coords);
-                                chunks_to_dispatch.insert(chunk_coords);
+                                play_state_update_tx
+                                    .send(ClientPlayStateUpdate::RemoveChunk(chunk_coords))
+                                    .unwrap();
                                 let neighbouring_chunks = [
                                     [chunk_x - 1, chunk_z],
                                     [chunk_x + 1, chunk_z],
@@ -715,7 +908,11 @@ pub(crate) async fn window_run(
                                 ];
                                 for neighbour_chunk_coords in neighbouring_chunks {
                                     if visible_chunks.contains(&neighbour_chunk_coords) {
-                                        chunks_to_dispatch.insert(neighbour_chunk_coords);
+                                        play_state_update_tx
+                                            .send(ClientPlayStateUpdate::RemoveChunk(
+                                                neighbour_chunk_coords,
+                                            ))
+                                            .unwrap();
                                     }
                                 }
                             }
@@ -764,27 +961,43 @@ pub(crate) async fn window_run(
                     if thread_pool.panic_count() > 0 {
                         panic!("Thread pool panic");
                     }
-                    // Dispatch chunk processing
+                    // Dispatch subchunk processing
                     {
-                        let span = tracing::trace_span!("dispatch_chunk_processing");
+                        let span = tracing::trace_span!("dispatch_subchunk_processing");
                         let _enter = span.enter();
-                        for chunk_coords in chunks_to_dispatch {
+                        // We're using an IndexMap here to dispatch the updates in order of update
+                        // ID. Shouldn't have any effect on correctness, but might make updates
+                        // appear in a more intuitive order.
+                        let mut subchunk_update_groups: IndexMap<usize, Vec<[i32; 3]>> =
+                            IndexMap::new();
+                        for (subchunk_coords, update_id) in subchunks_to_dispatch {
+                            let update_group = subchunk_update_groups
+                                .entry(update_id)
+                                .or_insert_with(Vec::new);
+                            update_group.push(subchunk_coords);
+                        }
+                        subchunk_update_groups.sort_unstable_keys();
+                        for (update_id, subchunks) in subchunk_update_groups {
                             let graphics_resources = graphics_state.resources.clone();
                             let raw_chunks = play_state.raw_chunks.clone();
                             let play_state_update_tx = play_state_update_tx.clone();
                             thread_pool.execute(move || {
-                                process_chunk(
+                                process_subchunks(
                                     &graphics_resources,
                                     &raw_chunks,
                                     play_state_update_tx,
-                                    chunk_coords,
+                                    &subchunks,
+                                    update_id,
                                 )
                             });
                         }
                     }
                     // Receive play state updates
-                    let mut chunks_processed_this_frame = 0;
+                    let mut subchunks_processed_this_frame = 0;
                     loop {
+                        if subchunks_processed_this_frame >= 12 {
+                            break;
+                        }
                         let update = match play_state_update_rx.try_recv() {
                             Ok(update) => update,
                             Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -795,21 +1008,18 @@ pub(crate) async fn window_run(
                         let span = tracing::trace_span!("dispatch_play_state_update");
                         let _enter = span.enter();
                         match update {
-                            ClientPlayStateUpdate::PlaceChunk {
-                                chunk_coords,
-                                new_raw_subchunks,
-                            } => {
+                            ClientPlayStateUpdate::RemoveChunk(chunk_coords) => {
                                 let [chunk_x, chunk_z] = chunk_coords;
                                 // Remove old subchunks
                                 if play_state.visible_chunks.contains(&chunk_coords) {
                                     let span =
-                                        tracing::trace_span!("remove_old_chunks", ?chunk_coords);
+                                        tracing::trace_span!("remove_subchunks", ?chunk_coords);
                                     let _enter = span.enter();
                                     for subchunk_y in 0..24 {
                                         use std::collections::hash_map::Entry;
                                         let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
                                         let span = tracing::trace_span!(
-                                            "remove_old_subchunk",
+                                            "remove_subchunk",
                                             ?subchunk_coords
                                         );
                                         let _enter = span.enter();
@@ -817,6 +1027,9 @@ pub(crate) async fn window_run(
                                             play_state.subchunks.entry(subchunk_coords)
                                         {
                                             entry.remove();
+                                            play_state
+                                                .pending_subchunk_update_ids
+                                                .remove(&subchunk_coords);
                                             graphics_state
                                                 .buffer_managers
                                                 .block_face_vertex
@@ -837,27 +1050,76 @@ pub(crate) async fn window_run(
                                                 .buffer_managers
                                                 .custom_block_instance
                                                 .free_subchunk_areas(subchunk_coords);
+                                            subchunks_processed_this_frame += 1;
                                         }
                                     }
                                 }
-                                // Mark chunk visibility
-                                if new_raw_subchunks.is_empty() {
-                                    play_state.visible_chunks.remove(&chunk_coords);
-                                    chunks_processed_this_frame += 1;
-                                    if chunks_processed_this_frame >= 1 {
-                                        break;
-                                    } else {
-                                        continue;
-                                    }
-                                } else {
-                                    play_state.visible_chunks.insert(chunk_coords);
-                                }
-                                // Add new subchunks
-                                let span = tracing::trace_span!("add_new_chunks");
+                                // Mark chunk as invisible
+                                play_state.visible_chunks.remove(&chunk_coords);
+                            }
+                            ClientPlayStateUpdate::PlaceSubchunks {
+                                update_id,
+                                new_raw_subchunks,
+                            } => {
+                                let span = tracing::trace_span!("add_new_subchunks");
                                 let _enter = span.enter();
                                 let buffer_managers = &mut graphics_state.buffer_managers;
-                                for (subchunk_y, raw_subchunk) in new_raw_subchunks {
-                                    let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                                for (subchunk_coords, raw_subchunk) in new_raw_subchunks {
+                                    use std::collections::hash_map::Entry;
+                                    let [subchunk_x, _, subchunk_z] = subchunk_coords;
+                                    match play_state
+                                        .pending_subchunk_update_ids
+                                        .entry(subchunk_coords)
+                                    {
+                                        Entry::Occupied(update_id_entry) => {
+                                            // If this is the most recent pending update, mark
+                                            // the update as completed so older updates that
+                                            // may have taken longer to process don't replace
+                                            // this one.
+                                            if *update_id_entry.get() == update_id {
+                                                update_id_entry.remove();
+                                            }
+                                        }
+                                        // Skip subchunk update if we've already done a more
+                                        // recent one.
+                                        Entry::Vacant(_) => continue,
+                                    }
+                                    // Remove old subchunk
+                                    if play_state
+                                        .visible_chunks
+                                        .contains(&[subchunk_x, subchunk_z])
+                                    {
+                                        let span = tracing::trace_span!(
+                                            "remove_old_subchunk",
+                                            ?subchunk_coords
+                                        );
+                                        let _enter = span.enter();
+                                        let span = tracing::trace_span!(
+                                            "remove_old_subchunk",
+                                            ?subchunk_coords
+                                        );
+                                        let _enter = span.enter();
+                                        if let Entry::Occupied(entry) =
+                                            play_state.subchunks.entry(subchunk_coords)
+                                        {
+                                            entry.remove();
+                                            buffer_managers
+                                                .block_face_vertex
+                                                .free_subchunk_areas(subchunk_coords);
+                                            buffer_managers
+                                                .block_face_instance
+                                                .free_subchunk_areas(subchunk_coords);
+                                            buffer_managers
+                                                .tinted_block_face_vertex
+                                                .free_subchunk_areas(subchunk_coords);
+                                            buffer_managers
+                                                .tinted_block_face_instance
+                                                .free_subchunk_areas(subchunk_coords);
+                                            buffer_managers
+                                                .custom_block_instance
+                                                .free_subchunk_areas(subchunk_coords);
+                                        }
+                                    }
                                     // Base block faces
                                     let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
                                     let mut block_face_instance_groups: [(u32, u32); 6] =
@@ -952,10 +1214,8 @@ pub(crate) async fn window_run(
                                             connected_faces: raw_subchunk.connected_faces,
                                         },
                                     );
-                                }
-                                chunks_processed_this_frame += 1;
-                                if chunks_processed_this_frame >= 1 {
-                                    break;
+                                    subchunks_processed_this_frame += 1;
+                                    play_state.visible_chunks.insert([subchunk_x, subchunk_z]);
                                 }
                             }
                         }
@@ -1036,73 +1296,63 @@ pub(crate) async fn window_run(
     Ok(())
 }
 
-fn process_chunk(
+fn process_subchunks(
     graphics_resources: &GraphicsResources,
-    raw_chunks: &AHashMap<[i32; 2], Arc<[crate::ChunkSection]>>,
+    raw_chunks: &AHashMap<[i32; 2], Arc<[protocol_chunk::ChunkSection]>>,
     play_state_update_tx: mpsc::Sender<ClientPlayStateUpdate>,
-    chunk_coords: [i32; 2],
+    subchunks: &[[i32; 3]],
+    update_id: usize,
 ) {
-    let [chunk_x, chunk_z] = chunk_coords;
-    let Some(chunk_sections) = raw_chunks.get(&chunk_coords) else {
-        play_state_update_tx
-            .send(ClientPlayStateUpdate::PlaceChunk {
-                chunk_coords,
-                new_raw_subchunks: Vec::new(),
-            })
-            .unwrap();
-        return;
-    };
-    // Skip chunks with missing neighbours, so that for every chunk we actually render, it
-    // has all its neighbours to decide whether border faces should be rendered.
-    // I believe Minecraft does the same.
-    {
-        let surrounding_chunk_coords = [
-            [chunk_x - 1, chunk_z],
-            [chunk_x + 1, chunk_z],
-            [chunk_x, chunk_z - 1],
-            [chunk_x, chunk_z + 1],
-        ];
-        for chunk in surrounding_chunk_coords {
-            if !raw_chunks.contains_key(&chunk) {
-                play_state_update_tx
-                    .send(ClientPlayStateUpdate::PlaceChunk {
-                        chunk_coords,
-                        new_raw_subchunks: Vec::new(),
-                    })
-                    .unwrap();
-                return;
-            }
-        }
-    }
     let spruce_leaves_registry_index = graphics_resources
         .block_registry
         .get_index_from_identifier(&identifier!("minecraft:spruce_leaves"))
         .unwrap();
-    let mut block_hasher = AHasher::default();
-    let mut new_raw_subchunks: Vec<(i32, RawSubchunk)> = Vec::new();
-    for (section_i, chunk_section) in chunk_sections.iter().enumerate() {
+    let mut new_raw_subchunks: Vec<([i32; 3], RawSubchunk)> = Vec::new();
+    'subchunk_loop: for &subchunk_coords in subchunks {
+        let [subchunk_x, subchunk_y, subchunk_z] = subchunk_coords;
+        let Some(chunk_sections) = &raw_chunks.get(&[subchunk_x, subchunk_z]) else {
+            continue;
+        };
+        let chunk_section =
+            &chunk_sections[<i32 as TryInto<usize>>::try_into(subchunk_y).unwrap() as usize];
         if chunk_section.block_count == 0 {
             continue;
+        }
+        // Skip chunks with missing neighbours, so that for every chunk we actually render, it
+        // has all its neighbours to decide whether border faces should be rendered.
+        // I believe Minecraft does the same.
+        {
+            let surrounding_chunk_coords = [
+                [subchunk_x - 1, subchunk_z],
+                [subchunk_x + 1, subchunk_z],
+                [subchunk_x, subchunk_z - 1],
+                [subchunk_x, subchunk_z + 1],
+            ];
+            for neighbour_chunk in surrounding_chunk_coords {
+                if !raw_chunks.contains_key(&neighbour_chunk) {
+                    continue 'subchunk_loop;
+                }
+            }
         }
         let mut block_faces: [Vec<_>; 6] = Default::default();
         let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
         let mut custom_block_instance_groups = AHashMap::new();
         for y in 0..SUBCHUNK_AXIS_LEN {
-            let global_y_i32 = (SUBCHUNK_AXIS_LEN * section_i + y) as i32 + MIN_HEIGHT_I32;
+            let global_y_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y) + y as i32 + MIN_HEIGHT_I32;
             let global_y = global_y_i32 as f32;
             for z in 0..SUBCHUNK_AXIS_LEN {
-                let global_z_i32 = (SUBCHUNK_AXIS_LEN_I32 * chunk_z) + z as i32;
+                let global_z_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_z) + z as i32;
                 let global_z = global_z_i32 as f32;
                 for x in 0..SUBCHUNK_AXIS_LEN {
-                    let global_x_i32 = (SUBCHUNK_AXIS_LEN_I32 * chunk_x) + x as i32;
+                    let global_x_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_x) + x as i32;
                     let global_x = global_x_i32 as f32;
                     let global_palette_index = chunk_section.block_states.get(x, y, z);
-                    let blockstate_info = &graphics_resources.block_registry.global_palette
-                        [usize::from(global_palette_index)];
+                    let blockstate_info = &graphics_resources.block_registry[global_palette_index];
                     let model = match &blockstate_info.model_data {
                         blockstate::ModelData::Single(model) => model,
                         blockstate::ModelData::RandomChoice(models) => 'model_blk: {
-                            // Find weight for model by hash
+                            // Find weight for model by hashed position
+                            let mut block_hasher = AHasher::default();
                             block_hasher.write_i32(global_x_i32);
                             block_hasher.write_i32(global_y_i32);
                             block_hasher.write_i32(global_z_i32);
@@ -1130,22 +1380,23 @@ fn process_chunk(
                     ];
                     let mut face_cull_map = [false; 6];
                     for (i, (x, y, z)) in direction_map.into_iter().enumerate() {
-                        let check_global_y = ((SUBCHUNK_AXIS_LEN * section_i) as i32 + y) - 64;
+                        let check_global_y =
+                            (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) + MIN_HEIGHT_I32;
                         if check_global_y < MIN_HEIGHT_I32 || check_global_y > MAX_HEIGHT_I32 {
                             continue;
                         }
                         let check_sections = match [x, z].iter().any(|n| !(0..=15).contains(n)) {
                             false => &chunk_sections,
                             true => match (x, z) {
-                                (-1, _) => &raw_chunks[&[chunk_x - 1, chunk_z]],
-                                (16, _) => &raw_chunks[&[chunk_x + 1, chunk_z]],
-                                (_, -1) => &raw_chunks[&[chunk_x, chunk_z - 1]],
-                                (_, 16) => &raw_chunks[&[chunk_x, chunk_z + 1]],
+                                (-1, _) => &raw_chunks[&[subchunk_x - 1, subchunk_z]],
+                                (16, _) => &raw_chunks[&[subchunk_x + 1, subchunk_z]],
+                                (_, -1) => &raw_chunks[&[subchunk_x, subchunk_z - 1]],
+                                (_, 16) => &raw_chunks[&[subchunk_x, subchunk_z + 1]],
                                 _ => unreachable!(),
                             },
                         };
                         let indexing_section = &check_sections[usize::try_from(
-                            ((SUBCHUNK_AXIS_LEN * section_i) as i32 + y) / SUBCHUNK_AXIS_LEN as i32,
+                            (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) / SUBCHUNK_AXIS_LEN_I32,
                         )
                         .unwrap()];
                         let (x, y, z) = (
@@ -1154,8 +1405,8 @@ fn process_chunk(
                             ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
                         );
                         let global_palette_index = indexing_section.block_states.get(x, y % 16, z);
-                        let blockstate_info = &graphics_resources.block_registry.global_palette
-                            [usize::from(global_palette_index)];
+                        let blockstate_info =
+                            &graphics_resources.block_registry[global_palette_index];
                         let block_info =
                             &graphics_resources.block_registry[blockstate_info.block_index];
                         face_cull_map[i] = block_info.properties.opaque;
@@ -1238,15 +1489,14 @@ fn process_chunk(
         // face generation.
         // Outlined here: https://tomcc.github.io/2014/08/31/visibility-1.html
         let connected_faces = 'connected_faces: {
-            use super::Palette;
             use crate::basic_types::AxisDirection;
             use graphics::chunk::SubchunkConnectivity;
+            use protocol_chunk::Palette;
             // If we can immediately tell all the subchunk blocks are opaque, skip this entire
             // process and just return that no subchunk faces are connected.
             match chunk_section.block_states.palette() {
-                Palette::SingleValue(index) => {
-                    let blockstate_info =
-                        &graphics_resources.block_registry.global_palette[usize::from(*index)];
+                Palette::SingleValue(global_palette_index) => {
+                    let blockstate_info = &graphics_resources.block_registry[*global_palette_index];
                     let block_info =
                         &graphics_resources.block_registry[blockstate_info.block_index];
                     break 'connected_faces match block_info.properties.opaque {
@@ -1256,9 +1506,9 @@ fn process_chunk(
                 }
                 Palette::Palette(indices) => {
                     let mut num_opaque = 0;
-                    for index in indices {
+                    for global_palette_index in indices {
                         let blockstate_info =
-                            &graphics_resources.block_registry.global_palette[usize::from(*index)];
+                            &graphics_resources.block_registry[*global_palette_index];
                         let block_info =
                             &graphics_resources.block_registry[blockstate_info.block_index];
                         if block_info.properties.opaque {
@@ -1313,8 +1563,8 @@ fn process_chunk(
                 for y in 0..SUBCHUNK_AXIS_LEN {
                     for z in 0..SUBCHUNK_AXIS_LEN {
                         let global_palette_index = chunk_section.block_states.get(x, y, z);
-                        let blockstate_info = &graphics_resources.block_registry.global_palette
-                            [usize::from(global_palette_index)];
+                        let blockstate_info =
+                            &graphics_resources.block_registry[global_palette_index];
                         let block_info =
                             &graphics_resources.block_registry[blockstate_info.block_index];
                         if !block_info.properties.opaque {
@@ -1399,11 +1649,10 @@ fn process_chunk(
             }
             subchunk_connectivity
         };
-        let subchunk_y = section_i as i32;
         let start_coords = [
-            SUBCHUNK_AXIS_LEN_I32 * chunk_x,
+            SUBCHUNK_AXIS_LEN_I32 * subchunk_x,
             SUBCHUNK_AXIS_LEN_I32 * subchunk_y + MIN_HEIGHT_I32,
-            SUBCHUNK_AXIS_LEN_I32 * chunk_z,
+            SUBCHUNK_AXIS_LEN_I32 * subchunk_z,
         ];
         // Block faces
         let mut block_face_quads: [Option<_>; 6] = [None; 6];
@@ -1437,7 +1686,7 @@ fn process_chunk(
             })
             .collect();
         new_raw_subchunks.push((
-            subchunk_y,
+            subchunk_coords,
             RawSubchunk {
                 start_coords,
                 block_face_quads,
@@ -1450,8 +1699,8 @@ fn process_chunk(
         ));
     }
     play_state_update_tx
-        .send(ClientPlayStateUpdate::PlaceChunk {
-            chunk_coords,
+        .send(ClientPlayStateUpdate::PlaceSubchunks {
+            update_id,
             new_raw_subchunks,
         })
         .unwrap();

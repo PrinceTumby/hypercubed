@@ -16,6 +16,7 @@ use chunk::{
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
+use super::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
@@ -632,11 +633,11 @@ impl<'a> GraphicsState<'a> {
             //let mut subchunk_graph: DiGraph<QueuedChunk, ()> = DiGraph::new();
             let mut chunk_queue: VecDeque<QueuedChunk> = VecDeque::new();
             let camera_chunk_coords = {
-                const MIN_HEIGHT_I32: i32 = -64;
                 let camera_pos = debug_state.cull_camera.pos;
-                let camera_x = (camera_pos.x.floor() as i32).div_euclid(16);
-                let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32).div_euclid(16);
-                let camera_z = (camera_pos.z.floor() as i32).div_euclid(16);
+                let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
+                    .div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                let camera_z = (camera_pos.z.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
                 let camera_chunk_coords = [camera_x, camera_y, camera_z];
                 chunk_queue.push_back(QueuedChunk {
                     coords: camera_chunk_coords,

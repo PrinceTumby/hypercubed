@@ -1,5 +1,6 @@
 #[macro_use]
 pub mod basic_types;
+pub mod chunk;
 pub mod configuration;
 pub mod login;
 pub mod play;

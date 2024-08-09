@@ -655,17 +655,19 @@ impl<T: Serialize> Serialize for &T {
 // Position
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Position(i32, i32, i32);
+pub struct Position {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
 
 impl Deserialize for Position {
     fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
         i64::deserialize
-            .map(|value| {
-                Position(
-                    (value >> 38) as i32,
-                    (value << 52 >> 52) as i32,
-                    (value << 26 >> 38) as i32,
-                )
+            .map(|value| Position {
+                x: (value >> 38) as i32,
+                y: (value << 52 >> 52) as i32,
+                z: (value << 26 >> 38) as i32,
             })
             .context("Position")
             .parse(input)

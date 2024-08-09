@@ -1038,7 +1038,7 @@ impl ModelCache {
         let transformed_uvs = Self::transform_uvs(texture_uvs, element_uvs, combined_rotation);
         Ok(ModelElementFace {
             uvs: transformed_uvs,
-            cullface: face.cullface.unwrap_or(index),
+            _cullface: face.cullface.unwrap_or(index),
             tint: match face.tint_index {
                 -1 => None,
                 // Apparently vanilla only uses one tint index currently
@@ -1185,7 +1185,10 @@ impl std::hash::Hash for ModelVertex {
 #[derive(Clone, Copy, Debug)]
 struct ModelElementFace {
     pub uvs: [[u16; 2]; 4],
-    pub cullface: BlockFace,
+    /// Model rendering currently uses entire model instancing, and so doesn't use cullfaces.
+    /// This is planned to be implemented at some point, possibly only for alternative graphics
+    /// backends using older APIs that don't benefit from instancing.
+    pub _cullface: BlockFace,
     pub tint: Option<Tint>,
 }
 
