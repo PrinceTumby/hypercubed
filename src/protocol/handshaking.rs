@@ -1,4 +1,5 @@
-use super::super::prelude::*;
+use super::prelude::*;
+use protocol_derive::PacketWrite;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PacketWrite)]
 #[packet_write(id = 0x00)]

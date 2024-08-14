@@ -87,7 +87,7 @@ impl Identifier {
         if namespace.len() == 0 {
             return false;
         }
-        // XXX `for` loops are currently not allowed in const, replace when they get allowed
+        // XXX: `for` loops are currently not allowed in const, replace when they get allowed
         let namespace_bytes = namespace.as_bytes();
         let mut i: usize = 0;
         while i < namespace_bytes.len() {
@@ -102,7 +102,7 @@ impl Identifier {
     }
 
     const fn is_valid_path(namespace: &str) -> bool {
-        // XXX `for` loops are currently not allowed in const, replace when they get allowed
+        // XXX: `for` loops are currently not allowed in const, replace when they get allowed
         let namespace_bytes = namespace.as_bytes();
         #[derive(Clone, Copy)]
         enum State {

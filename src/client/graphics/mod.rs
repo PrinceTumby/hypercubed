@@ -11,12 +11,12 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
 use winit::window::Window;
 //use petgraph::graph::DiGraph;
+use super::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
-use super::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {

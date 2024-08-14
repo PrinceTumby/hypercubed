@@ -3011,14 +3011,46 @@ pub fn register_vanilla_blocks(
     )?;
     register!(
         "trial_spawner",
-        replace: &[("trial_spawner_state", Enum(&[
-            "inactive",
-            "waiting_for_players",
-            "active",
-            "waiting_for_reward_ejection",
-            "ejecting_reward",
-            "cooldown",
-        ]))],
+        override_default: &[
+            ("ominous", "false"),
+            ("trial_spawner_state", "inactive"),
+        ],
+        replace: &[
+            ("ominous", Bool),
+            ("trial_spawner_state", Enum(&[
+                "inactive",
+                "waiting_for_players",
+                "active",
+                "waiting_for_reward_ejection",
+                "ejecting_reward",
+                "cooldown",
+            ])),
+        ],
+        opaque = false
+    )?;
+    register!(
+        "vault",
+        override_default: &[
+            ("facing", "north"),
+            ("ominous", "false"),
+            ("vault_state", "inactive"),
+        ],
+        replace: &[
+            FACING_NSWE,
+            ("ominous", Bool),
+            ("vault_state", Enum(&[
+                "inactive",
+                "active",
+                "unlocking",
+                "ejecting",
+            ])),
+        ],
+        opaque = false
+    )?;
+    register!(
+        "heavy_core",
+        override_default: &[("waterlogged", "false")],
+        &[WATERLOGGED],
         opaque = false
     )?;
 

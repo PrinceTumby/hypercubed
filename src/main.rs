@@ -6,7 +6,7 @@ pub mod protocol;
 pub mod resource;
 pub mod world;
 
-use protocol::v765::prelude::*;
+use protocol::prelude::*;
 use std::sync::Arc;
 
 #[global_allocator]
@@ -16,7 +16,7 @@ const SERVER_ADDRESS: &str = "localhost";
 const SERVER_PORT: u16 = 25565;
 
 fn main() -> anyhow::Result<()> {
-    use protocol::v765::configuration;
+    use protocol::configuration;
     env_logger::init();
     #[cfg(feature = "tracy")]
     {
@@ -26,11 +26,15 @@ fn main() -> anyhow::Result<()> {
         )
         .unwrap();
     }
-    println!("{}", request_status(765, SERVER_ADDRESS, SERVER_PORT)?);
-    let session_info: Option<login::SessionInfo> = std::fs::read_to_string("session.json")
-        .map(|session_json| serde_json::from_str(&session_json).unwrap())
-        .ok();
-    let (server_connection, login_success_packet) = login::login(
+    println!(
+        "{}",
+        request_status(PROTOCOL_VERSION, SERVER_ADDRESS, SERVER_PORT)?
+    );
+    let session_info: Option<protocol::login::SessionInfo> =
+        std::fs::read_to_string("session.json")
+            .map(|session_json| serde_json::from_str(&session_json).unwrap())
+            .ok();
+    let (server_connection, login_success_packet) = protocol::login::login(
         SERVER_ADDRESS,
         SERVER_PORT,
         configuration::ClientInformation {
@@ -56,10 +60,10 @@ fn main() -> anyhow::Result<()> {
     {
         let server_connection = server_connection.clone();
         std::thread::spawn(move || loop {
-            let packet = server_connection
-                .read_packet()
-                .map_err(|err| format!("{err:.02X?}"))
-                .unwrap();
+            let packet = match server_connection.read_packet() {
+                Ok(packet) => packet,
+                Err(err) => panic!("{err}"),
+            };
             if let Err(_) = clientbound_tx.send(packet) {
                 break;
             };

@@ -80,6 +80,7 @@ lazy_static! {
         entry!("block/red_bed_foot");
         entry!("block/black_bed_head");
         entry!("block/black_bed_foot");
+        entry!("block/heavy_core");
         entry!("block/moving_piston");
         map.shrink_to_fit();
         map

@@ -119,7 +119,6 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                     .map(|Field { ident, .. }| quote! { #ident, })
                     .collect();
                 quote! {
-                    use ::nom_supreme::parser_ext::ParserExt;
                     ::nom::sequence::tuple(( #(#field_deserializers)* ))
                         .context(#name_string)
                         .map(|( #(#idents)* )| #name { #(#idents)* })
@@ -127,23 +126,15 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                 }
             }
             Fields::Unnamed(fields) => {
-                let field_types: Vec<_> = fields
-                    .unnamed
-                    .iter()
-                    .map(|field| field.ty.clone())
-                    .collect();
+                let field_types: Vec<_> = fields.unnamed.iter().map(|field| &field.ty).collect();
                 match field_types.as_slice() {
                     [] => panic!("`Deserialize` cannot be derived for tuple structs with 0 fields"),
                     [field_type] => quote! {
                         <#field_type>::deserialize.map(#name).parse(input)
                     },
                     _ => {
-                        let field_deserializers = field_types
-                            .iter()
-                            .map(|field| quote! { <#field>::deserialize, });
                         quote! {
-                            use ::nom_supreme::parser_ext::ParserExt;
-                            ::nom::sequence::tuple(( #(#field_deserializers)* ))
+                            <( #(#field_types,)* )>::deserialize
                                 .context(#name_string)
                                 .map(#name)
                                 .parse(input)
@@ -153,13 +144,98 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
             }
             Fields::Unit => panic!("`Deserialize` cannot be derived for unit structs"),
         },
-        _ => panic!("`Deserialize` can only be derived for structs"),
+        Data::Enum(enum_data) => {
+            let variant_branches: Vec<_> = enum_data
+                .variants
+                .iter()
+                .map(|variant| match &variant.fields {
+                    Fields::Named(fields) => {
+                        let variant_name = &variant.ident;
+                        let field_names: Vec<_> = fields
+                            .named
+                            .iter()
+                            .map(|field| field.ident.as_ref().unwrap())
+                            .collect();
+                        let field_types: Vec<_> =
+                            fields.named.iter().map(|field| &field.ty).collect();
+                        quote! {
+                            <( #(#field_types,)* )>::deserialize
+                                .context(#name_string)
+                                .map(|( #( #field_names, )* )| Self::#variant_name {
+                                    #( #field_names, )*
+                                })
+                                .parse(rest)
+                        }
+                    }
+                    Fields::Unnamed(fields) => {
+                        let variant_name = &variant.ident;
+                        let field_types: Vec<_> =
+                            fields.unnamed.iter().map(|field| &field.ty).collect();
+                        match field_types.as_slice() {
+                            [] => panic!(
+                                "`Deserialize` cannot be derived for tuple structs with 0 fields"
+                            ),
+                            [field_type] => {
+                                quote! {
+                                    <#field_type>::deserialize
+                                        .context(#name_string)
+                                        .map(Self::#variant_name)
+                                        .parse(rest)
+                                }
+                            }
+                            _ => {
+                                quote! {
+                                    <( #(#field_types,)* )>::deserialize
+                                        .context(#name_string)
+                                        .map(Self::#variant_name)
+                                        .parse(rest)
+                                }
+                            }
+                        }
+                    }
+                    Fields::Unit => {
+                        let variant_name = &variant.ident;
+                        quote! { Ok((rest, Self::#variant_name)) }
+                    }
+                })
+                .collect();
+            let discriminants: Vec<_> = enum_data
+                .variants
+                .iter()
+                .map(|variant| {
+                    let (_eq, discriminant) = variant
+                        .discriminant
+                        .as_ref()
+                        .expect("All enum variants must have discriminants");
+                    discriminant
+                })
+                .collect();
+            let context = format!("\"{name_string} - Enum Tag Match\"");
+            quote! {
+                let (rest, VarInt(tag)) =
+                    VarInt::deserialize.context(#name_string).parse(input)?;
+                match tag {
+                    #(
+                        #discriminants => #variant_branches,
+                    )*
+                    _ => Err(::nom::Err::Error(
+                        ::nom::error::FromExternalError::from_external_error(
+                            input,
+                            ::nom::error::ErrorKind::Tag,
+                            #context,
+                        ))
+                    ),
+                }
+            }
+        }
+        _ => panic!("`Deserialize` can only be derived for structs and enums"),
     };
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let output = quote! {
         impl #impl_generics Deserialize for #name #ty_generics #where_clause {
-            fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+            fn deserialize(input: crate::protocol::InputSpan) -> IResult<Self> {
                 use ::nom::Parser;
+                use ::nom_supreme::parser_ext::ParserExt;
                 #implementation
             }
         }
@@ -190,29 +266,15 @@ pub fn derive_packet_write(input: TokenStream) -> TokenStream {
     output.into()
 }
 
-#[derive(FromDeriveInput, Default)]
-#[darling(default, attributes(packet_read))]
-struct PacketReadOpts {
-    id: Option<i32>,
-}
-
-#[proc_macro_derive(PacketRead, attributes(packet_read))]
+#[proc_macro_derive(PacketRead)]
 pub fn derive_packet_read(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input);
-    let PacketReadOpts { id } =
-        PacketReadOpts::from_derive_input(&input).expect("Invalid options");
     let DeriveInput {
         ident, generics, ..
     } = input;
-    let id_const = match id {
-        Some(id) => quote! { const ID: Option<i32> = Some(#id); },
-        None => quote! {},
-    };
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let output = quote! {
-        impl #impl_generics PacketRead for #ident #ty_generics #where_clause {
-            #id_const
-        }
+        impl #impl_generics PacketRead for #ident #ty_generics #where_clause { }
     };
     output.into()
 }

@@ -1,14 +1,16 @@
 use super::prelude::*;
+use ahash::AHashMap;
 use nom::bytes::complete::{take, take_while, take_while1};
 use nom::combinator::{recognize, success, verify};
 use nom::error::ParseError;
 use nom::multi::{length_count, length_value};
 use nom::sequence::{pair, tuple};
-use nom::Parser;
+use nom::{Parser, Slice};
 use nom_supreme::parser_ext::ParserExt;
-use quartz_nbt::NbtCompound;
+use protocol_derive::Deserialize;
+use std::collections::HashMap;
 use std::io::Cursor;
-use uuid::Uuid;
+use std::mem::MaybeUninit;
 
 // Helper macros
 
@@ -22,10 +24,23 @@ macro_rules! byte_enum_parser {
     }}
 }
 
+macro_rules! var_int_tagged_parser {
+    ($( $tag_value:expr => $deserializer:expr $(,)? )+) => {{
+        nom::branch::alt((
+            $(
+                nom::sequence::preceded(
+                    VarInt::tag($tag_value),
+                    nom::combinator::cut($deserializer),
+                ),
+            )+
+        ))
+    }}
+}
+
 // Unit
 
 impl Deserialize for () {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         Ok((input, ()))
     }
 }
@@ -33,7 +48,7 @@ impl Deserialize for () {
 // Boolean
 
 impl Deserialize for bool {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         byte_enum_parser!(
             0 => false,
             1 => true,
@@ -52,18 +67,18 @@ impl Serialize for bool {
 // Integers
 
 impl Deserialize for u8 {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         take(1usize)
-            .map(|slice: &[u8]| slice[0])
+            .map(|slice: InputSpan| slice[0])
             .context("u8")
             .parse(input)
     }
 }
 
 impl Deserialize for i8 {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         take(1usize)
-            .map(|slice: &[u8]| slice[0] as i8)
+            .map(|slice: InputSpan| slice[0] as i8)
             .context("i8")
             .parse(input)
     }
@@ -94,7 +109,7 @@ macro_rules! impl_number_serialize {
 macro_rules! impl_number_deserialize {
     ($num_type:ty, $deserializer:expr) => {
         impl Deserialize for $num_type {
-            fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+            fn deserialize(input: InputSpan) -> IResult<Self> {
                 $deserializer.context(stringify!($num_type)).parse(input)
             }
         }
@@ -143,8 +158,8 @@ pub struct VarInt(pub i32);
 
 #[cfg(not(feature = "protocol_verbose"))]
 impl VarInt {
-    pub const fn tag(value: i32) -> impl Fn(&[u8]) -> IResult<&[u8], Self> {
-        move |input: &[u8]| {
+    pub const fn tag<'a>(value: i32) -> impl Parser<InputSpan<'a>, Self, IErr<'a>> {
+        move |input: InputSpan<'a>| {
             verify(Self::deserialize, |parsed_value| parsed_value.0 == value)(input).map_err(|_| {
                 nom::Err::Error(IErr::from_error_kind(input, nom::error::ErrorKind::Tag))
             })
@@ -154,8 +169,8 @@ impl VarInt {
 
 #[cfg(feature = "protocol_verbose")]
 impl VarInt {
-    pub const fn tag(value: i32) -> impl Fn(&[u8]) -> IResult<&[u8], Self> {
-        move |input: &[u8]| {
+    pub const fn tag<'a>(value: i32) -> impl Parser<InputSpan<'a>, Self, IErr<'a>> {
+        move |input: InputSpan<'a>| {
             verify(Self::deserialize, |parsed_value| parsed_value.0 == value)(input).map_err(|_| {
                 nom::Err::Error(ErrorTree::Base {
                     location: input,
@@ -175,7 +190,7 @@ impl std::fmt::Debug for VarInt {
 }
 
 impl Deserialize for VarInt {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, slice) = recognize(pair(
             take_while(|byte| byte & 0x80 != 0),
             take(1usize).and_then(take_while1(|byte| byte & 0x80 == 0)),
@@ -245,7 +260,7 @@ mod var_int_tests {
             ($bytes:expr, $expected_value:expr) => {
                 assert_eq!(
                     VarInt::deserialize($bytes).unwrap(),
-                    (&[] as &[u8], VarInt($expected_value))
+                    (InputSpan::new(&[]), VarInt($expected_value))
                 );
             };
         }
@@ -270,8 +285,8 @@ pub struct VarLong(pub i64);
 
 #[cfg(not(feature = "protocol_verbose"))]
 impl VarLong {
-    pub const fn tag(value: i64) -> impl Fn(&[u8]) -> IResult<&[u8], Self> {
-        move |input: &[u8]| {
+    pub const fn tag<'a>(value: i64) -> impl Parser<InputSpan<'a>, Self, IErr<'a>> {
+        move |input: InputSpan<'a>| {
             verify(Self::deserialize, |parsed_value| parsed_value.0 == value)(input).map_err(|_| {
                 nom::Err::Error(IErr::from_error_kind(input, nom::error::ErrorKind::Tag))
             })
@@ -281,8 +296,8 @@ impl VarLong {
 
 #[cfg(feature = "protocol_verbose")]
 impl VarLong {
-    pub const fn tag(value: i64) -> impl Fn(&[u8]) -> IResult<&[u8], Self> {
-        move |input: &[u8]| {
+    pub const fn tag<'a>(value: i64) -> impl Parser<InputSpan<'a>, Self, IErr<'a>> {
+        move |input: InputSpan<'a>| {
             verify(Self::deserialize, |parsed_value| parsed_value.0 == value)(input).map_err(|_| {
                 nom::Err::Error(ErrorTree::Base {
                     location: input,
@@ -302,7 +317,7 @@ impl std::fmt::Debug for VarLong {
 }
 
 impl Deserialize for VarLong {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, slice) = recognize(pair(
             take_while(|byte| byte & 0x80 != 0),
             take(1usize).and_then(take_while1(|byte| byte & 0x80 == 0)),
@@ -386,7 +401,7 @@ mod var_long_tests {
             ($bytes:expr, $expected_value:expr) => {
                 assert_eq!(
                     VarLong::deserialize($bytes).unwrap(),
-                    (&[] as &[u8], VarLong($expected_value))
+                    (InputSpan::new(&[]), VarLong($expected_value))
                 );
             };
         }
@@ -434,13 +449,13 @@ impl Serialize for &str {
 }
 
 impl Deserialize for String {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        // TODO The `Verify` error's fine, but there's probably a way of passing along a more
+    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<Self> {
+        // TODO: The `Verify` error's fine, but there's probably a way of passing along a more
         // descriptive error for invalid UTF-8
         length_value(
             verify(VarInt::deserialize, |len| len.0 >= 0).map(|len| len.0 as usize),
-            |slice| {
-                std::str::from_utf8(slice)
+            |slice: InputSpan<'a>| {
+                std::str::from_utf8(slice.as_ref())
                     .map(|str| (slice, str.to_string()))
                     .map_err(|_| {
                         nom::Err::Error(IErr::from_error_kind(slice, nom::error::ErrorKind::Verify))
@@ -449,6 +464,12 @@ impl Deserialize for String {
         )
         .context("String")
         .parse(input)
+    }
+}
+
+impl Serialize for String {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.as_str().serialize_to(writer)
     }
 }
 
@@ -462,7 +483,7 @@ mod string_tests {
             ($bytes:expr, $expected_value:expr) => {
                 assert_eq!(
                     String::deserialize($bytes).unwrap(),
-                    (&[] as &[u8], String::from($expected_value))
+                    (InputSpan::new(&[]), String::from($expected_value))
                 );
             };
         }
@@ -472,17 +493,80 @@ mod string_tests {
 
 // String derivative types
 
-// TODO Make newtype, add methods for separating namespace from id
-pub type Identifier = String;
+// Identifiers
 
-pub type Chat = String;
+pub use crate::resource::Identifier;
+
+impl Deserialize for Identifier {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        String::deserialize
+            .context("Identifier")
+            .parse(input)
+            .and_then(|(rest, string)| {
+                let identifier = Identifier::parse(&string).map_err(|err| {
+                    nom::Err::Error(nom::error::FromExternalError::from_external_error(
+                        input,
+                        nom::error::ErrorKind::Verify,
+                        err,
+                    ))
+                });
+                Ok((rest, identifier?))
+            })
+    }
+}
+
+impl Serialize for Identifier {
+    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let namespace_len = self.namespace.len() + 1;
+        let path_name_len = self.path_name.len();
+        let path_prefixes_len = self
+            .path_prefix_segments
+            .iter()
+            .fold(0, |acc, seg| acc + seg.len() + 1);
+        let total_len = namespace_len + path_prefixes_len + path_name_len;
+        VarInt(total_len.try_into().unwrap()).serialize_into(writer)?;
+        write!(writer, "{}:", &self.namespace)?;
+        for path_prefix_segment in &self.path_prefix_segments {
+            write!(writer, "{}/", path_prefix_segment)?;
+        }
+        write!(writer, "{}", &self.path_name)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::super::ByteView;
+    use super::Serialize;
+    use crate::identifier;
+    use std::io::Cursor;
+
+    #[test]
+    fn serialize() {
+        macro_rules! test_case {
+            ($value:expr, $expected_bytes:expr) => {{
+                let mut buffer = Cursor::new(Vec::new());
+                $value.serialize_into(&mut buffer).unwrap();
+                let left_byte_view = ByteView(buffer.get_ref());
+                let right_byte_view = ByteView($expected_bytes);
+                assert_eq!(
+                    left_byte_view, right_byte_view,
+                    "\n  left: {left_byte_view}\n right: {right_byte_view}"
+                );
+            }};
+        }
+        test_case!(identifier!("minecraft:brand"), b"\x0Fminecraft:brand");
+    }
+}
 
 // UUIDs
 
+pub use uuid::Uuid;
+
 impl Deserialize for Uuid {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<Self> {
         take(16usize)
-            .map(|slice| Uuid::from_slice(slice).unwrap())
+            .map(|slice: InputSpan<'a>| Uuid::from_slice(slice.as_ref()).unwrap())
             .context("Uuid")
             .parse(input)
     }
@@ -494,50 +578,38 @@ impl Serialize for Uuid {
     }
 }
 
-// Tuples, up to 4 elements currently. Just encoded as each field coming consecutively.
+// Tuples. Just encoded as each field deserialised consecutively.
 
-impl<A: Deserialize, B: Deserialize> Deserialize for (A, B) {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        pair(A::deserialize, B::deserialize)(input)
-    }
+macro_rules! impl_tuple_deserialize {
+    ( $( $type_param:ident ),+ ) => {
+        impl<$( $type_param: Deserialize ),+> Deserialize for ( $( $type_param, )+ ) {
+            fn deserialize(input: InputSpan) -> IResult<Self> {
+                tuple((
+                    $( $type_param::deserialize, )+
+                ))(input)
+            }
+        }
+    };
 }
 
-impl<A: Deserialize, B: Deserialize, C: Deserialize> Deserialize for (A, B, C) {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        tuple((A::deserialize, B::deserialize, C::deserialize))(input)
-    }
-}
-
-impl<A: Deserialize, B: Deserialize, C: Deserialize, D: Deserialize> Deserialize for (A, B, C, D) {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        tuple((
-            A::deserialize,
-            B::deserialize,
-            C::deserialize,
-            D::deserialize,
-        ))(input)
-    }
-}
-
-impl<A: Deserialize, B: Deserialize, C: Deserialize, D: Deserialize, E: Deserialize> Deserialize
-    for (A, B, C, D, E)
-{
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        tuple((
-            A::deserialize,
-            B::deserialize,
-            C::deserialize,
-            D::deserialize,
-            E::deserialize,
-        ))(input)
-    }
-}
+impl_tuple_deserialize!(A);
+impl_tuple_deserialize!(A, B);
+impl_tuple_deserialize!(A, B, C);
+impl_tuple_deserialize!(A, B, C, D);
+impl_tuple_deserialize!(A, B, C, D, E);
+impl_tuple_deserialize!(A, B, C, D, E, F);
+impl_tuple_deserialize!(A, B, C, D, E, F, G);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L);
 
 // Optionals, uses a bool prefix for whether field exists. There are a few exceptions to this
 // format, but it's common enough to be useful here.
 
 impl<T: Deserialize> Deserialize for Option<T> {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, is_some) = bool::deserialize(input)?;
         match is_some {
             false => Ok((rest, None)),
@@ -571,28 +643,60 @@ impl<T: Serialize> Serialize for Option<T> {
     }
 }
 
+// Box, just deserializes as the inner value.
+
+impl<T: Deserialize> Deserialize for Box<T> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        T::deserialize
+            .map(|v| Box::new(v))
+            .context(std::any::type_name::<Self>())
+            .parse(input)
+    }
+}
+
 // Vectors, uses a VarInt for number of entries. Same as with optionals, there are a few exceptions
 // but this is a very common pattern.
 
 impl<T: Deserialize> Deserialize for Vec<T> {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         length_count(
-            verify(VarInt::deserialize, |len| len.0 >= 0)
+            verify(VarInt::deserialize.context("VecLength"), |len| len.0 >= 0)
                 .map(|len| len.0 as usize)
                 .context("VecLength"),
-            T::deserialize,
+            T::deserialize.context("VecElement"),
         )
-        .context("Vec")
+        .context(std::any::type_name::<Self>())
         .parse(input)
     }
 }
 
-macro_rules! var_int_tagged_parser {
-    ($( $tag_value:expr => $deserializer:expr $(,)? )+) => {{
-        nom::branch::alt((
-            $( nom::sequence::preceded(VarInt::tag($tag_value), $deserializer), )+
-        ))
-    }}
+// HashMaps, encoded as a Vec<(Key, Value)>.
+
+impl<K, V, S> Deserialize for HashMap<K, V, S>
+where
+    K: Deserialize + std::hash::Hash + Eq,
+    V: Deserialize,
+    S: std::hash::BuildHasher + Default,
+{
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        <Vec<(K, V)>>::deserialize
+            .map(|entries| entries.into_iter().collect())
+            .context(std::any::type_name::<Self>())
+            .parse(input)
+    }
+}
+
+impl<K, V> Deserialize for AHashMap<K, V>
+where
+    K: Deserialize + std::hash::Hash + Eq,
+    V: Deserialize,
+{
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        <Vec<(K, V)>>::deserialize
+            .map(|entries| entries.into_iter().collect())
+            .context(std::any::type_name::<Self>())
+            .parse(input)
+    }
 }
 
 // Slice serialization
@@ -614,7 +718,7 @@ impl<T: Serialize> Serialize for &[T] {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProtocolRawSlice<'a, T: Serialize>(pub &'a [T]);
 
 impl<T: Serialize> Serialize for ProtocolRawSlice<'_, T> {
@@ -626,7 +730,41 @@ impl<T: Serialize> Serialize for ProtocolRawSlice<'_, T> {
     }
 }
 
-// Array serialization
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProtocolRawBytes(pub Vec<u8>);
+
+impl Deserialize for ProtocolRawBytes {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        Ok((input.slice(input.len()..), Self(input.as_ref().to_owned())))
+    }
+}
+
+// Arrays
+
+impl<T: Deserialize, const N: usize> Deserialize for [T; N] {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        let mut items = [const { MaybeUninit::uninit() }; N];
+        let mut rest = input;
+        for i in 0..items.len() {
+            match T::deserialize(rest) {
+                Ok((new_rest, value)) => {
+                    items[i] = MaybeUninit::new(value);
+                    rest = new_rest;
+                }
+                Err(err) => unsafe {
+                    // SAFETY: We're only dropping array elements up to `i`, which have already
+                    // been initialised.
+                    for drop_i in 0..i {
+                        items[drop_i].assume_init_drop();
+                        return Err(err);
+                    }
+                },
+            }
+        }
+        // SAFETY: All array elements have been initialised by this point.
+        unsafe { Ok((rest, items.map(|value| value.assume_init()))) }
+    }
+}
 
 impl<T: Serialize, const N: usize> Serialize for [T; N] {
     fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
@@ -662,7 +800,7 @@ pub struct Position {
 }
 
 impl Deserialize for Position {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         i64::deserialize
             .map(|value| Position {
                 x: (value >> 38) as i32,
@@ -684,19 +822,28 @@ mod position_tests {
             ($raw_value:expr, $expected_value:expr) => {
                 assert_eq!(
                     Position::deserialize(&u64::to_be_bytes($raw_value)).unwrap(),
-                    (&[] as &[u8], $expected_value)
+                    (InputSpan::new(&[]), $expected_value)
                 );
             };
         }
-        test_case!(0x4607632C15B4833F, Position(18357644, 831, -20882616));
+        test_case!(
+            0x4607632C15B4833F,
+            Position {
+                x: 18357644,
+                y: 831,
+                z: -20882616
+            }
+        );
     }
 }
 
 // NBT
 
+pub use quartz_nbt::NbtCompound;
+
 impl Deserialize for NbtCompound {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        fn parser(input: &[u8]) -> IResult<&[u8], NbtCompound> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        fn parser(input: InputSpan) -> IResult<NbtCompound> {
             let mut input_cursor = Cursor::new(input);
             let (nbt, name) =
                 quartz_nbt::io::read_nbt(&mut input_cursor, quartz_nbt::io::Flavor::Uncompressed)
@@ -704,24 +851,59 @@ impl Deserialize for NbtCompound {
                     nom::Err::Error(IErr::from_error_kind(input, nom::error::ErrorKind::Verify))
                 })?;
             debug_assert_eq!(&name, "");
-            let rest = &input[input_cursor.position() as usize..];
+            let rest = input.slice(input_cursor.position() as usize..);
             Ok((rest, nbt))
         }
         parser.context("NbtCompound").parse(input)
     }
 }
 
-#[derive(Clone, Debug)]
+// HACK: Protocol version 764 removed the empty name from the root for network NBT compounds, so we
+// add it back in here for quartz_nbt to deserialize as before.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[repr(transparent)]
+pub struct NetworkNbtCompound(pub NbtCompound);
+
+impl Deserialize for NetworkNbtCompound {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        fn parser(input: InputSpan) -> IResult<NbtCompound> {
+            if input.len() < 2 {
+                return Err(nom::Err::Error(IErr::from_error_kind(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            }
+            let mut modified_input = Vec::with_capacity(input.len() + 2);
+            modified_input.extend_from_slice(&[input[0], 0x00, 0x00]);
+            modified_input.extend_from_slice(&input[1..]);
+            let mut input_cursor = Cursor::new(&modified_input);
+            let (nbt, name) =
+                quartz_nbt::io::read_nbt(&mut input_cursor, quartz_nbt::io::Flavor::Uncompressed)
+                    .map_err(|_| {
+                    nom::Err::Error(IErr::from_error_kind(input, nom::error::ErrorKind::Verify))
+                })?;
+            debug_assert_eq!(&name, "");
+            let rest = input.slice(input_cursor.position() as usize - 2..);
+            Ok((rest, nbt))
+        }
+        parser
+            .map(NetworkNbtCompound)
+            .context("NbtCompound")
+            .parse(input)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[repr(transparent)]
 pub struct OptionalNbt(pub Option<NbtCompound>);
 
 impl Deserialize for OptionalNbt {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         if input.len() >= 1 && input[0] == 0 {
-            Ok((&input[1..], Self(None)))
+            Ok((input.slice(1..), Self(None)))
         } else {
-            NbtCompound::deserialize
-                .map(|nbt| Self(Some(nbt)))
+            NetworkNbtCompound::deserialize
+                .map(|net_nbt| Self(Some(net_nbt.0)))
                 .context("OptionalNbt")
                 .parse(input)
         }
@@ -743,7 +925,7 @@ pub struct Angle(u8);
 pub use crate::basic_types::AxisDirection;
 
 impl Deserialize for AxisDirection {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         var_int_tagged_parser!(
             0 => success(Self::Down),
             1 => success(Self::Up),
@@ -756,11 +938,6 @@ impl Deserialize for AxisDirection {
         .parse(input)
     }
 }
-
-// Particle
-
-// TODO: Can contain data or be parsed from a string, so convert to new type
-pub type Particle = VarInt;
 
 // GlobalPosition, represents an interdimensional location
 
@@ -778,7 +955,7 @@ pub type EntityId = VarInt;
 pub struct OptionalEntityId(pub Option<EntityId>);
 
 impl Deserialize for OptionalEntityId {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         EntityId::deserialize
             .context("OptionalEntityId")
             .map(|maybe_id| match maybe_id.0 {
@@ -786,5 +963,52 @@ impl Deserialize for OptionalEntityId {
                 id => Self(Some(VarInt(id - 1))),
             })
             .parse(input)
+    }
+}
+
+// TODO: Implement Display
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextComponent {
+    Basic(String),
+    Compound(NetworkNbtCompound),
+}
+
+impl Deserialize for TextComponent {
+    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<Self> {
+        if input.len() < 1 {
+            Err(nom::Err::Error(IErr::from_error_kind(
+                input,
+                nom::error::ErrorKind::Verify,
+            )))
+        } else {
+            match input[0] {
+                // TODO: The `Verify` error's fine, but there's probably a way of passing along a
+                // more descriptive error for invalid UTF-8
+                8 => length_value(
+                    u16::deserialize.map(|len| len as usize),
+                    |slice: InputSpan<'a>| {
+                        std::str::from_utf8(slice.as_ref())
+                            .map(|str| (slice, str.to_string()))
+                            .map_err(|_| {
+                                nom::Err::Error(IErr::from_error_kind(
+                                    slice,
+                                    nom::error::ErrorKind::Verify,
+                                ))
+                            })
+                    },
+                )
+                .map(Self::Basic)
+                .context("TextComponent")
+                .parse(input.slice(1..)),
+                10 => NetworkNbtCompound::deserialize
+                    .map(Self::Compound)
+                    .context("TextComponent")
+                    .parse(input),
+                _ => Err(nom::Err::Error(IErr::from_error_kind(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                ))),
+            }
+        }
     }
 }

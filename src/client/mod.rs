@@ -4,6 +4,7 @@ pub mod input;
 use ahash::{AHashMap, AHashSet, AHasher};
 use fixedbitset::FixedBitSet;
 use graphics::{GraphicsResources, GraphicsState};
+use indexmap::IndexMap;
 use input::PlayControlState;
 use std::hash::Hasher;
 use std::sync::{mpsc, Arc};
@@ -12,18 +13,15 @@ use threadpool::ThreadPool;
 use winit::event::{Event, StartCause, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
-use indexmap::IndexMap;
 
 use super::resource;
 use crate::identifier;
 use resource::block::model::{ModelType, Tint};
 use resource::block::{blockstate, GlobalPaletteIndex};
 
-use crate::protocol::v765::chunk as protocol_chunk;
-use crate::protocol::v765::play::{
-    serverbound as serverbound_packets, Clientbound as ClientboundPacket,
-};
-use crate::protocol::v765::prelude::PlayConnection;
+use crate::protocol::chunk as protocol_chunk;
+use crate::protocol::play::{serverbound as serverbound_packets, Clientbound as ClientboundPacket};
+use crate::protocol::prelude::{InputSpan, PlayConnection};
 use crate::protocol::Deserialize;
 
 struct ClientPlayState {
@@ -670,9 +668,6 @@ pub(crate) async fn window_run(
                             ClientboundPacket::UpdateTags(_tags) => {
                                 println!("Update tags: [<skipped>]")
                             }
-                            ClientboundPacket::DeclareCommands(_) => {
-                                println!("Declare commands: [<todo>]")
-                            }
                             ClientboundPacket::UpdateRecipeBook(_) => {
                                 println!("Update recipes: {{<skipped>}}")
                             }
@@ -694,13 +689,13 @@ pub(crate) async fn window_run(
                                 let (chunk_x, chunk_z) = (data.chunk_x, data.chunk_z);
                                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
                                 // println!("Update chunk data and lighting: {{<skipped>}}");
-                                let (rest, chunk_sections) =
-                                    nom::multi::count(
-                                        protocol_chunk::ChunkSection::deserialize,
-                                        24,
-                                    )(&data.chunk_data)
-                                    .map_err(|err| err.to_owned())
-                                    .unwrap();
+                                let (rest, chunk_sections) = nom::multi::count(
+                                    protocol_chunk::ChunkSection::deserialize,
+                                    24,
+                                )(
+                                    InputSpan::new(&data.chunk_data)
+                                )
+                                .unwrap();
                                 assert_eq!(rest.len(), 0);
                                 raw_chunks.insert([chunk_x, chunk_z], chunk_sections.into());
                                 {
@@ -823,10 +818,10 @@ pub(crate) async fn window_run(
                             ClientboundPacket::UpdateSectionBlocks(update) => {
                                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
                                 let [chunk_x, subchunk_y, chunk_z] = update.subchunk_coords;
-                                let section_i: usize =
-                                    (subchunk_y - MIN_HEIGHT_I32.div_euclid(SUBCHUNK_AXIS_LEN_I32))
-                                    .try_into()
-                                    .unwrap();
+                                let section_i: usize = (subchunk_y
+                                    - MIN_HEIGHT_I32.div_euclid(SUBCHUNK_AXIS_LEN_I32))
+                                .try_into()
+                                .unwrap();
                                 let Some(chunk) = raw_chunks.get_mut(&[chunk_x, chunk_z]) else {
                                     continue;
                                 };
@@ -879,13 +874,15 @@ pub(crate) async fn window_run(
                                         let mut subchunk_coords = [chunk_x, subchunk_y, chunk_z];
                                         if axis == 0 {
                                             subchunk_coords[axis_i] -= 1;
-                                            subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                            subchunks_to_dispatch
+                                                .insert(subchunk_coords, update_id);
                                             play_state
                                                 .pending_subchunk_update_ids
                                                 .insert(subchunk_coords, update_id);
                                         } else if axis == 15 {
                                             subchunk_coords[axis_i] += 1;
-                                            subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                            subchunks_to_dispatch
+                                                .insert(subchunk_coords, update_id);
                                             play_state
                                                 .pending_subchunk_update_ids
                                                 .insert(subchunk_coords, update_id);
@@ -917,7 +914,7 @@ pub(crate) async fn window_run(
                                 }
                             }
                             ClientboundPacket::SynchronizePlayerPosition(pos_info) => {
-                                use crate::protocol::v765::play::{PositionChange, RotationChange};
+                                use crate::protocol::play::{PositionChange, RotationChange};
                                 debug_state.cull_camera_moving_with_player = true;
                                 let camera = &mut graphics_state.camera;
                                 let camera_pos = camera.pos.coords;

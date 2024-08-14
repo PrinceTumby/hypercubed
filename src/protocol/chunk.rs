@@ -3,6 +3,7 @@ use crate::resource::block::GlobalPaletteIndex;
 use nom::sequence::pair;
 use nom::Parser;
 use nom_supreme::tag::complete::tag;
+use protocol_derive::Deserialize;
 
 #[derive(Clone, Deserialize)]
 pub struct ChunkSection {
@@ -117,14 +118,8 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
             },
             Palette::Direct => {
                 let bit_value: u64 = value.as_raw().try_into().unwrap();
-                let old_bit_value = Self::replace_raw(
-                    &mut self.data,
-                    self.bits_per_entry,
-                    x,
-                    y,
-                    z,
-                    bit_value,
-                );
+                let old_bit_value =
+                    Self::replace_raw(&mut self.data, self.bits_per_entry, x, y, z, bit_value);
                 old_bit_value.try_into().unwrap()
             }
         }
@@ -141,19 +136,11 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
     }
 
     #[inline]
-    fn set_raw(
-        data: &mut [u64],
-        bits_per_entry: u8,
-        x: usize,
-        y: usize,
-        z: usize,
-        bit_value: u64,
-    ) {
+    fn set_raw(data: &mut [u64], bits_per_entry: u8, x: usize, y: usize, z: usize, bit_value: u64) {
         let entries_per_long = 64 / bits_per_entry as usize;
         let entry_idx = (y * AXIS_LEN.pow(2)) + (z * AXIS_LEN) + x;
         let long_idx = entry_idx / entries_per_long;
-        let bitshift =
-            ((entry_idx % entries_per_long) * bits_per_entry as usize) as u64;
+        let bitshift = ((entry_idx % entries_per_long) * bits_per_entry as usize) as u64;
         let entry_bitmask = ((1 << bits_per_entry as u64) - 1) << bitshift;
         let masked_entry_value = data[long_idx] & !entry_bitmask;
         data[long_idx] = masked_entry_value | (bit_value << bitshift);
@@ -171,8 +158,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
         let entries_per_long = 64 / bits_per_entry as usize;
         let entry_idx = (y * AXIS_LEN.pow(2)) + (z * AXIS_LEN) + x;
         let long_idx = entry_idx / entries_per_long;
-        let bitshift =
-            ((entry_idx % entries_per_long) * bits_per_entry as usize) as u64;
+        let bitshift = ((entry_idx % entries_per_long) * bits_per_entry as usize) as u64;
         let entry_bitmask = ((1 << bits_per_entry as u64) - 1) << bitshift;
         let old_bit_value = (data[long_idx] & entry_bitmask) >> bitshift;
         let masked_entry_value = data[long_idx] & !entry_bitmask;
@@ -216,13 +202,14 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                         for x in 0..AXIS_LEN {
                             let bit_value = Self::get_raw(old_data, old_bits_per_entry, x, y, z);
                             let palette_entry = GlobalPaletteIndex::try_from(bit_value).unwrap();
-                            let palette_idx = match new_palette.iter().position(|&v| v == palette_entry) {
-                                Some(idx) => idx,
-                                None => {
-                                    new_palette.push(palette_entry);
-                                    new_palette.len() - 1
-                                }
-                            };
+                            let palette_idx =
+                                match new_palette.iter().position(|&v| v == palette_entry) {
+                                    Some(idx) => idx,
+                                    None => {
+                                        new_palette.push(palette_entry);
+                                        new_palette.len() - 1
+                                    }
+                                };
                             let idx_bit_value: u64 = palette_idx.try_into().unwrap();
                             Self::set_raw(
                                 &mut new_data,
@@ -297,7 +284,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> std::fmt::Display
 impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> Deserialize
     for PalettedContainer<AXIS_LEN, INDIRECT_MAX_BPE>
 {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, bits_per_entry) = u8::deserialize(input)?;
         match bits_per_entry {
             0 => {
@@ -305,7 +292,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> Deserialize
                     VarInt::deserialize.map(|VarInt(value)| value.try_into().unwrap()),
                     // Length of `data`, zero because there's no data needed for a single value
                     // palette
-                    tag(&[0]),
+                    tag(std::slice::from_ref(&0)),
                 )
                 .map(|(palette_index, _data_len)| Self {
                     bits_per_entry,

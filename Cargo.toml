@@ -25,9 +25,10 @@ lazy_static = "1.4"
 log = "0.4"
 mimalloc = "0.1"
 nalgebra = { version = "0.32", features = ["serde-serialize"] }
-nom-supreme = "0.8"
 nom = "7"
 num-bigint = "0.4"
+nom_locate = "4.2"
+nom-supreme = "0.8"
 petgraph = "0.6"
 pollster = "0.3"
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }

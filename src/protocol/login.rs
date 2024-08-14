@@ -1,36 +1,22 @@
-pub use crate::protocol::v763::packet::login::{LoginSuccess, Property};
-
-use super::basic_types::*;
+use super::prelude::*;
 use super::{
     configuration, Aes128Cfb8Dec, Aes128Cfb8Enc, EncryptedTcpStreamReader,
-    EncryptedTcpStreamWriter, PlayConnection,
+    EncryptedTcpStreamWriter, PlayConnection, OFFLINE_PLAYER_NAMESPACE,
 };
-use crate::protocol::v763::packet::{PacketRead, PacketWrite};
-use crate::protocol::{Deserialize, Serialize, OFFLINE_PLAYER_NAMESPACE};
+use crate::identifier;
 use bytebuffer::ByteBuffer;
-use nom::{IResult, Parser};
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, PartialEq, Eq, PacketRead)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, PacketRead)]
+#[repr(i32)]
 pub enum Response {
-    ErrorDisconnect { reason: String },
-    EncryptionRequest(EncryptionRequest),
-    Success(LoginSuccess),
-    SetCompression { threshold: VarInt },
-}
-
-impl Deserialize for Response {
-    fn deserialize(input: &[u8]) -> IResult<&[u8], Self> {
-        var_int_tagged_parser!(
-            0x00 => String::deserialize.map(|reason| Self::ErrorDisconnect { reason }),
-            0x01 => EncryptionRequest::deserialize.map(Self::EncryptionRequest),
-            0x02 => LoginSuccess::deserialize.map(Self::Success),
-            0x03 => VarInt::deserialize.map(|threshold| Self::SetCompression { threshold }),
-        )(input)
-    }
+    ErrorDisconnect { reason: String } = 0x00,
+    EncryptionRequest(EncryptionRequest) = 0x01,
+    Success(LoginSuccess) = 0x02,
+    SetCompression { threshold: VarInt } = 0x03,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -38,6 +24,22 @@ pub struct EncryptionRequest {
     pub server_id: String,
     pub public_key: Vec<u8>,
     pub verify_token: Vec<u8>,
+    pub should_authenticate: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct LoginSuccess {
+    pub player_uuid: Uuid,
+    pub username: String,
+    pub properties: Vec<Property>,
+    pub strict_error_handling: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Property {
+    pub name: String,
+    pub value: String,
+    pub signature: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, PacketWrite)]
@@ -92,7 +94,7 @@ pub fn login(
     let mut write_stream = &mut &tcp_stream as &mut dyn Write;
     // Send handshake packet
     handshaking::Handshake {
-        protocol_version: 765,
+        protocol_version: PROTOCOL_VERSION,
         address,
         server_port: port,
         next_state: handshaking::HandshakeNextState::Login,
@@ -132,7 +134,7 @@ pub fn login(
                     .map_err(std::io::Error::other)?;
                 let shared_secret: [u8; 16] = thread_rng.gen();
                 // Send session information to session server
-                {
+                if request_info.should_authenticate {
                     let (access_token, player_uuid) = session_information
                         .as_ref()
                         .map(|info| (info.access_token.as_str(), info.player_uuid.as_simple()))
@@ -216,8 +218,12 @@ pub fn login(
     };
     // Configuration phase
     loop {
+        use configuration::{ClientDataPack, ClientDataPacks, Response, ServerboundPluginMessage};
         match configuration::Response::read_from(compression_threshold, &mut read_stream)? {
-            configuration::Response::Finish => {
+            Response::ErrorDisconnect { reason } => {
+                return Err(std::io::Error::other(format!("{reason:?}")))
+            }
+            Response::Finish => {
                 client_information.write_packet_into(&mut write_stream, compression_threshold)?;
                 configuration::AcknowledgeFinish
                     .write_packet_into(&mut write_stream, compression_threshold)?;
@@ -226,11 +232,12 @@ pub fn login(
                     success_packet,
                 ));
             }
-            configuration::Response::PluginMessage(message) => match message.channel.as_str() {
-                "minecraft:brand" => {
+            Response::PluginMessage(message) => match &message.channel {
+                chan if chan == &identifier!("minecraft:brand") => {
                     const CLIENT_BRAND: &str = "rust_minecraft_client";
-                    let (extra_data, server_brand) = String::deserialize(&message.data)
-                        .map_err(|err| std::io::Error::other(format!("{err}")))?;
+                    let (extra_data, server_brand) =
+                        String::deserialize(InputSpan::new(&message.data))
+                            .map_err(|err| std::io::Error::other(format!("{err}")))?;
                     if extra_data.len() != 0 {
                         return Err(std::io::Error::other(format!(
                             "Invalid extra data while deserializing server brand: {extra_data:?}"
@@ -243,8 +250,8 @@ pub fn login(
                     );
                     let mut client_brand_data = ByteBuffer::new();
                     String::from(CLIENT_BRAND).serialize_into(&mut client_brand_data)?;
-                    configuration::ServerboundPluginMessage {
-                        channel: "minecraft:brand",
+                    ServerboundPluginMessage {
+                        channel: &identifier!("minecraft:brand"),
                         data: ProtocolRawSlice(client_brand_data.as_bytes()),
                     }
                     .write_packet_into(&mut write_stream, compression_threshold)?;
@@ -253,25 +260,39 @@ pub fn login(
                     "Received plugin message from unknown channel while configuring: {message:?}"
                 ),
             },
-            configuration::Response::KeepAlive(id) => {
+            Response::KeepAlive(id) => {
                 configuration::KeepAliveResponse(id).serialize_into(&mut write_stream)?;
             }
-            configuration::Response::Ping(id) => {
+            Response::Ping(id) => {
                 configuration::Pong(id).serialize_into(&mut write_stream)?;
             }
-            configuration::Response::RegistryData(_registry_data) => log::warn!(
-                "Server registry data handling currently unimplemented, ignoring for now"
-            ),
-            configuration::Response::EnableFeatures(features) => {
-                if &features != &[String::from("minecraft:vanilla")] {
+            Response::RegistryData(registry_data) => {
+                log::warn!(
+                    "Server registry data handling currently unimplemented, ignoring for now"
+                );
+                log::debug!("Server registry data: {registry_data:?}");
+            }
+            Response::EnableFeatures(features) => {
+                if &features != &[identifier!("minecraft:vanilla")] {
                     todo!("Support alternative features: {:?}", features);
                 }
             }
-            configuration::Response::UpdateTags(_registry_tags) => log::warn!(
+            Response::UpdateTags(_registry_tags) => log::warn!(
                 "Server registry tags data handling currently unimplemented, ignoring for now"
             ),
-            configuration::Response::ErrorDisconnect { reason } => {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, reason))
+            Response::ServerDataPacks(data_packs) => {
+                log::warn!(
+                    "{}, {}",
+                    "Server data pack checking currently unimplemented",
+                    "responding as only having <minecraft:core>",
+                );
+                log::debug!("Server data packs: {data_packs:?}");
+                ClientDataPacks(&[ClientDataPack {
+                    namespace: "minecraft",
+                    id: "core",
+                    version: "1.21.1",
+                }])
+                .write_packet_into(&mut write_stream, compression_threshold)?;
             }
             other => todo!("Handle configuration packet: {other:?}"),
         }
