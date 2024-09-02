@@ -1,9 +1,9 @@
 use super::crafting::Slot;
 use super::particle::Particle;
 use crate::protocol::prelude::*;
-use nom::multi::many_till;
-use nom::Parser;
-use nom_supreme::tag::complete::tag;
+// use nom::multi::many_till;
+// use nom::Parser;
+// use nom_supreme::tag::complete::tag;
 use protocol_derive::Deserialize;
 
 // TODO: Couldn't figure out how to get this working quickly, so just stubbed it for now.

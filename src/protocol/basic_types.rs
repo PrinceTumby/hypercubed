@@ -11,6 +11,7 @@ use protocol_derive::Deserialize;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::mem::MaybeUninit;
+use std::num::NonZeroU32;
 
 // Helper macros
 
@@ -604,6 +605,14 @@ impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I);
 impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J);
 impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K);
 impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S);
+impl_tuple_deserialize!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T);
 
 // Optionals, uses a bool prefix for whether field exists. There are a few exceptions to this
 // format, but it's common enough to be useful here.
@@ -754,10 +763,10 @@ impl<T: Deserialize, const N: usize> Deserialize for [T; N] {
                 Err(err) => unsafe {
                     // SAFETY: We're only dropping array elements up to `i`, which have already
                     // been initialised.
-                    for drop_i in 0..i {
-                        items[drop_i].assume_init_drop();
-                        return Err(err);
+                    for item in items.iter_mut().take(i) {
+                        item.assume_init_drop();
                     }
+                    return Err(err);
                 },
             }
         }
@@ -910,9 +919,28 @@ impl Deserialize for OptionalNbt {
     }
 }
 
-// BitVec
+// BitSet
 
-pub type BitVec = Vec<u64>;
+pub use fixedbitset::FixedBitSet as BitSet;
+
+impl Deserialize for BitSet {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        use smallvec::SmallVec;
+        <Vec<u64>>::deserialize
+            .map(|longs| {
+                Self::with_capacity_and_blocks(
+                    longs.len() * 64,
+                    longs.into_iter().flat_map(|long| match usize::BITS {
+                        64 => SmallVec::from_buf_and_len([long as usize, 0], 1),
+                        32 => SmallVec::from_buf_and_len([long as usize, (long >> 32) as usize], 2),
+                        _ => todo!(),
+                    }),
+                )
+            })
+            .context("BitSet")
+            .parse(input)
+    }
+}
 
 // Angles, represented as steps of 1/256 of a full turn
 
@@ -949,19 +977,41 @@ pub struct GlobalPosition {
 
 // EntityId and OptionalEntityId, these uniquely identify entities in the world
 
-pub type EntityId = VarInt;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct EntityId(pub u32);
+
+impl EntityId {
+    pub const fn placeholder() -> Self {
+        Self(u32::MAX)
+    }
+}
+
+impl Deserialize for EntityId {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        VarInt::deserialize
+            .verify(|&VarInt(id)| id >= 0)
+            .map(|VarInt(id)| Self(id as u32))
+            .context("EntityId")
+            .parse(input)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OptionalEntityId(pub Option<EntityId>);
+#[repr(transparent)]
+pub struct OptionalEntityId(Option<NonZeroU32>);
+
+impl OptionalEntityId {
+    pub fn get(&self) -> Option<EntityId> {
+        self.0.map(|x| EntityId(x.get() - 1))
+    }
+}
 
 impl Deserialize for OptionalEntityId {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         EntityId::deserialize
+            .map(|raw| Self(NonZeroU32::new(raw.0)))
             .context("OptionalEntityId")
-            .map(|maybe_id| match maybe_id.0 {
-                0 => Self(None),
-                id => Self(Some(VarInt(id - 1))),
-            })
             .parse(input)
     }
 }

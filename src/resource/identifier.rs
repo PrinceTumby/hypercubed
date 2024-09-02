@@ -84,7 +84,7 @@ impl Identifier {
     }
 
     const fn is_valid_namespace(namespace: &str) -> bool {
-        if namespace.len() == 0 {
+        if namespace.is_empty() {
             return false;
         }
         // XXX: `for` loops are currently not allowed in const, replace when they get allowed

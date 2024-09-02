@@ -98,10 +98,10 @@ impl Filesystem for InternalOverlayFilesystem {
         identifier: &Identifier,
     ) -> anyhow::Result<Cow<'static, [u8]>> {
         match resource_type {
-            &ResourceType::Blockstate => &*BLOCKSTATES,
-            &ResourceType::Model => &*MODELS,
-            &ResourceType::Texture => &*TEXTURES,
-            &ResourceType::TextureMeta => &*TEXTURE_METAS,
+            ResourceType::Blockstate => &*BLOCKSTATES,
+            ResourceType::Model => &*MODELS,
+            ResourceType::Texture => &*TEXTURES,
+            ResourceType::TextureMeta => &*TEXTURE_METAS,
         }
         .get(identifier)
         .map(|&file| Cow::Borrowed(file))

@@ -378,21 +378,11 @@ pub struct BlockPredicateProperty {
     pub match_data: BlockPredicatePropertyMatch,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[repr(u8)]
 pub enum BlockPredicatePropertyMatch {
-    Exact(String),
-    Ranged { min: String, max: String },
-}
-
-impl Deserialize for BlockPredicatePropertyMatch {
-    fn deserialize(input: InputSpan) -> IResult<Self> {
-        var_int_tagged_parser!(
-            0 => <(String, String)>::deserialize.map(|(min, max)| Self::Ranged { min, max }),
-            1 => String::deserialize.map(|value| Self::Exact(value)),
-        )
-        .context("BlockPredicatePropertyMatch")
-        .parse(input)
-    }
+    Ranged { min: String, max: String } = 0,
+    Exact(String) = 1,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

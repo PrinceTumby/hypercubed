@@ -317,7 +317,7 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
         subchunk_coords: [i32; 3],
         items: &[T],
     ) -> u32 {
-        debug_assert!(items.len() > 0);
+        debug_assert!(!items.is_empty());
         let items_byte_slice: &[u8] = bytemuck::cast_slice(items);
         let byte_len = items_byte_slice.len();
         let num_chunks_needed = byte_len.div_ceil(CHUNK_SIZE) as u64;
@@ -326,21 +326,26 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
         for i in 0..self.usage_map.len() {
             let area = &mut self.usage_map[i];
             if area.is_free() {
-                if area.num_chunks > num_chunks_needed {
-                    // Split area into used portion and leftover free protion
-                    let new_free_area = BufferArea {
-                        usage: BufferAreaUsage::Free,
-                        num_chunks: area.num_chunks - num_chunks_needed,
-                    };
-                    area.num_chunks = num_chunks_needed;
-                    area.usage = BufferAreaUsage::Used(subchunk_coords);
-                    self.usage_map.insert(i + 1, new_free_area);
-                } else if area.num_chunks == num_chunks_needed {
-                    // Mark entire area as used
-                    area.usage = BufferAreaUsage::Used(subchunk_coords);
-                } else {
-                    current_start_chunk += area.num_chunks;
-                    continue;
+                use std::cmp::Ordering;
+                match area.num_chunks.cmp(&num_chunks_needed) {
+                    Ordering::Greater => {
+                        // Split area into used portion and leftover free protion
+                        let new_free_area = BufferArea {
+                            usage: BufferAreaUsage::Free,
+                            num_chunks: area.num_chunks - num_chunks_needed,
+                        };
+                        area.num_chunks = num_chunks_needed;
+                        area.usage = BufferAreaUsage::Used(subchunk_coords);
+                        self.usage_map.insert(i + 1, new_free_area);
+                    }
+                    Ordering::Equal => {
+                        // Mark entire area as used
+                        area.usage = BufferAreaUsage::Used(subchunk_coords);
+                    }
+                    Ordering::Less => {
+                        current_start_chunk += area.num_chunks;
+                        continue;
+                    }
                 }
                 // Write items to buffer
                 let buffer_offset = current_start_chunk * CHUNK_SIZE as u64;
@@ -545,7 +550,7 @@ pub mod block_face {
         pub fn generate_array() -> [[[f32; 4]; 3]; 6] {
             // Alignment of each row in a mat3x3 is same as vec4, so we pad up to size
             rotations()
-                .map(|rotation_matrix| Matrix3::from(rotation_matrix))
+                .map(Matrix3::from)
                 .map(|matrix| matrix.into())
                 .map(|matrix: [[f32; 3]; 3]| matrix.map(|[x, y, z]| [x, y, z, 0.0]))
         }
@@ -605,7 +610,9 @@ pub mod block_face {
         /// 8-11: Z offset
         /// 12-15: Unused
         packed_xyz: u16,
-        uv_rotation_and_padding: [u8; 2],
+        /// 8-11: Sky light level
+        /// 12-15: Block light level
+        uv_rotation_and_light_levels: [u8; 2],
     }
 
     impl Instance {
@@ -614,7 +621,7 @@ pub mod block_face {
             10 => Uint16x4,
             // packed_xyz
             11 => Uint8x2,
-            // uv_rotation_and_padding
+            // uv_rotation_and_light_levels
             12 => Uint8x2,
         ];
 
@@ -626,23 +633,30 @@ pub mod block_face {
             }
         }
 
-        pub fn new(subchunk_xyz: [u8; 3], uvs: [u16; 4], uv_rotation: RightAngleRotation) -> Self {
+        pub fn new(
+            subchunk_xyz: [u8; 3],
+            uvs: [u16; 4],
+            uv_rotation: RightAngleRotation,
+            light_levels: [u8; 2],
+        ) -> Self {
             debug_assert!(subchunk_xyz[0] < 16);
             debug_assert!(subchunk_xyz[1] < 16);
             debug_assert!(subchunk_xyz[2] < 16);
+            debug_assert!(light_levels[0] < 16);
+            debug_assert!(light_levels[1] < 16);
             Self {
                 uvs,
                 packed_xyz: (subchunk_xyz[0] as u16)
                     | ((subchunk_xyz[1] as u16) << 4)
                     | ((subchunk_xyz[2] as u16) << 8),
-                uv_rotation_and_padding: [
+                uv_rotation_and_light_levels: [
                     match uv_rotation {
                         RightAngleRotation::Zero => 0,
                         RightAngleRotation::Ninety => 1,
                         RightAngleRotation::OneEighty => 2,
                         RightAngleRotation::TwoSeventy => 3,
                     },
-                    0,
+                    light_levels[0] | (light_levels[1] << 4),
                 ],
             }
         }
@@ -727,7 +741,11 @@ pub mod tinted_block_face {
         /// 8-11: Z offset
         /// 12-15: Unused
         packed_xyz: u16,
-        uv_rotation_and_padding: [u8; 2],
+        /// 0-3: UV rotation
+        /// 4-7: Unused
+        /// 8-11: Sky light level
+        /// 12-15: Block light level
+        uv_rotation_and_light_levels: [u8; 2],
     }
 
     impl Instance {
@@ -738,7 +756,7 @@ pub mod tinted_block_face {
             11 => Unorm8x4,
             // packed_xyz
             12 => Uint8x2,
-            // uv_rotation_and_padding
+            // uv_rotation_and_light_levels
             13 => Uint8x2,
         ];
 
@@ -754,25 +772,28 @@ pub mod tinted_block_face {
             subchunk_xyz: [u8; 3],
             uvs: [u16; 4],
             uv_rotation: RightAngleRotation,
+            light_levels: [u8; 2],
             tint_color: [u8; 4],
         ) -> Self {
             debug_assert!(subchunk_xyz[0] < 16);
             debug_assert!(subchunk_xyz[1] < 16);
             debug_assert!(subchunk_xyz[2] < 16);
+            debug_assert!(light_levels[0] < 16);
+            debug_assert!(light_levels[1] < 16);
             Self {
                 uvs,
                 tint_color,
                 packed_xyz: (subchunk_xyz[0] as u16)
                     | ((subchunk_xyz[1] as u16) << 4)
                     | ((subchunk_xyz[2] as u16) << 8),
-                uv_rotation_and_padding: [
+                uv_rotation_and_light_levels: [
                     match uv_rotation {
                         RightAngleRotation::Zero => 0,
                         RightAngleRotation::Ninety => 1,
                         RightAngleRotation::OneEighty => 2,
                         RightAngleRotation::TwoSeventy => 3,
                     },
-                    0,
+                    light_levels[0] | (light_levels[1] << 4),
                 ],
             }
         }
@@ -883,8 +904,18 @@ pub mod custom_block {
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Instance {
-        pub pos: [f32; 3],
-        pub tint_color: [u8; 4],
+        pos: [f32; 3],
+        tint_color: [u8; 4],
+        /// Light levels for surrounding blocks in order:
+        /// 1: Centre
+        /// 2: Above
+        /// 3: Below
+        /// 4: North
+        /// 5: South
+        /// 6: East
+        /// 7: West
+        /// 8: Unused
+        light_level_pairs: [u8; 8],
     }
 
     impl Instance {
@@ -893,6 +924,10 @@ pub mod custom_block {
             10 => Float32x3,
             // tint_color
             11 => Unorm8x4,
+            // light_level_pairs (first half)
+            12 => Uint8x4,
+            // light_level_pairs (second half)
+            13 => Uint8x4,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -900,6 +935,30 @@ pub mod custom_block {
                 array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: Self::ATTRIBUTES,
+            }
+        }
+
+        pub fn new(
+            pos: [f32; 3],
+            tint_color: [u8; 4],
+            centre_light_levels: [u8; 2],
+            neighbour_light_levels: [[u8; 2]; 6],
+        ) -> Self {
+            debug_assert!(centre_light_levels[0] < 16);
+            debug_assert!(centre_light_levels[1] < 16);
+            for pair in neighbour_light_levels {
+                debug_assert!(pair[0] < 16);
+                debug_assert!(pair[1] < 16);
+            }
+            let mut converted_light_level_pairs = [0u8; 8];
+            converted_light_level_pairs[0] = centre_light_levels[0] | (centre_light_levels[1] << 4);
+            for (i, pair) in neighbour_light_levels.into_iter().enumerate() {
+                converted_light_level_pairs[i + 1] = pair[0] | (pair[1] << 4);
+            }
+            Self {
+                pos,
+                tint_color,
+                light_level_pairs: converted_light_level_pairs,
             }
         }
     }

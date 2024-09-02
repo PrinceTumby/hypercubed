@@ -11,6 +11,7 @@ use bimap::hash::BiHashMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegistryIndex(u16);
 
+#[derive(Default)]
 struct RegistryData<T> {
     entries: Vec<T>,
     identifier_map: BiHashMap<Identifier, RegistryIndex>,

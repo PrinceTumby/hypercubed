@@ -1,4 +1,5 @@
 #![warn(clippy::all)]
+#![deny(clippy::correctness)]
 
 pub mod basic_types;
 pub mod client;
@@ -58,17 +59,22 @@ fn main() -> anyhow::Result<()> {
     let server_connection = Arc::new(server_connection);
     let (clientbound_tx, clientbound_rx) = std::sync::mpsc::channel();
     {
+        let clientbound_tx = clientbound_tx.clone();
         let server_connection = server_connection.clone();
         std::thread::spawn(move || loop {
             let packet = match server_connection.read_packet() {
                 Ok(packet) => packet,
                 Err(err) => panic!("{err}"),
             };
-            if let Err(_) = clientbound_tx.send(packet) {
+            if clientbound_tx.send(packet).is_err() {
                 break;
             };
         });
     }
-    pollster::block_on(client::window_run(server_connection, clientbound_rx))?;
+    pollster::block_on(client::window_run(
+        server_connection,
+        clientbound_rx,
+        clientbound_tx,
+    ))?;
     Ok(())
 }

@@ -1,12 +1,18 @@
 pub mod graphics;
 pub mod input;
+pub mod world;
 
-use ahash::{AHashMap, AHashSet, AHasher};
-use fixedbitset::FixedBitSet;
-use graphics::{GraphicsResources, GraphicsState};
+use crate::identifier;
+use crate::protocol::chunk as protocol_chunk;
+use crate::protocol::play::{
+    self as protocol_play, serverbound as serverbound_packets, Clientbound as ClientboundPacket,
+};
+use crate::protocol::prelude::*;
+use crate::resource::block::GlobalPaletteIndex;
+use ahash::{AHashMap, AHashSet};
+use graphics::GraphicsState;
 use indexmap::IndexMap;
 use input::PlayControlState;
-use std::hash::Hasher;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 use threadpool::ThreadPool;
@@ -14,27 +20,24 @@ use winit::event::{Event, StartCause, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use super::resource;
-use crate::identifier;
-use resource::block::model::{ModelType, Tint};
-use resource::block::{blockstate, GlobalPaletteIndex};
-
-use crate::protocol::chunk as protocol_chunk;
-use crate::protocol::play::{serverbound as serverbound_packets, Clientbound as ClientboundPacket};
-use crate::protocol::prelude::{InputSpan, PlayConnection};
-use crate::protocol::Deserialize;
-
-struct ClientPlayState {
-    pub raw_chunks: Arc<AHashMap<[i32; 2], Arc<[protocol_chunk::ChunkSection]>>>,
+pub struct ClientPlayState {
+    pub raw_chunks: Arc<AHashMap<[i32; 2], Arc<RawChunk>>>,
     // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
     //       coordinate. Consider changing to actually be the Y coordinate.
     pub subchunks: AHashMap<[i32; 3], graphics::chunk::Subchunk>,
     pub visible_chunks: AHashSet<[i32; 2]>,
     pub pending_subchunk_update_ids: AHashMap<[i32; 3], usize>,
+    pub player_entity_id: EntityId,
+}
+
+#[derive(Clone)]
+pub struct RawChunk {
+    pub sections: Box<[protocol_chunk::ChunkSection]>,
+    pub lighting: protocol_chunk::ChunkLightInfo,
 }
 
 #[derive(Debug)]
-enum ClientPlayStateUpdate {
+pub enum ClientPlayStateUpdate {
     RemoveChunk([i32; 2]),
     PlaceSubchunks {
         update_id: usize,
@@ -43,7 +46,7 @@ enum ClientPlayStateUpdate {
 }
 
 #[derive(Debug)]
-struct RawSubchunk {
+pub struct RawSubchunk {
     pub start_coords: [i32; 3],
     pub block_face_quads: [Option<[graphics::chunk::block_face::Vertex; 4]>; 6],
     pub block_face_instance_groups: [Vec<graphics::chunk::block_face::Instance>; 6],
@@ -54,20 +57,21 @@ struct RawSubchunk {
 }
 
 #[derive(Debug)]
-struct RawCustomBlockGroup {
+pub struct RawCustomBlockGroup {
     pub start_vertex: u32,
     pub start_index_and_len: (u32, u32),
     pub instances: Vec<graphics::chunk::custom_block::Instance>,
 }
 
-const SUBCHUNK_AXIS_LEN: usize = 16;
-const SUBCHUNK_AXIS_LEN_I32: i32 = SUBCHUNK_AXIS_LEN as i32;
-const MIN_HEIGHT_I32: i32 = -64;
-const MAX_HEIGHT_I32: i32 = 319;
+pub const SUBCHUNK_AXIS_LEN: usize = 16;
+pub const SUBCHUNK_AXIS_LEN_I32: i32 = SUBCHUNK_AXIS_LEN as i32;
+pub const MIN_HEIGHT_I32: i32 = -64;
+pub const MAX_HEIGHT_I32: i32 = 319;
 
 pub(crate) async fn window_run(
     server_connection: Arc<PlayConnection>,
     clientbound_rx: std::sync::mpsc::Receiver<ClientboundPacket>,
+    clientbound_tx: std::sync::mpsc::Sender<ClientboundPacket>,
 ) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let window = WindowBuilder::new().build(&event_loop)?;
@@ -75,7 +79,7 @@ pub(crate) async fn window_run(
     let window_id = window.id();
     let mut scale_factor = window.scale_factor();
     let mut graphics_state =
-        GraphicsState::new(window, super::resource::block::register_vanilla_blocks).await?;
+        GraphicsState::new(window, crate::resource::block::register_vanilla_blocks).await?;
     let mut input_state = PlayControlState::default();
     let egui_ctx = egui::Context::default();
     let mut play_state = ClientPlayState {
@@ -83,6 +87,7 @@ pub(crate) async fn window_run(
         subchunks: AHashMap::new(),
         visible_chunks: AHashSet::new(),
         pending_subchunk_update_ids: AHashMap::new(),
+        player_entity_id: EntityId::placeholder(),
     };
     let (play_state_update_tx, play_state_update_rx) = mpsc::channel::<ClientPlayStateUpdate>();
     let mut last_mouse_pos = egui::Pos2::new(0.0, 0.0);
@@ -163,7 +168,7 @@ pub(crate) async fn window_run(
                         let height_f32 = graphics_state.size.height as f32 / scale_factor as f32;
                         let painter =
                             Painter::new(ctx.clone(), LayerId::background(), Rect::EVERYTHING);
-                        Window::new("Debug Info").resizable(false).show(&ctx, |ui| {
+                        Window::new("Debug Info").resizable(false).show(ctx, |ui| {
                             ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
                             // VSync
                             {
@@ -258,12 +263,12 @@ pub(crate) async fn window_run(
                                 let y = (pos.y.floor() as i32).rem_euclid(16) as usize;
                                 let z = (pos.z.floor() as i32).rem_euclid(16) as usize;
                                 if let Some(chunk) = raw_chunks.get(&[chunk_x, chunk_z]) {
-                                    if pos.y < 0.0 || section_i >= chunk.len() {
+                                    if pos.y < 0.0 || section_i >= chunk.sections.len() {
                                         ui.label("Global Palette ID: N/A");
                                         ui.label("Identifier: N/A");
                                         ui.label("Blockstate data: N/A");
                                     } else {
-                                        let chunk_section = &chunk[section_i];
+                                        let chunk_section = &chunk.sections[section_i];
                                         let global_palette_index =
                                             chunk_section.block_states.get(x, y, z);
                                         let blockstate = &graphics_state.resources.block_registry
@@ -286,7 +291,6 @@ pub(crate) async fn window_run(
                                 }
                             });
                             ui.collapsing("Chunk Info", |ui| {
-                                const MIN_HEIGHT_I32: i32 = -64;
                                 let pos = graphics_state.camera.pos;
                                 let x = (pos.x.floor() as i32).div_euclid(16);
                                 let y = (pos.y.floor() as i32 - MIN_HEIGHT_I32).div_euclid(16);
@@ -617,8 +621,8 @@ pub(crate) async fn window_run(
                 };
                 // Main rendering
                 match graphics_state.render(
-                    &subchunks,
-                    &visible_chunks,
+                    subchunks,
+                    visible_chunks,
                     &egui_ctx,
                     egui_full_output,
                     &debug_state,
@@ -653,8 +657,9 @@ pub(crate) async fn window_run(
                                 println!("Disconnected: {reason:?}")
                             }
                             ClientboundPacket::BundleDelimiter => unreachable!(),
-                            ClientboundPacket::LoginPlay(_packet) => {
-                                println!("Login play: {{<skipped>}}")
+                            ClientboundPacket::LoginPlay { raw_entity_id, .. } => {
+                                play_state.player_entity_id = EntityId(raw_entity_id);
+                                println!("Login play: {{ player_entity_id: {raw_entity_id} }}");
                             }
                             ClientboundPacket::KeepAlive { id } => {
                                 server_connection
@@ -663,16 +668,16 @@ pub(crate) async fn window_run(
                             }
                             // Configuration
                             ClientboundPacket::UpdateRecipes(_recipes) => {
-                                println!("Update recipes: [<skipped>]")
+                                println!("Update recipes: [<skipped>]");
                             }
                             ClientboundPacket::UpdateTags(_tags) => {
-                                println!("Update tags: [<skipped>]")
+                                println!("Update tags: [<skipped>]");
                             }
                             ClientboundPacket::UpdateRecipeBook(_) => {
-                                println!("Update recipes: {{<skipped>}}")
+                                println!("Update recipes: {{<skipped>}}");
                             }
                             ClientboundPacket::ServerData(data) => {
-                                println!("Server MOTD: {:?}", data.motd)
+                                println!("Server MOTD: {:?}", data.motd);
                             }
                             // Gameplay
                             ClientboundPacket::ChunkBatchStart => {}
@@ -686,9 +691,8 @@ pub(crate) async fn window_run(
                                     .unwrap();
                             }
                             ClientboundPacket::ChunkDataAndUpdateLight(data) => {
-                                let (chunk_x, chunk_z) = (data.chunk_x, data.chunk_z);
                                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
-                                // println!("Update chunk data and lighting: {{<skipped>}}");
+                                let [chunk_x, chunk_z] = data.chunk_xz;
                                 let (rest, chunk_sections) = nom::multi::count(
                                     protocol_chunk::ChunkSection::deserialize,
                                     24,
@@ -697,7 +701,19 @@ pub(crate) async fn window_run(
                                 )
                                 .unwrap();
                                 assert_eq!(rest.len(), 0);
-                                raw_chunks.insert([chunk_x, chunk_z], chunk_sections.into());
+                                // eprintln!("Sky light mask:          {:b}", &data.light_info.sky_light_mask);
+                                // eprintln!("Empty sky light mask:    {:b}", &data.light_info.empty_sky_light_mask);
+                                // eprintln!("Block light mask:        {:b}", &data.light_info.block_light_mask);
+                                // eprintln!("Empty block light mask:  {:b}", &data.light_info.empty_block_light_mask);
+                                let lighting =
+                                    protocol_chunk::ChunkLightInfo::from_raw(data.light_info, 24);
+                                raw_chunks.insert(
+                                    [chunk_x, chunk_z],
+                                    Arc::new(RawChunk {
+                                        sections: chunk_sections.into(),
+                                        lighting,
+                                    }),
+                                );
                                 {
                                     let update_id = current_update_id;
                                     current_update_id = current_update_id.wrapping_add(1);
@@ -716,23 +732,33 @@ pub(crate) async fn window_run(
                                     [chunk_x, chunk_z + 1],
                                 ];
                                 for neighbour_chunk_coords in neighbouring_chunks {
-                                    if raw_chunks.contains_key(&neighbour_chunk_coords) {
-                                        if !visible_chunks.contains(&neighbour_chunk_coords) {
-                                            let update_id = current_update_id;
-                                            current_update_id = current_update_id.wrapping_add(1);
-                                            let [x, z] = neighbour_chunk_coords;
-                                            for y in 0..24 {
-                                                subchunks_to_dispatch.insert([x, y, z], update_id);
-                                                play_state
-                                                    .pending_subchunk_update_ids
-                                                    .insert([x, y, z], update_id);
-                                            }
+                                    if raw_chunks.contains_key(&neighbour_chunk_coords)
+                                        && !visible_chunks.contains(&neighbour_chunk_coords)
+                                    {
+                                        let update_id = current_update_id;
+                                        current_update_id = current_update_id.wrapping_add(1);
+                                        let [x, z] = neighbour_chunk_coords;
+                                        for y in 0..24 {
+                                            subchunks_to_dispatch.insert([x, y, z], update_id);
+                                            play_state
+                                                .pending_subchunk_update_ids
+                                                .insert([x, y, z], update_id);
                                         }
                                     }
                                 }
                             }
-                            ClientboundPacket::UpdateLight(_) => {
-                                println!("Update chunk lighting: {{<todo>}}")
+                            ClientboundPacket::UpdateLight {
+                                chunk_xz,
+                                light_info,
+                            } => {
+                                raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
+                                // Remove VarInt wrapper
+                                let chunk_xz = chunk_xz.map(|n| n.0);
+                                let Some(chunk) = raw_chunks.get_mut(&chunk_xz) else {
+                                    continue;
+                                };
+                                let chunk_mut = Arc::make_mut(chunk);
+                                chunk_mut.lighting.update_from_raw(light_info);
                             }
                             ClientboundPacket::BlockUpdate(update) => {
                                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
@@ -746,23 +772,17 @@ pub(crate) async fn window_run(
                                 let Some(chunk) = raw_chunks.get_mut(&[chunk_x, chunk_z]) else {
                                     continue;
                                 };
-                                let chunk_mut = match Arc::get_mut(chunk) {
-                                    Some(chunk_mut) => chunk_mut,
-                                    None => {
-                                        // We have to clone the chunk manually instead of using
-                                        // `make_mut` as that doesn't work with boxed slices.
-                                        *chunk = Arc::from(chunk.as_ref());
-                                        Arc::get_mut(chunk).unwrap()
-                                    }
-                                };
-                                let chunk_section = &mut chunk_mut[section_i];
+                                let chunk_mut = Arc::make_mut(chunk);
+                                let chunk_section = &mut chunk_mut.sections[section_i];
                                 let x = pos.x.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
                                 let x_usize: usize = x.try_into().unwrap();
                                 let y = pos.y.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
                                 let y_usize: usize = y.try_into().unwrap();
                                 let z = pos.z.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
                                 let z_usize: usize = z.try_into().unwrap();
-                                // Update block section, increment or decrement block count
+                                // Update block section and lighting, increment or decrement block
+                                // count
+                                let mut subchunks_to_relight = AHashSet::new();
                                 {
                                     let new_block_id: GlobalPaletteIndex =
                                         update.block_id.0.try_into().unwrap();
@@ -786,6 +806,15 @@ pub(crate) async fn window_run(
                                         (true, true) => continue,
                                         _ => {}
                                     }
+                                    // Update lighting
+                                    world::recalculate_light(
+                                        &graphics_state.resources,
+                                        raw_chunks,
+                                        &mut subchunks_to_relight,
+                                        [pos.x, pos.y, pos.z],
+                                        old_block_id,
+                                        new_block_id,
+                                    );
                                 }
                                 let subchunk_y = section_i as i32;
                                 let update_id = current_update_id;
@@ -795,6 +824,12 @@ pub(crate) async fn window_run(
                                 play_state
                                     .pending_subchunk_update_ids
                                     .insert([chunk_x, subchunk_y, chunk_z], update_id);
+                                for subchunk_coords in subchunks_to_relight {
+                                    subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                    play_state
+                                        .pending_subchunk_update_ids
+                                        .insert(subchunk_coords, update_id);
+                                }
                                 // Update neighbours
                                 let in_chunk_coords = [x, y, z];
                                 for axis_i in 0..3 {
@@ -825,16 +860,8 @@ pub(crate) async fn window_run(
                                 let Some(chunk) = raw_chunks.get_mut(&[chunk_x, chunk_z]) else {
                                     continue;
                                 };
-                                let chunk_mut = match Arc::get_mut(chunk) {
-                                    Some(chunk_mut) => chunk_mut,
-                                    None => {
-                                        // We have to clone the chunk manually instead of using
-                                        // `make_mut` as that doesn't work with boxed slices.
-                                        *chunk = Arc::from(chunk.as_ref());
-                                        Arc::get_mut(chunk).unwrap()
-                                    }
-                                };
-                                let chunk_section = &mut chunk_mut[section_i];
+                                let chunk_mut = Arc::make_mut(chunk);
+                                let chunk_section = &mut chunk_mut.sections[section_i];
                                 let update_id = current_update_id;
                                 current_update_id = current_update_id.wrapping_add(1);
                                 let subchunk_y = section_i as i32;
@@ -843,7 +870,8 @@ pub(crate) async fn window_run(
                                 play_state
                                     .pending_subchunk_update_ids
                                     .insert([chunk_x, subchunk_y, chunk_z], update_id);
-                                for ([x, y, z], new_block_id) in update.blocks {
+                                let mut old_block_ids = Vec::new();
+                                for &([x, y, z], new_block_id) in &update.blocks {
                                     // Update block section, increment or decrement block count
                                     {
                                         let old_block_id = chunk_section.block_states.replace(
@@ -852,6 +880,7 @@ pub(crate) async fn window_run(
                                             z as usize,
                                             new_block_id,
                                         );
+                                        old_block_ids.push(old_block_id);
                                         let is_old_block_air = graphics_state
                                             .resources
                                             .block_registry
@@ -888,6 +917,32 @@ pub(crate) async fn window_run(
                                                 .insert(subchunk_coords, update_id);
                                         }
                                     }
+                                }
+                                // Update lighting
+                                let new_block_ids_iter = update.blocks.into_iter();
+                                let old_block_ids_iter = old_block_ids.into_iter();
+                                let iter = Iterator::zip(old_block_ids_iter, new_block_ids_iter);
+                                let mut subchunks_to_relight = AHashSet::new();
+                                for (old_block_id, ([x, y, z], new_block_id)) in iter {
+                                    let global_x = chunk_x * SUBCHUNK_AXIS_LEN_I32 + x as i32;
+                                    let global_y = section_i as i32 * SUBCHUNK_AXIS_LEN_I32
+                                        + y as i32
+                                        + MIN_HEIGHT_I32;
+                                    let global_z = chunk_z * SUBCHUNK_AXIS_LEN_I32 + z as i32;
+                                    world::recalculate_light(
+                                        &graphics_state.resources,
+                                        raw_chunks,
+                                        &mut subchunks_to_relight,
+                                        [global_x, global_y, global_z],
+                                        old_block_id,
+                                        new_block_id,
+                                    );
+                                }
+                                for subchunk_coords in subchunks_to_relight {
+                                    subchunks_to_dispatch.insert(subchunk_coords, update_id);
+                                    play_state
+                                        .pending_subchunk_update_ids
+                                        .insert(subchunk_coords, update_id);
                                 }
                             }
                             ClientboundPacket::UnloadChunk { chunk_x, chunk_z } => {
@@ -946,13 +1001,70 @@ pub(crate) async fn window_run(
                                     RotationChange::Relative(pitch_diff) => cam_pitch + pitch_diff,
                                 };
                                 camera.set_mc_rot(new_yaw, new_pitch);
+                                // Make sure we've committed the changes to cull camera before we
+                                // send a movement packet using its position.
+                                debug_state.cull_camera = graphics_state.camera;
                                 server_connection
                                     .send_packet(serverbound_packets::ConfirmTeleportation {
                                         id: pos_info.teleport_id,
                                     })
                                     .unwrap();
                             }
-                            _ => {} // other => println!("{other:?}"),
+                            ClientboundPacket::Explosion {
+                                base_coords,
+                                affected_block_offsets,
+                                ..
+                            } => {
+                                // Reconvert explosion block updates into a series of
+                                // `UpdateSectionBlocks` updates.
+                                let air_global_palette_index = graphics_state
+                                    .resources
+                                    .block_registry
+                                    .get_entry_from_identifier(&identifier!("minecraft:air"))
+                                    .unwrap()
+                                    .default_blockstate;
+                                let [base_x, base_y, base_z] = base_coords.map(|n| n as i32);
+                                let mut subchunk_updates: AHashMap<[i32; 3], Vec<[u8; 3]>> =
+                                    AHashMap::with_capacity(1);
+                                for [x, y, z] in affected_block_offsets {
+                                    let global_x = base_x + x as i32;
+                                    let global_y = base_y + y as i32;
+                                    let global_z = base_z + z as i32;
+                                    let chunk_x = global_x.div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                    let chunk_z = global_z.div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                    let section_i = (global_y - MIN_HEIGHT_I32)
+                                        .div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                    let subchunk_y = section_i;
+                                    let local_x = global_x.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                    let local_y = global_y.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                    let local_z = global_z.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
+                                    subchunk_updates
+                                        .entry([chunk_x, subchunk_y, chunk_z])
+                                        .or_default()
+                                        .push(
+                                            [local_x, local_y, local_z]
+                                                .map(|n| n.try_into().unwrap()),
+                                        );
+                                }
+                                for (subchunk_coords, blocks) in subchunk_updates {
+                                    clientbound_tx
+                                        .send(ClientboundPacket::UpdateSectionBlocks(
+                                            protocol_play::UpdateSectionBlocks {
+                                                subchunk_coords,
+                                                blocks: blocks
+                                                    .into_iter()
+                                                    .map(|coords| {
+                                                        (coords, air_global_palette_index)
+                                                    })
+                                                    .collect(),
+                                            },
+                                        ))
+                                        .unwrap();
+                                }
+                                // TODO: Add explosion velocity to player
+                            }
+                            // other => println!("{other:?}"),
+                            _ => {}
                         }
                     }
                     if thread_pool.panic_count() > 0 {
@@ -968,9 +1080,7 @@ pub(crate) async fn window_run(
                         let mut subchunk_update_groups: IndexMap<usize, Vec<[i32; 3]>> =
                             IndexMap::new();
                         for (subchunk_coords, update_id) in subchunks_to_dispatch {
-                            let update_group = subchunk_update_groups
-                                .entry(update_id)
-                                .or_insert_with(Vec::new);
+                            let update_group = subchunk_update_groups.entry(update_id).or_default();
                             update_group.push(subchunk_coords);
                         }
                         subchunk_update_groups.sort_unstable_keys();
@@ -979,7 +1089,7 @@ pub(crate) async fn window_run(
                             let raw_chunks = play_state.raw_chunks.clone();
                             let play_state_update_tx = play_state_update_tx.clone();
                             thread_pool.execute(move || {
-                                process_subchunks(
+                                world::process_subchunks(
                                     &graphics_resources,
                                     &raw_chunks,
                                     play_state_update_tx,
@@ -1291,416 +1401,6 @@ pub(crate) async fn window_run(
         }
     })?;
     Ok(())
-}
-
-fn process_subchunks(
-    graphics_resources: &GraphicsResources,
-    raw_chunks: &AHashMap<[i32; 2], Arc<[protocol_chunk::ChunkSection]>>,
-    play_state_update_tx: mpsc::Sender<ClientPlayStateUpdate>,
-    subchunks: &[[i32; 3]],
-    update_id: usize,
-) {
-    let spruce_leaves_registry_index = graphics_resources
-        .block_registry
-        .get_index_from_identifier(&identifier!("minecraft:spruce_leaves"))
-        .unwrap();
-    let mut new_raw_subchunks: Vec<([i32; 3], RawSubchunk)> = Vec::new();
-    'subchunk_loop: for &subchunk_coords in subchunks {
-        let [subchunk_x, subchunk_y, subchunk_z] = subchunk_coords;
-        let Some(chunk_sections) = &raw_chunks.get(&[subchunk_x, subchunk_z]) else {
-            continue;
-        };
-        let chunk_section =
-            &chunk_sections[<i32 as TryInto<usize>>::try_into(subchunk_y).unwrap() as usize];
-        if chunk_section.block_count == 0 {
-            continue;
-        }
-        // Skip chunks with missing neighbours, so that for every chunk we actually render, it
-        // has all its neighbours to decide whether border faces should be rendered.
-        // I believe Minecraft does the same.
-        {
-            let surrounding_chunk_coords = [
-                [subchunk_x - 1, subchunk_z],
-                [subchunk_x + 1, subchunk_z],
-                [subchunk_x, subchunk_z - 1],
-                [subchunk_x, subchunk_z + 1],
-            ];
-            for neighbour_chunk in surrounding_chunk_coords {
-                if !raw_chunks.contains_key(&neighbour_chunk) {
-                    continue 'subchunk_loop;
-                }
-            }
-        }
-        let mut block_faces: [Vec<_>; 6] = Default::default();
-        let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
-        let mut custom_block_instance_groups = AHashMap::new();
-        for y in 0..SUBCHUNK_AXIS_LEN {
-            let global_y_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y) + y as i32 + MIN_HEIGHT_I32;
-            let global_y = global_y_i32 as f32;
-            for z in 0..SUBCHUNK_AXIS_LEN {
-                let global_z_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_z) + z as i32;
-                let global_z = global_z_i32 as f32;
-                for x in 0..SUBCHUNK_AXIS_LEN {
-                    let global_x_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_x) + x as i32;
-                    let global_x = global_x_i32 as f32;
-                    let global_palette_index = chunk_section.block_states.get(x, y, z);
-                    let blockstate_info = &graphics_resources.block_registry[global_palette_index];
-                    let model = match &blockstate_info.model_data {
-                        blockstate::ModelData::Single(model) => model,
-                        blockstate::ModelData::RandomChoice(models) => 'model_blk: {
-                            // Find weight for model by hashed position
-                            let mut block_hasher = AHasher::default();
-                            block_hasher.write_i32(global_x_i32);
-                            block_hasher.write_i32(global_y_i32);
-                            block_hasher.write_i32(global_z_i32);
-                            let hash = block_hasher.finish();
-                            let mut current_percentage = (hash % 257) as f32 / 256.0;
-                            for model in models.iter() {
-                                if current_percentage <= model.weight {
-                                    break 'model_blk &model.model;
-                                } else {
-                                    current_percentage -= model.weight;
-                                }
-                            }
-                            // Should be unreachable
-                            let model = &models[models.len() - 1];
-                            &model.model
-                        }
-                    };
-                    let direction_map = [
-                        (x as i32, y as i32 + 1, z as i32),
-                        (x as i32, y as i32 - 1, z as i32),
-                        (x as i32, y as i32, z as i32 - 1),
-                        (x as i32, y as i32, z as i32 + 1),
-                        (x as i32 + 1, y as i32, z as i32),
-                        (x as i32 - 1, y as i32, z as i32),
-                    ];
-                    let mut face_cull_map = [false; 6];
-                    for (i, (x, y, z)) in direction_map.into_iter().enumerate() {
-                        let check_global_y =
-                            (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) + MIN_HEIGHT_I32;
-                        if check_global_y < MIN_HEIGHT_I32 || check_global_y > MAX_HEIGHT_I32 {
-                            continue;
-                        }
-                        let check_sections = match [x, z].iter().any(|n| !(0..=15).contains(n)) {
-                            false => &chunk_sections,
-                            true => match (x, z) {
-                                (-1, _) => &raw_chunks[&[subchunk_x - 1, subchunk_z]],
-                                (16, _) => &raw_chunks[&[subchunk_x + 1, subchunk_z]],
-                                (_, -1) => &raw_chunks[&[subchunk_x, subchunk_z - 1]],
-                                (_, 16) => &raw_chunks[&[subchunk_x, subchunk_z + 1]],
-                                _ => unreachable!(),
-                            },
-                        };
-                        let indexing_section = &check_sections[usize::try_from(
-                            (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) / SUBCHUNK_AXIS_LEN_I32,
-                        )
-                        .unwrap()];
-                        let (x, y, z) = (
-                            ((x + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                            y as usize,
-                            ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                        );
-                        let global_palette_index = indexing_section.block_states.get(x, y % 16, z);
-                        let blockstate_info =
-                            &graphics_resources.block_registry[global_palette_index];
-                        let block_info =
-                            &graphics_resources.block_registry[blockstate_info.block_index];
-                        face_cull_map[i] = block_info.properties.opaque;
-                    }
-                    // Spruce Leaves are hardcoded, so override tint colour here
-                    let tint_color = match blockstate_info.block_index {
-                        ident if ident == spruce_leaves_registry_index => [0x61, 0x99, 0x61, 0xFF],
-                        _ => [0x91, 0xBD, 0x59, 0xFF],
-                    };
-                    match model.as_ref() {
-                        ModelType::None => continue,
-                        ModelType::Block(info) => {
-                            for i in 0..6 {
-                                if face_cull_map[i] {
-                                    continue;
-                                }
-                                block_faces[i].push(graphics::chunk::block_face::Instance::new(
-                                    [x as u8, y as u8, z as u8],
-                                    info.per_face_atlas_uvs[i],
-                                    info.per_face_uv_rotations[i],
-                                ));
-                            }
-                        }
-                        ModelType::TintedBlock(info) => {
-                            for i in 0..6 {
-                                if face_cull_map[i] {
-                                    continue;
-                                }
-                                tinted_block_faces[i].push(
-                                    graphics::chunk::tinted_block_face::Instance::new(
-                                        [x as u8, y as u8, z as u8],
-                                        info.per_face_atlas_uvs[i],
-                                        info.per_face_uv_rotations[i],
-                                        tint_color,
-                                    ),
-                                );
-                            }
-                        }
-                        ModelType::OverlayedBlock(info) => {
-                            for face in &info.faces {
-                                if face_cull_map[face.face_i as usize] {
-                                    continue;
-                                }
-                                if let Some(tint) = face.tint {
-                                    assert!(tint == Tint::Biome, "TODO: Alternative tints");
-                                    tinted_block_faces[face.face_i as usize].push(
-                                        graphics::chunk::tinted_block_face::Instance::new(
-                                            [x as u8, y as u8, z as u8],
-                                            face.atlas_uvs,
-                                            face.uv_rotation,
-                                            tint_color,
-                                        ),
-                                    );
-                                } else {
-                                    block_faces[face.face_i as usize].push(
-                                        graphics::chunk::block_face::Instance::new(
-                                            [x as u8, y as u8, z as u8],
-                                            face.atlas_uvs,
-                                            face.uv_rotation,
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                        ModelType::Other(info) => {
-                            let block_instances = custom_block_instance_groups
-                                .entry(info)
-                                .or_insert_with(Vec::new);
-                            block_instances.push(graphics::chunk::custom_block::Instance {
-                                pos: [global_x, global_y, global_z],
-                                tint_color,
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        // Runs a variant of Minecraft's cave culling algorithm, specifically the connected
-        // face generation.
-        // Outlined here: https://tomcc.github.io/2014/08/31/visibility-1.html
-        let connected_faces = 'connected_faces: {
-            use crate::basic_types::AxisDirection;
-            use graphics::chunk::SubchunkConnectivity;
-            use protocol_chunk::Palette;
-            // If we can immediately tell all the subchunk blocks are opaque, skip this entire
-            // process and just return that no subchunk faces are connected.
-            match chunk_section.block_states.palette() {
-                Palette::SingleValue(global_palette_index) => {
-                    let blockstate_info = &graphics_resources.block_registry[*global_palette_index];
-                    let block_info =
-                        &graphics_resources.block_registry[blockstate_info.block_index];
-                    break 'connected_faces match block_info.properties.opaque {
-                        true => SubchunkConnectivity::empty(),
-                        false => SubchunkConnectivity::full(),
-                    };
-                }
-                Palette::Palette(indices) => {
-                    let mut num_opaque = 0;
-                    for global_palette_index in indices {
-                        let blockstate_info =
-                            &graphics_resources.block_registry[*global_palette_index];
-                        let block_info =
-                            &graphics_resources.block_registry[blockstate_info.block_index];
-                        if block_info.properties.opaque {
-                            num_opaque += 1;
-                        }
-                    }
-                    if num_opaque == 0 {
-                        break 'connected_faces SubchunkConnectivity::full();
-                    } else if num_opaque == indices.len() {
-                        break 'connected_faces SubchunkConnectivity::empty();
-                    }
-                }
-                Palette::Direct => {}
-            }
-            #[repr(transparent)]
-            #[derive(Clone, Copy)]
-            struct FaceSet(pub u8);
-            impl FaceSet {
-                pub fn empty() -> Self {
-                    Self(0)
-                }
-
-                pub fn add_dir(&mut self, dir: AxisDirection) {
-                    self.0 |= 1 << (dir as u8);
-                }
-
-                pub fn get_directions(&self) -> [(AxisDirection, bool); 6] {
-                    [
-                        AxisDirection::Down,
-                        AxisDirection::Up,
-                        AxisDirection::North,
-                        AxisDirection::South,
-                        AxisDirection::West,
-                        AxisDirection::East,
-                    ]
-                    .map(|dir| (dir, self.0 & (1 << (dir as u8)) != 0))
-                }
-            }
-            let mut current_group: usize = 0;
-            let mut current_group_faces = FaceSet::empty();
-            let mut group_faces: Vec<FaceSet> = Vec::new();
-            // Y major, then Z, then X.
-            let mut unchecked_blocks = FixedBitSet::with_capacity(SUBCHUNK_AXIS_LEN.pow(3));
-            #[inline]
-            fn coords_to_bit_idx(coords: [i8; 3]) -> usize {
-                let [x, y, z] = coords.map(|n| n as usize);
-                y * SUBCHUNK_AXIS_LEN.pow(2) + z * SUBCHUNK_AXIS_LEN + x
-            }
-            unchecked_blocks.clear();
-            // Add all non-opaque blocks
-            for x in 0..SUBCHUNK_AXIS_LEN {
-                for y in 0..SUBCHUNK_AXIS_LEN {
-                    for z in 0..SUBCHUNK_AXIS_LEN {
-                        let global_palette_index = chunk_section.block_states.get(x, y, z);
-                        let blockstate_info =
-                            &graphics_resources.block_registry[global_palette_index];
-                        let block_info =
-                            &graphics_resources.block_registry[blockstate_info.block_index];
-                        if !block_info.properties.opaque {
-                            let bit_index = coords_to_bit_idx([x, y, z].map(|n| n as i8));
-                            unchecked_blocks.insert(bit_index);
-                        }
-                    }
-                }
-            }
-            // Flood fill from each non-opaque block, to split all the blocks into groups.
-            let mut queue: AHashSet<[i8; 3]> = AHashSet::new();
-            while !queue.is_empty() || !unchecked_blocks.is_clear() {
-                let [x, y, z] = queue
-                    .iter()
-                    .copied()
-                    .next()
-                    .map(|coord| {
-                        queue.remove(&coord);
-                        coord
-                    })
-                    .unwrap_or_else(|| {
-                        // No more blocks in queue, make a new group and grab a new block
-                        // that hasn't been checked yet.
-                        let coord = {
-                            let bit_index = unchecked_blocks.minimum().unwrap();
-                            [
-                                (bit_index & 0xF) as i8,
-                                ((bit_index >> 8) & 0xF) as i8,
-                                ((bit_index >> 4) & 0xF) as i8,
-                            ]
-                        };
-                        group_faces.push(current_group_faces);
-                        current_group += 1;
-                        current_group_faces = FaceSet::empty();
-                        coord
-                    });
-                unchecked_blocks.remove(coords_to_bit_idx([x, y, z]));
-                let surrounding_block_coords = [
-                    [x - 1, y, z],
-                    [x + 1, y, z],
-                    [x, y, z - 1],
-                    [x, y, z + 1],
-                    [x, y - 1, z],
-                    [x, y + 1, z],
-                ];
-                for new_coord in surrounding_block_coords {
-                    let [new_x, new_y, new_z] = new_coord;
-                    // If fill escapes subchunk, add escaping face to group
-                    if new_x < 0 {
-                        current_group_faces.add_dir(AxisDirection::West);
-                    } else if new_x >= SUBCHUNK_AXIS_LEN as i8 {
-                        current_group_faces.add_dir(AxisDirection::East);
-                    } else if new_y < 0 {
-                        current_group_faces.add_dir(AxisDirection::Down);
-                    } else if new_y >= SUBCHUNK_AXIS_LEN as i8 {
-                        current_group_faces.add_dir(AxisDirection::Up);
-                    } else if new_z < 0 {
-                        current_group_faces.add_dir(AxisDirection::North);
-                    } else if new_z >= SUBCHUNK_AXIS_LEN as i8 {
-                        current_group_faces.add_dir(AxisDirection::South);
-                    } else if unchecked_blocks.contains(coords_to_bit_idx(new_coord)) {
-                        queue.insert(new_coord);
-                    }
-                }
-            }
-            group_faces.push(current_group_faces);
-            // Add connected faces for each group to subchunk connectivity
-            let mut subchunk_connectivity = SubchunkConnectivity::empty();
-            for face_set in group_faces {
-                let directions = face_set.get_directions();
-                for (face_1, face_1_in_set) in directions {
-                    if !face_1_in_set {
-                        continue;
-                    }
-                    for (face_2, face_2_in_set) in directions {
-                        if !face_2_in_set {
-                            continue;
-                        }
-                        subchunk_connectivity.add_connection(&face_1, &face_2);
-                    }
-                }
-            }
-            subchunk_connectivity
-        };
-        let start_coords = [
-            SUBCHUNK_AXIS_LEN_I32 * subchunk_x,
-            SUBCHUNK_AXIS_LEN_I32 * subchunk_y + MIN_HEIGHT_I32,
-            SUBCHUNK_AXIS_LEN_I32 * subchunk_z,
-        ];
-        // Block faces
-        let mut block_face_quads: [Option<_>; 6] = [None; 6];
-        let block_face_instance_groups: [Vec<_>; 6] = block_faces;
-        for i in 0..6 {
-            if block_face_instance_groups[i].len() == 0 {
-                continue;
-            }
-            let base_quad =
-                graphics::chunk::block_face::Vertex::generate_base_quad(start_coords, i);
-            block_face_quads[i] = Some(base_quad);
-        }
-        // Tinted block faces
-        let mut tinted_block_face_quads: [Option<_>; 6] = [None; 6];
-        let tinted_block_face_instance_groups: [Vec<_>; 6] = tinted_block_faces;
-        for i in 0..6 {
-            if tinted_block_face_instance_groups[i].len() == 0 {
-                continue;
-            }
-            let base_quad =
-                graphics::chunk::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
-            tinted_block_face_quads[i] = Some(base_quad);
-        }
-        // Custom block groups
-        let custom_block_groups = custom_block_instance_groups
-            .into_iter()
-            .map(|(info, instances)| RawCustomBlockGroup {
-                start_vertex: info.start_vertex,
-                start_index_and_len: info.start_index_and_len,
-                instances,
-            })
-            .collect();
-        new_raw_subchunks.push((
-            subchunk_coords,
-            RawSubchunk {
-                start_coords,
-                block_face_quads,
-                block_face_instance_groups,
-                tinted_block_face_quads,
-                tinted_block_face_instance_groups,
-                custom_block_groups,
-                connected_faces,
-            },
-        ));
-    }
-    play_state_update_tx
-        .send(ClientPlayStateUpdate::PlaceSubchunks {
-            update_id,
-            new_raw_subchunks,
-        })
-        .unwrap();
 }
 
 use graphics::Camera;

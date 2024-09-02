@@ -9,7 +9,7 @@ use super::{texture, Identifier, RightAngleRotation};
 use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
 use crate::resource::manager::{get_resource_file, ResourceType};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ModelCache {
     pub completed_models: AHashMap<(Identifier, ModelRotationInfo), Arc<ModelType>>,
     pub templates: AHashMap<Identifier, Arc<Template>>,
@@ -71,7 +71,7 @@ impl ModelCache {
             );
             Ok(model_type.clone())
         } else {
-            let json_bytes = get_resource_file(&ResourceType::Model, &location)
+            let json_bytes = get_resource_file(&ResourceType::Model, location)
                 .with_context(|| format!("Failed to read raw model JSON data for {location:?}"))?;
             let model_template: Template = serde_json::from_slice(&json_bytes)
                 .with_context(|| format!("Failed to parse model JSON data for {location:?}"))?;
@@ -141,14 +141,9 @@ impl ModelCache {
             template.apply_blockstate_rotations(*x_rotation, *y_rotation, *uv_lock);
             if let Some(ref mut current_template) = current_template {
                 if let Some(ref mut current_template_elements) = current_template.elements {
-                    current_template_elements.extend(
-                        template
-                            .elements
-                            .with_context(|| {
-                                format!("combined model part {location:?} has no elements")
-                            })?
-                            .drain(..),
-                    );
+                    current_template_elements.append(&mut template.elements.with_context(
+                        || format!("combined model part {location:?} has no elements"),
+                    )?);
                 }
             } else {
                 current_template = Some(template);
@@ -187,7 +182,7 @@ impl ModelCache {
             return Ok(ModelState::Complete(model.clone()));
         }
         let (mut model_template, cached_template) = if let Some(template) =
-            self.templates.get(&location)
+            self.templates.get(location)
         {
             (template.as_ref().clone(), Some(template.clone()))
         } else {
@@ -207,7 +202,7 @@ impl ModelCache {
             if let Some(parent_location) = &model_template.parent {
                 let parent_identifier = Identifier::parse(parent_location)?;
                 let parent = self
-                    .get_or_load_model(&parent_identifier, &rotation, texture_atlas, true)
+                    .get_or_load_model(&parent_identifier, rotation, texture_atlas, true)
                     .with_context(|| format!("Failed to load parent model of {location:?}"))?;
                 match parent {
                     ModelState::Pending | ModelState::Complete(_) => unimplemented!(),
@@ -219,9 +214,7 @@ impl ModelCache {
                         model_template.elements = model_template
                             .elements
                             .or_else(|| parent_template.elements.clone());
-                        model_template.display = model_template
-                            .display
-                            .or_else(|| parent_template.display.clone());
+                        model_template.display = model_template.display.or(parent_template.display);
                         model_template.ambient_occlusion = parent_template.ambient_occlusion;
                         // Merge texture variables, child variables override parent variables.
                         // Mostly just required for the #particle texture variable.
@@ -229,9 +222,9 @@ impl ModelCache {
                             .texture_variables
                             .iter()
                             .map(|(key, value)| {
-                                if value.starts_with('#') {
+                                if let Some(variable_name) = value.strip_prefix('#') {
                                     if let Some(replacement) =
-                                        model_template.texture_variables.get(&value[1..])
+                                        model_template.texture_variables.get(variable_name)
                                     {
                                         return (key.clone(), replacement.clone());
                                     }
@@ -283,7 +276,7 @@ impl ModelCache {
                 model_template,
                 rotation,
                 texture_atlas,
-                Some(&location),
+                Some(location),
             )?);
             assert!(
                 self.completed_models
@@ -304,6 +297,7 @@ impl ModelCache {
         rotation: &ModelRotationInfo,
         texture_atlas: &mut texture::AtlasBuilder,
         debug_identifier: Option<&Identifier>,
+        // TODO: Add block properties parameter, force non-opaque blocks to be at least tinted
     ) -> anyhow::Result<ModelType> {
         let rotation = *rotation;
         // Try various specialisations on model
@@ -311,7 +305,7 @@ impl ModelCache {
             if model_template
                 .elements
                 .as_ref()
-                .map(|elements| elements.len() > 0)
+                .map(|elements| !elements.is_empty())
                 .unwrap_or(false)
             {
                 break 'specialize_empty;
@@ -366,10 +360,18 @@ impl ModelCache {
             let mut faces = match rotation.x_rotation {
                 RightAngleRotation::Zero => faces,
                 RightAngleRotation::Ninety => FaceContainer {
-                    top: faces.north,
-                    bottom: faces.south,
-                    north: faces.bottom,
-                    south: faces.top,
+                    top: faces.south,
+                    bottom: {
+                        let mut face = faces.north;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    north: {
+                        let mut face = faces.top;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    south: faces.bottom,
                     east: faces.east,
                     west: faces.west,
                 },
@@ -382,17 +384,25 @@ impl ModelCache {
                     west: faces.west,
                 },
                 RightAngleRotation::TwoSeventy => FaceContainer {
-                    top: faces.south,
-                    bottom: faces.north,
-                    north: faces.top,
-                    south: faces.bottom,
+                    top: {
+                        let mut face = faces.north;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    bottom: faces.south,
+                    north: {
+                        let mut face = faces.bottom;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    south: faces.top,
                     east: faces.east,
                     west: faces.west,
                 },
             };
             if !rotation.uv_lock {
                 faces.east.rotation += rotation.x_rotation;
-                faces.west.rotation += rotation.x_rotation;
+                faces.west.rotation -= rotation.x_rotation;
             }
             let mut faces = match rotation.y_rotation {
                 RightAngleRotation::Zero => faces,
@@ -423,7 +433,7 @@ impl ModelCache {
             };
             if !rotation.uv_lock {
                 faces.top.rotation += rotation.y_rotation;
-                faces.bottom.rotation += rotation.y_rotation;
+                faces.bottom.rotation -= rotation.y_rotation;
             }
             // Load textures
             let per_face_atlas_uvs = [
@@ -488,10 +498,18 @@ impl ModelCache {
             let mut faces = match rotation.x_rotation {
                 RightAngleRotation::Zero => faces,
                 RightAngleRotation::Ninety => FaceContainer {
-                    top: faces.north,
-                    bottom: faces.south,
-                    north: faces.bottom,
-                    south: faces.top,
+                    top: faces.south,
+                    bottom: {
+                        let mut face = faces.north;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    north: {
+                        let mut face = faces.top;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    south: faces.bottom,
                     east: faces.east,
                     west: faces.west,
                 },
@@ -504,17 +522,25 @@ impl ModelCache {
                     west: faces.west,
                 },
                 RightAngleRotation::TwoSeventy => FaceContainer {
-                    top: faces.south,
-                    bottom: faces.north,
-                    north: faces.top,
-                    south: faces.bottom,
+                    top: {
+                        let mut face = faces.north;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    bottom: faces.south,
+                    north: {
+                        let mut face = faces.bottom;
+                        face.rotation += RightAngleRotation::OneEighty;
+                        face
+                    },
+                    south: faces.top,
                     east: faces.east,
                     west: faces.west,
                 },
             };
             if !rotation.uv_lock {
                 faces.east.rotation += rotation.x_rotation;
-                faces.west.rotation += rotation.x_rotation;
+                faces.west.rotation -= rotation.x_rotation;
             }
             let mut faces = match rotation.y_rotation {
                 RightAngleRotation::Zero => faces,
@@ -545,7 +571,7 @@ impl ModelCache {
             };
             if !rotation.uv_lock {
                 faces.top.rotation += rotation.y_rotation;
-                faces.bottom.rotation += rotation.y_rotation;
+                faces.bottom.rotation -= rotation.y_rotation;
             }
             // Load textures
             let per_face_atlas_uvs = [
@@ -613,10 +639,16 @@ impl ModelCache {
                 let mut element_faces = match rotation.x_rotation {
                     RightAngleRotation::Zero => element_faces,
                     RightAngleRotation::Ninety => OptionalFaceContainer {
-                        top: element_faces.north,
-                        bottom: element_faces.south,
-                        north: element_faces.bottom,
-                        south: element_faces.top,
+                        top: element_faces.south,
+                        bottom: element_faces.north.map(|mut face| {
+                            face.rotation += RightAngleRotation::OneEighty;
+                            face
+                        }),
+                        north: element_faces.top.map(|mut face| {
+                            face.rotation += RightAngleRotation::OneEighty;
+                            face
+                        }),
+                        south: element_faces.bottom,
                         east: element_faces.east,
                         west: element_faces.west,
                     },
@@ -629,10 +661,16 @@ impl ModelCache {
                         west: element_faces.west,
                     },
                     RightAngleRotation::TwoSeventy => OptionalFaceContainer {
-                        top: element_faces.south,
-                        bottom: element_faces.north,
-                        north: element_faces.top,
-                        south: element_faces.bottom,
+                        top: element_faces.north.map(|mut face| {
+                            face.rotation += RightAngleRotation::OneEighty;
+                            face
+                        }),
+                        bottom: element_faces.south,
+                        north: element_faces.bottom.map(|mut face| {
+                            face.rotation += RightAngleRotation::OneEighty;
+                            face
+                        }),
+                        south: element_faces.top,
                         east: element_faces.east,
                         west: element_faces.west,
                     },
@@ -642,7 +680,7 @@ impl ModelCache {
                         east_face.rotation += rotation.x_rotation;
                     }
                     if let Some(west_face) = element_faces.west.as_mut() {
-                        west_face.rotation += rotation.x_rotation;
+                        west_face.rotation -= rotation.x_rotation;
                     }
                 }
                 let mut element_faces = match rotation.y_rotation {
@@ -677,7 +715,7 @@ impl ModelCache {
                         top_face.rotation += rotation.y_rotation;
                     }
                     if let Some(bottom_face) = element_faces.bottom.as_mut() {
-                        bottom_face.rotation += rotation.y_rotation;
+                        bottom_face.rotation -= rotation.y_rotation;
                     }
                 }
                 let element_faces = [
@@ -769,17 +807,17 @@ impl ModelCache {
                 let face_vertices = match face_i {
                     // Top
                     0 => [
-                        Point3::new(start.x, end.y, start.z),
-                        Point3::new(end.x, end.y, start.z),
-                        Point3::new(start.x, end.y, end.z),
                         Point3::new(end.x, end.y, end.z),
+                        Point3::new(start.x, end.y, end.z),
+                        Point3::new(end.x, end.y, start.z),
+                        Point3::new(start.x, end.y, start.z),
                     ],
                     // Bottom
                     1 => [
-                        Point3::new(start.x, start.y, end.z),
-                        Point3::new(end.x, start.y, end.z),
-                        Point3::new(start.x, start.y, start.z),
                         Point3::new(end.x, start.y, start.z),
+                        Point3::new(start.x, start.y, start.z),
+                        Point3::new(end.x, start.y, end.z),
+                        Point3::new(start.x, start.y, end.z),
                     ],
                     // North
                     2 => [
@@ -907,8 +945,8 @@ impl ModelCache {
                     normal: complete_matrix.transform_vector(&face_normal),
                     tint: converted_face.tint,
                 });
-                for i in 0..transformed_vertices.len() {
-                    transformed_vertices[i].uvs = converted_face.uvs[i];
+                for (i, transformed_vertex) in transformed_vertices.iter_mut().enumerate() {
+                    transformed_vertex.uvs = converted_face.uvs[i];
                 }
                 converted_vertices.extend(transformed_vertices.into_iter());
                 converted_indices.extend(face_indices.into_iter());
@@ -942,45 +980,6 @@ impl ModelCache {
         }))
     }
 
-    /// Transforms UVs from the texture map using element UVs (0 to 16).
-    fn transform_uvs(
-        texture_uvs: [u16; 4],
-        element_uvs: [f32; 4],
-        rotation: RightAngleRotation,
-    ) -> [[u16; 2]; 4] {
-        let start_x = texture_uvs[0] as f32;
-        let x_diff = texture_uvs[2] as f32 - start_x;
-        let start_y = texture_uvs[1] as f32;
-        let y_diff = texture_uvs[3] as f32 - start_y;
-        let transformed_element_uvs = element_uvs.map(|x| {
-            assert!(0.0 <= x && x <= 16.0);
-            x / 16.0
-        });
-        let new_start_x = x_diff * transformed_element_uvs[0] + start_x;
-        let new_start_y = y_diff * transformed_element_uvs[1] + start_y;
-        let new_end_x = x_diff * transformed_element_uvs[2] + start_x;
-        let new_end_y = y_diff * transformed_element_uvs[3] + start_y;
-        let uvs_f32 = [
-            [new_end_x, new_end_y],
-            [new_start_x, new_end_y],
-            [new_end_x, new_start_y],
-            [new_start_x, new_start_y],
-        ];
-        let midpoint = [
-            (texture_uvs[0] as f32 + texture_uvs[2] as f32) / 2.0,
-            (texture_uvs[1] as f32 + texture_uvs[3] as f32) / 2.0,
-        ];
-        let transformed_uvs = uvs_f32.map(|[u, v]| [u - midpoint[0], v - midpoint[1]]);
-        let transformed_rotated_uvs = match rotation {
-            RightAngleRotation::Zero => transformed_uvs,
-            RightAngleRotation::Ninety => transformed_uvs.map(|[u, v]| [v, -u]),
-            RightAngleRotation::OneEighty => transformed_uvs.map(|[u, v]| [-u, -v]),
-            RightAngleRotation::TwoSeventy => transformed_uvs.map(|[u, v]| [-v, u]),
-        };
-        let rotated_uvs = transformed_rotated_uvs.map(|[u, v]| [u + midpoint[0], v + midpoint[1]]);
-        rotated_uvs.map(|[u, v]| [u as u16, v as u16])
-    }
-
     // #[tracing::instrument(skip(atlas))]
     fn load_face_atlas_uvs(
         atlas: &mut texture::AtlasBuilder,
@@ -996,7 +995,7 @@ impl ModelCache {
                 let x_diff = (base_uvs[2] - base_uvs[0]) as f32;
                 let y_start = base_uvs[1] as f32;
                 let y_diff = (base_uvs[3] - base_uvs[1]) as f32;
-                let uv_fractions = uvs.map(|uv| uv as f32 / 16.0);
+                let uv_fractions = uvs.map(|uv| uv / 16.0);
                 [
                     (uv_fractions[0] * x_diff + x_start) as u16,
                     (uv_fractions[1] * y_diff + y_start) as u16,
@@ -1006,6 +1005,76 @@ impl ModelCache {
             }
         };
         Ok(custom_uvs)
+    }
+
+    /// Transforms UVs from the texture map using element UVs (0 to 16).
+    fn transform_uvs(
+        texture_uvs: [u16; 4],
+        element_uvs: [f32; 4],
+        rotation: RightAngleRotation,
+        uv_lock: bool,
+    ) -> [[u16; 2]; 4] {
+        if uv_lock {
+            let start_x = texture_uvs[0] as f32;
+            let x_diff = texture_uvs[2] as f32 - start_x;
+            let start_y = texture_uvs[1] as f32;
+            let y_diff = texture_uvs[3] as f32 - start_y;
+            let transformed_element_uvs = element_uvs.map(|x| {
+                assert!((0.0..=16.0).contains(&x));
+                x / 16.0
+            });
+            let new_start_x = x_diff * transformed_element_uvs[0] + start_x;
+            let new_start_y = y_diff * transformed_element_uvs[1] + start_y;
+            let new_end_x = x_diff * transformed_element_uvs[2] + start_x;
+            let new_end_y = y_diff * transformed_element_uvs[3] + start_y;
+            let uvs_f32 = [
+                [new_end_x, new_end_y],
+                [new_start_x, new_end_y],
+                [new_end_x, new_start_y],
+                [new_start_x, new_start_y],
+            ];
+            let midpoint = [
+                (texture_uvs[0] as f32 + texture_uvs[2] as f32) / 2.0,
+                (texture_uvs[1] as f32 + texture_uvs[3] as f32) / 2.0,
+            ];
+            let transformed_uvs = uvs_f32.map(|[u, v]| [u - midpoint[0], v - midpoint[1]]);
+            let transformed_rotated_uvs = match rotation {
+                RightAngleRotation::Zero => transformed_uvs,
+                RightAngleRotation::Ninety => transformed_uvs.map(|[u, v]| [v, -u]),
+                RightAngleRotation::OneEighty => transformed_uvs.map(|[u, v]| [-u, -v]),
+                RightAngleRotation::TwoSeventy => transformed_uvs.map(|[u, v]| [-v, u]),
+            };
+            let rotated_uvs =
+                transformed_rotated_uvs.map(|[u, v]| [u + midpoint[0], v + midpoint[1]]);
+            rotated_uvs.map(|[u, v]| [u as u16, v as u16])
+        } else {
+            let start_x = texture_uvs[0] as f32;
+            let x_diff = texture_uvs[2] as f32 - start_x;
+            let start_y = texture_uvs[1] as f32;
+            let y_diff = texture_uvs[3] as f32 - start_y;
+            let transformed_element_uvs = element_uvs.map(|x| {
+                assert!((0.0..=16.0).contains(&x));
+                x / 16.0
+            });
+            let new_start_x = x_diff * transformed_element_uvs[0] + start_x;
+            let new_start_y = y_diff * transformed_element_uvs[1] + start_y;
+            let new_end_x = x_diff * transformed_element_uvs[2] + start_x;
+            let new_end_y = y_diff * transformed_element_uvs[3] + start_y;
+            let uvs = [
+                [new_end_x, new_end_y],
+                [new_start_x, new_end_y],
+                [new_end_x, new_start_y],
+                [new_start_x, new_start_y],
+            ];
+            // let rotation = rotation + RightAngleRotation::OneEighty;
+            let rotated_uvs = match rotation {
+                RightAngleRotation::Zero => uvs,
+                RightAngleRotation::Ninety => [uvs[2], uvs[0], uvs[3], uvs[1]],
+                RightAngleRotation::OneEighty => [uvs[3], uvs[2], uvs[1], uvs[0]],
+                RightAngleRotation::TwoSeventy => [uvs[1], uvs[3], uvs[0], uvs[2]],
+            };
+            rotated_uvs.map(|[u, v]| [u as u16, v as u16])
+        }
     }
 
     fn convert_face(
@@ -1035,10 +1104,15 @@ impl ModelCache {
             (true, BlockFace::East | BlockFace::West) => face.rotation - model_rotation.x_rotation,
             _ => face.rotation,
         };
-        let transformed_uvs = Self::transform_uvs(texture_uvs, element_uvs, combined_rotation);
+        let transformed_uvs = Self::transform_uvs(
+            texture_uvs,
+            element_uvs,
+            combined_rotation,
+            model_rotation.uv_lock,
+        );
         Ok(ModelElementFace {
             uvs: transformed_uvs,
-            _cullface: face.cullface.unwrap_or(index),
+            _cullface: face.cullface,
             tint: match face.tint_index {
                 -1 => None,
                 // Apparently vanilla only uses one tint index currently
@@ -1188,7 +1262,7 @@ struct ModelElementFace {
     /// Model rendering currently uses entire model instancing, and so doesn't use cullfaces.
     /// This is planned to be implemented at some point, possibly only for alternative graphics
     /// backends using older APIs that don't benefit from instancing.
-    pub _cullface: BlockFace,
+    pub _cullface: Option<BlockFace>,
     pub tint: Option<Tint>,
 }
 

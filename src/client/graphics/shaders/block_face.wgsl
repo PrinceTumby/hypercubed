@@ -22,7 +22,7 @@ struct VertexInput {
 struct InstanceInput {
     @location(10) uvs: vec4<u32>,
     @location(11) packed_xyz: vec2<u32>,
-    @location(12) uv_rotation_and_padding: vec2<u32>,
+    @location(12) uv_rotation_and_lighting: vec2<u32>,
 }
 
 struct VertexOutput {
@@ -30,6 +30,8 @@ struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uvs: vec2<f32>,
+    @interpolate(flat)
+    @location(2) light_rgb: vec3<f32>,
 }
 
 const base_normal: vec3<f32> = vec3(0.0, 1.0, 0.0);
@@ -88,6 +90,17 @@ fn get_uvs(vertex_i: u32, face_rotation_i: u32) -> vec2<f32> {
     return out;
 }
 
+fn calculate_light_rgb(sky_light_level: u32, block_light_level: u32) -> vec3<f32> {
+    let light_percentage = clamp(
+        f32(max(sky_light_level, block_light_level)) / 14.0,
+        0.001,
+        1.0
+    );
+    let gamma = 0.5;
+    let light_gamma = pow(light_percentage, 1.0 / gamma);
+    return mix(vec3(0.02), vec3(1.0), light_gamma);
+}
+
 @vertex
 fn vs_main(
     block_vertex: VertexInput,
@@ -100,9 +113,11 @@ fn vs_main(
         f32((instance.packed_xyz[0] >> 4) & 0xF),
         f32(instance.packed_xyz[1] & 0xF),
     );
+    let sky_light_level = instance.uv_rotation_and_lighting[1] & 0xF;
+    let block_light_level = instance.uv_rotation_and_lighting[1] >> 4;
     // Position
     let base_pos = get_base_position(block_vertex.index);
-    let base_uvs = get_uvs(block_vertex.index, instance.uv_rotation_and_padding[0]);
+    let base_uvs = get_uvs(block_vertex.index, instance.uv_rotation_and_lighting[0]);
     let face_matrix = face_matrices[block_vertex.face_matrix_index];
     let local_pos = face_matrix * base_pos;
     let block_centre_pos = block_vertex.subchunk_start_coords + xyz_offset;
@@ -114,6 +129,8 @@ fn vs_main(
     out.uvs = mix(start_uvs, end_uvs, base_uvs);
     // Normal
     out.normal = face_matrix * base_normal;
+    // Light RGB
+    out.light_rgb = calculate_light_rgb(sky_light_level, block_light_level);
     return out;
 }
 
@@ -123,5 +140,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let light_source_dir = normalize(vec3(2.0, 5.0, 1.0));
     let lighting = dot(in.normal, light_source_dir);
     let light_coef = fma(lighting, 0.3, 0.4);
-    return vec4(tex_sample.rgb * light_coef, 1.0);
+    return vec4(tex_sample.rgb * light_coef * in.light_rgb, 1.0);
 }

@@ -2,6 +2,7 @@ pub mod crafting;
 pub mod entity_metadata;
 pub mod particle;
 
+use super::chunk::RawChunkLightInfo;
 pub use super::configuration::{ChatMode, MainHand};
 use super::prelude::*;
 use super::PluginMessage;
@@ -22,9 +23,25 @@ pub enum Clientbound {
         reason: TextComponent,
     } = 0x1D,
     BundleDelimiter = 0x00,
-    SpawnEntity(SpawnEntity) = 0x01,
+    SpawnEntity {
+        id: EntityId,
+        uuid: Uuid,
+        entity_type: VarInt,
+        coords: [f64; 3],
+        pitch: Angle,
+        yaw: Angle,
+        head_yaw: Angle,
+        data: VarInt,
+        velocity: [i16; 3],
+    } = 0x01,
     SetEntityAnimation(SetEntityAnimation) = 0x03,
     SetBlockEntityData(SetBlockEntityData) = 0x07,
+    BlockAction {
+        pos: Position,
+        action_id: u8,
+        action_data: u8,
+        block_registry_id: VarInt,
+    } = 0x08,
     BlockUpdate(BlockUpdate) = 0x09,
     ChangeDifficulty {
         difficulty: Difficulty,
@@ -45,9 +62,22 @@ pub enum Clientbound {
         id: i32,
         status: u8,
     } = 0x1F,
+    Explosion {
+        base_coords: [f64; 3],
+        strength: f32,
+        affected_block_offsets: Vec<[i8; 3]>,
+        player_push_velocity: [f32; 3],
+        block_interaction: ExplosionBlockInteraction,
+        small_explosion_particle: particle::Particle,
+        large_explosion_particle: particle::Particle,
+        // FIXME: Haven't figured out format of this yet, wiki.vg seems to be wrong.
+        sound_data: ProtocolRawBytes,
+        // sound_name: Identifier,
+        // fixed_range: Option<f32>,
+    } = 0x20,
     UnloadChunk {
-        chunk_x: i32,
         chunk_z: i32,
+        chunk_x: i32,
     } = 0x21,
     GameEvent(GameEvent) = 0x22,
     InitializeWorldBorder(InitializeWorldBorder) = 0x25,
@@ -56,8 +86,39 @@ pub enum Clientbound {
     } = 0x26,
     ChunkDataAndUpdateLight(ChunkDataAndUpdateLight) = 0x27,
     WorldEvent(WorldEvent) = 0x28,
-    UpdateLight(UpdateLight) = 0x2A,
-    LoginPlay(LoginPlay) = 0x2B,
+    DisplayParticle {
+        is_long_distance: bool,
+        pos: [f64; 3],
+        random_offset_magnitude: [f32; 3],
+        max_speed: f32,
+        num_particles: u32,
+        particle: particle::Particle,
+    } = 0x29,
+    UpdateLight {
+        chunk_xz: [VarInt; 2],
+        light_info: RawChunkLightInfo,
+    } = 0x2A,
+    LoginPlay {
+        raw_entity_id: u32,
+        is_hardcore: bool,
+        dimension_names: Vec<String>,
+        max_players: VarInt,
+        view_distance: VarInt,
+        simulation_distance: VarInt,
+        reduced_debug_info: bool,
+        enable_respawn_screen: bool,
+        is_crafting_limited: bool,
+        spawn_dimension_type: String,
+        spawn_dimension_name: String,
+        hashed_seed: i64,
+        game_mode: GameMode,
+        previous_game_mode: i8,
+        is_world_debug: bool,
+        is_world_flat: bool,
+        death_position: Option<GlobalPosition>,
+        portal_cooldown: VarInt,
+        is_secure_chat_enforced: bool,
+    } = 0x2B,
     UpdateEntityPosition(UpdateEntityPosition) = 0x2E,
     UpdateEntityPositionAndRotation(UpdateEntityPositionAndRotation) = 0x2F,
     UpdateEntityRotation(UpdateEntityRotation) = 0x30,
@@ -79,41 +140,52 @@ pub enum Clientbound {
     } = 0x53,
     SetCenterChunk(SetCenterChunk) = 0x54,
     SetDefaultSpawnPosition(SetDefaultSpawnPosition) = 0x56,
-    SetEntityMetadata(SetEntityMetadata) = 0x58,
-    SetEntityVelocity(SetEntityVelocity) = 0x5A,
+    SetEntityMetadata {
+        entity_id: VarInt,
+        metadata: entity_metadata::EntryList,
+    } = 0x58,
+    SetEntityVelocity {
+        entity_id: EntityId,
+        velocity: [i16; 3],
+    } = 0x5A,
     SetEquipment(SetEquipment) = 0x5B,
     SetExperience(SetExperience) = 0x5C,
-    SetHealth(SetHealth) = 0x5D,
+    SetHealth {
+        health: f32,
+        food: VarInt,
+        food_saturation: f32,
+    } = 0x5D,
     UpdateTime(UpdateTime) = 0x64,
     PlaySoundEffect(PlaySoundEffect) = 0x68,
     SystemChatMessage {
         content: TextComponent,
         at_action_bar: bool,
     } = 0x6C,
-    TeleportEntity(TeleportEntity) = 0x70,
-    SetTickingState(SetTickingState) = 0x71,
+    SetTabListHeaderAndFooter {
+        header: TextComponent,
+        footer: TextComponent,
+    } = 0x6D,
+    AnimatePickupEntity {
+        collected_entity_id: EntityId,
+        collector_entity_id: EntityId,
+        count: VarInt,
+    } = 0x6F,
+    TeleportEntity {
+        id: EntityId,
+        coords: [f64; 3],
+        yaw: Angle,
+        pitch: Angle,
+        on_ground: bool,
+    } = 0x70,
+    SetTickingState {
+        tick_rate: f32,
+        is_frozen: bool,
+    } = 0x71,
     StepTicks(VarInt) = 0x72,
     UpdateAdvancements(UpdateAdvancements) = 0x74,
     UpdateEntityAttributes(UpdateEntityAttributes) = 0x75,
     UpdateRecipes(Vec<crafting::Recipe>) = 0x77,
     UpdateTags(Vec<TagGroup>) = 0x78,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct SpawnEntity {
-    pub id: EntityId,
-    pub uuid: Uuid,
-    pub entity_type: VarInt,
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-    pub pitch: Angle,
-    pub yaw: Angle,
-    pub head_yaw: Angle,
-    pub data: VarInt,
-    pub velocity_x: i16,
-    pub velocity_y: i16,
-    pub velocity_z: i16,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -221,19 +293,13 @@ pub struct InitializeWorldBorder {
     pub warning_time: VarInt,
 }
 
-#[derive(Clone, Debug, Deserialize, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ChunkDataAndUpdateLight {
-    pub chunk_x: i32,
-    pub chunk_z: i32,
+    pub chunk_xz: [i32; 2],
     pub heightmaps: NetworkNbtCompound,
     pub chunk_data: Vec<u8>,
     pub block_entities: Vec<BlockEntity>,
-    pub sky_light_mask: BitVec,
-    pub block_light_mask: BitVec,
-    pub empty_sky_light_mask: BitVec,
-    pub empty_block_light_mask: BitVec,
-    pub sky_light_arrays: Vec<Vec<u8>>,
-    pub block_light_arrays: Vec<Vec<u8>>,
+    pub light_info: RawChunkLightInfo,
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize, serde::Deserialize)]
@@ -250,41 +316,6 @@ pub struct WorldEvent {
     pub location: Position,
     pub extra_data: u32,
     pub disable_volume_distance: bool,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct UpdateLight {
-    pub chunk_x: VarInt,
-    pub chunk_z: VarInt,
-    pub sky_light_mask: BitVec,
-    pub block_light_mask: BitVec,
-    pub empty_sky_light_mask: BitVec,
-    pub empty_block_light_mask: BitVec,
-    pub sky_light_arrays: Vec<Vec<u8>>,
-    pub block_light_arrays: Vec<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct LoginPlay {
-    pub entity_id: i32,
-    pub is_hardcore: bool,
-    pub dimension_names: Vec<String>,
-    pub max_players: VarInt,
-    pub view_distance: VarInt,
-    pub simulation_distance: VarInt,
-    pub reduced_debug_info: bool,
-    pub enable_respawn_screen: bool,
-    pub is_crafting_limited: bool,
-    pub spawn_dimension_type: String,
-    pub spawn_dimension_name: String,
-    pub hashed_seed: i64,
-    pub game_mode: GameMode,
-    pub previous_game_mode: i8,
-    pub is_world_debug: bool,
-    pub is_world_flat: bool,
-    pub death_position: Option<GlobalPosition>,
-    pub portal_cooldown: VarInt,
-    pub is_secure_chat_enforced: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +383,15 @@ pub struct DamageEvent {
     pub source_cause_id: OptionalEntityId,
     pub source_direct_id: OptionalEntityId,
     pub source_position: Option<(f64, f64, f64)>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ExplosionBlockInteraction {
+    Keep = 0,
+    Destroy = 1,
+    DestroyWithDecay = 2,
+    TriggerBlock = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -918,20 +958,6 @@ pub struct SetDefaultSpawnPosition {
     pub angle: f32,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct SetEntityMetadata {
-    pub entity_id: VarInt,
-    pub metadata: entity_metadata::EntryList,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct SetEntityVelocity {
-    pub entity_id: VarInt,
-    pub velocity_x: i16,
-    pub velocity_y: i16,
-    pub velocity_z: i16,
-}
-
 #[derive(Clone, Debug)]
 pub struct SetEquipment {
     pub entity_id: EntityId,
@@ -1047,13 +1073,6 @@ pub struct SetExperience {
     pub level: VarInt,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct SetHealth {
-    pub health: f32,
-    pub food: VarInt,
-    pub food_saturation: f32,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct UpdateTime {
     pub world_age: u64,
@@ -1066,22 +1085,11 @@ impl Deserialize for UpdateTime {
         pair(u64::deserialize, i64::deserialize)
             .map(|(world_age, signed_time_of_day)| Self {
                 world_age,
-                time_of_day: signed_time_of_day.abs() as u64,
+                time_of_day: signed_time_of_day.unsigned_abs(),
                 sun_frozen: signed_time_of_day < 0,
             })
             .parse(input)
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct TeleportEntity {
-    pub entity_id: VarInt,
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-    pub yaw: Angle,
-    pub pitch: Angle,
-    pub on_ground: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1110,12 +1118,6 @@ pub enum EntityAttributeModifierOperation {
     Add = 0,
     AddPercentage = 1,
     MultiplyPercentage = 2,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct SetTickingState {
-    pub tick_rate: f32,
-    pub is_frozen: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

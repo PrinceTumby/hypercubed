@@ -144,7 +144,7 @@ pub fn login(
                         use sha1::{Digest, Sha1};
                         let mut hasher = Sha1::new();
                         hasher.update(&request_info.server_id);
-                        hasher.update(&shared_secret);
+                        hasher.update(shared_secret);
                         hasher.update(&request_info.public_key);
                         BigInt::from_signed_bytes_be(&hasher.finalize()).to_str_radix(16)
                     };
@@ -163,7 +163,7 @@ pub fn login(
                         let status = auth_response.status();
                         return Err(std::io::Error::other(format!(
                             "authentication failure - {status:?}: {}",
-                            auth_response.text().unwrap_or_else(|_| format!("")),
+                            auth_response.text().unwrap_or_default(),
                         )));
                     }
                 }
@@ -273,7 +273,7 @@ pub fn login(
                 log::debug!("Server registry data: {registry_data:?}");
             }
             Response::EnableFeatures(features) => {
-                if &features != &[identifier!("minecraft:vanilla")] {
+                if features != [identifier!("minecraft:vanilla")] {
                     todo!("Support alternative features: {:?}", features);
                 }
             }

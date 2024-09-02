@@ -59,7 +59,24 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
             Palette::SingleValue(palette_value) => match value == *palette_value {
                 true => *palette_value,
                 false => {
-                    todo!();
+                    // Upgrade to a paletted container with a small number of bits
+                    const NEW_BITS_PER_ENTRY: u8 = 4;
+                    let current_palette_value = *palette_value;
+                    let new_palette = vec![current_palette_value, value];
+                    let new_entries_per_long = 64 / NEW_BITS_PER_ENTRY as usize;
+                    let mut new_data = vec![0u64; AXIS_LEN.pow(3).div_ceil(new_entries_per_long)];
+                    Self::replace_raw(
+                        &mut new_data,
+                        NEW_BITS_PER_ENTRY,
+                        x,
+                        y,
+                        z,
+                        // New replacement value is at index 1 in new palette
+                        1,
+                    );
+                    self.palette = Palette::Palette(new_palette);
+                    self.data = new_data;
+                    current_palette_value
                 }
             },
             Palette::Palette(ref mut palette) => match palette.iter().position(|&v| v == value) {
@@ -101,7 +118,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                             palette[usize::try_from(old_bit_value).unwrap()]
                         }
                         Palette::Direct => {
-                            let bit_value: u64 = value.as_raw().try_into().unwrap();
+                            let bit_value: u64 = value.as_raw().into();
                             let old_bit_value = Self::replace_raw(
                                 &mut self.data,
                                 self.bits_per_entry,
@@ -117,7 +134,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                 }
             },
             Palette::Direct => {
-                let bit_value: u64 = value.as_raw().try_into().unwrap();
+                let bit_value: u64 = value.as_raw().into();
                 let old_bit_value =
                     Self::replace_raw(&mut self.data, self.bits_per_entry, x, y, z, bit_value);
                 old_bit_value.try_into().unwrap()
@@ -237,7 +254,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                                 x,
                                 y,
                                 z,
-                                palette_entry.as_raw().try_into().unwrap(),
+                                palette_entry.as_raw().into(),
                             );
                         }
                     }
@@ -335,6 +352,221 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> Deserialize
                     }
                 })
                 .parse(rest),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RawChunkLightInfo {
+    pub sky_light_mask: BitSet,
+    pub block_light_mask: BitSet,
+    pub empty_sky_light_mask: BitSet,
+    pub empty_block_light_mask: BitSet,
+    pub sky_light_sections: Vec<Vec<u8>>,
+    pub block_light_sections: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChunkLightInfo {
+    pub sky_light_sections: Vec<SectionLightData>,
+    pub block_light_sections: Vec<SectionLightData>,
+}
+
+#[derive(Clone, Debug)]
+pub enum SectionLightData {
+    AllZeroes,
+    AllOnes,
+    RawData(Vec<u8>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightType {
+    Sky,
+    Block,
+}
+
+impl ChunkLightInfo {
+    pub fn from_raw(info: RawChunkLightInfo, num_sections: usize) -> Self {
+        let mut converted_sky_sections = Vec::new();
+        let mut converted_block_sections = Vec::new();
+        let mut raw_sky_sections = info.sky_light_sections.into_iter();
+        let mut raw_block_sections = info.block_light_sections.into_iter();
+        for section_i in 0..num_sections {
+            if info.sky_light_mask[section_i] {
+                let raw_sky_section = raw_sky_sections.next().unwrap();
+                if raw_sky_section.iter().all(|&byte| byte == 0xFF) {
+                    converted_sky_sections.push(SectionLightData::AllOnes);
+                } else {
+                    converted_sky_sections.push(SectionLightData::RawData(raw_sky_section));
+                }
+            } else if info.empty_sky_light_mask[section_i] {
+                converted_sky_sections.push(SectionLightData::AllZeroes);
+            } else {
+                // Sections after bit masks end are implied to be all ones for sky lighting.
+                converted_sky_sections.push(SectionLightData::AllOnes);
+            }
+            if info.block_light_mask[section_i] {
+                let raw_block_section = raw_block_sections.next().unwrap();
+                if raw_block_section.iter().all(|&byte| byte == 0xFF) {
+                    converted_block_sections.push(SectionLightData::AllOnes);
+                } else {
+                    converted_block_sections.push(SectionLightData::RawData(raw_block_section));
+                }
+            } else {
+                // Sections after bit masks end are implied to be all zeroes for block lighting.
+                converted_block_sections.push(SectionLightData::AllZeroes);
+            }
+        }
+        ChunkLightInfo {
+            sky_light_sections: converted_sky_sections,
+            block_light_sections: converted_block_sections,
+        }
+    }
+
+    #[inline]
+    pub fn get_section(&self, min_height: i32, subchunk_y: i32) -> Option<ChunkSectionLightInfo> {
+        // Light arrays contain an extra section above and below the world chunk sections
+        let adjusted_min_height = min_height - 16;
+        let min_subchunk_y = adjusted_min_height / 16;
+        let section_i: usize = (subchunk_y - min_subchunk_y).try_into().ok()?;
+        Some(ChunkSectionLightInfo {
+            raw_sky_light_data: &self.sky_light_sections[section_i],
+            raw_block_light_data: &self.block_light_sections[section_i],
+        })
+    }
+
+    #[inline]
+    pub fn get_section_channel_mut(
+        &mut self,
+        min_height: i32,
+        subchunk_y: i32,
+        channel: LightType,
+    ) -> Option<ChunkSectionLightChannelInfoMut> {
+        // Light arrays contain an extra section above and below the world chunk sections
+        let adjusted_min_height = min_height - 16;
+        let min_subchunk_y = adjusted_min_height / 16;
+        let section_i: usize = (subchunk_y - min_subchunk_y).try_into().ok()?;
+        let data = match channel {
+            LightType::Sky => self.sky_light_sections.get_mut(section_i)?,
+            LightType::Block => self.block_light_sections.get_mut(section_i)?,
+        };
+        Some(ChunkSectionLightChannelInfoMut(data))
+    }
+
+    pub fn update_from_raw(&mut self, info: RawChunkLightInfo) {
+        let mut raw_sky_sections = info.sky_light_sections.into_iter();
+        for (section_i, section) in self.sky_light_sections.iter_mut().enumerate() {
+            if info.sky_light_mask[section_i] {
+                *section = SectionLightData::RawData(raw_sky_sections.next().unwrap());
+            } else if info.empty_sky_light_mask[section_i] {
+                *section = SectionLightData::AllZeroes;
+            }
+        }
+        let mut raw_block_sections = info.block_light_sections.into_iter();
+        for (section_i, section) in self.block_light_sections.iter_mut().enumerate() {
+            if info.block_light_mask[section_i] {
+                *section = SectionLightData::RawData(raw_block_sections.next().unwrap());
+            } else if info.empty_block_light_mask[section_i] {
+                *section = SectionLightData::AllZeroes;
+            }
+        }
+    }
+}
+
+pub struct ChunkSectionLightInfo<'a> {
+    raw_sky_light_data: &'a SectionLightData,
+    raw_block_light_data: &'a SectionLightData,
+}
+
+impl ChunkSectionLightInfo<'_> {
+    /// Returns the sky and block light levels for a block in the chunk section.
+    #[inline]
+    pub fn get(&self, x: usize, y: usize, z: usize) -> [u8; 2] {
+        debug_assert!(x < 16);
+        debug_assert!(y < 16);
+        debug_assert!(z < 16);
+        let sky_light_level = match &self.raw_sky_light_data {
+            SectionLightData::AllZeroes => 0,
+            SectionLightData::AllOnes => 15,
+            SectionLightData::RawData(data) => {
+                let value_index = (y << 8) | (z << 4) | x;
+                let data_index = value_index / 2;
+                match value_index % 2 {
+                    0 => data[data_index] & 0x0F,
+                    _ => (data[data_index] & 0xF0) >> 4,
+                }
+            }
+        };
+        let block_light_level = match &self.raw_block_light_data {
+            SectionLightData::AllZeroes => 0,
+            SectionLightData::AllOnes => 15,
+            SectionLightData::RawData(data) => {
+                let value_index = (y << 8) | (z << 4) | x;
+                let data_index = value_index / 2;
+                match value_index % 2 {
+                    0 => data[data_index] & 0x0F,
+                    _ => (data[data_index] & 0xF0) >> 4,
+                }
+            }
+        };
+        [sky_light_level, block_light_level]
+    }
+}
+
+pub struct ChunkSectionLightChannelInfoMut<'a>(pub &'a mut SectionLightData);
+
+impl ChunkSectionLightChannelInfoMut<'_> {
+    /// Returns the light level for a block in the chunk section channel.
+    #[inline]
+    pub fn get(&self, x: usize, y: usize, z: usize) -> u8 {
+        debug_assert!(x < 16);
+        debug_assert!(y < 16);
+        debug_assert!(z < 16);
+        match &self.0 {
+            SectionLightData::AllZeroes => 0,
+            SectionLightData::AllOnes => 15,
+            SectionLightData::RawData(data) => {
+                let value_index = (y << 8) | (z << 4) | x;
+                let data_index = value_index / 2;
+                match value_index % 2 {
+                    0 => data[data_index] & 0x0F,
+                    _ => (data[data_index] & 0xF0) >> 4,
+                }
+            }
+        }
+    }
+
+    /// Sets the light level for a block in the chunk section channel.
+    #[inline]
+    pub fn set(&mut self, x: usize, y: usize, z: usize, level: u8) {
+        debug_assert!(x < 16);
+        debug_assert!(y < 16);
+        debug_assert!(z < 16);
+        debug_assert!(level < 16);
+        match &mut self.0 {
+            SectionLightData::RawData(_) => {}
+            SectionLightData::AllZeroes if level != 0 => {
+                *self.0 = SectionLightData::RawData(vec![0x00; 2048]);
+            }
+            SectionLightData::AllOnes if level != 15 => {
+                *self.0 = SectionLightData::RawData(vec![0xFF; 2048]);
+            }
+            _ => return,
+        }
+        let SectionLightData::RawData(byte_data) = &mut self.0 else {
+            unreachable!();
+        };
+        let value_index = (y << 8) | (z << 4) | x;
+        let byte = &mut byte_data[value_index / 2];
+        match value_index % 2 {
+            0 => {
+                *byte &= 0xF0;
+                *byte |= level;
+            }
+            _ => {
+                *byte &= 0x0F;
+                *byte |= level << 4;
+            }
         }
     }
 }

@@ -721,10 +721,10 @@ impl<'a> GraphicsState<'a> {
                         let back_travel_diff = -facing_dir.dot(&to_dir.as_vector());
                         let neighbour_back_travel_amount =
                             (chunk_back_travel_amount + back_travel_diff).max(0.0);
-                        if debug_state.cave_cull_check_not_backwards {
-                            if neighbour_back_travel_amount >= 1.1 {
-                                continue;
-                            }
+                        if debug_state.cave_cull_check_not_backwards
+                            && neighbour_back_travel_amount >= 1.1
+                        {
+                            continue;
                         }
                         if let Some(from_dir) = from_dir {
                             // Check we can go to the neighbour from the last subchunk through this
@@ -739,7 +739,7 @@ impl<'a> GraphicsState<'a> {
                         }
                         // Check neighbour lies in camera frustum
                         if debug_state.cave_cull_check_frustum {
-                            const MIN_HEIGHT_I32: i32 = -64;
+                            // use super::MIN_HEIGHT_I32;
                             let start_coords = [
                                 (neighbour_coord[0] * 16) as f32,
                                 (neighbour_coord[1] * 16 + MIN_HEIGHT_I32) as f32,
@@ -867,7 +867,7 @@ impl<'a> GraphicsState<'a> {
                 subchunks_skipped = subchunk_coord_set.difference(&rendered_chunks).count()
             }
             // Base block faces
-            if block_face_draw_args.len() > 0 {
+            if !block_face_draw_args.is_empty() {
                 block_face_draw_args_buffer =
                     self.resources
                         .device
@@ -891,7 +891,7 @@ impl<'a> GraphicsState<'a> {
                 );
             }
             // Tinted block faces
-            if tinted_block_face_draw_args.len() > 0 {
+            if !tinted_block_face_draw_args.is_empty() {
                 tinted_block_face_draw_args_buffer =
                     self.resources
                         .device
@@ -919,7 +919,7 @@ impl<'a> GraphicsState<'a> {
                 );
             }
             // Custom blocks
-            if custom_block_draw_args.len() > 0 {
+            if !custom_block_draw_args.is_empty() {
                 custom_block_draw_args_buffer =
                     self.resources
                         .device

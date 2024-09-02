@@ -1,5 +1,7 @@
 Features:
 - Animated textures
+- Liquid rendering
+- Waterlogged blocks (also see known bugs)
 
 Optimisation:
 - Split subchunk faces into 6 lists, one for each direction
@@ -32,3 +34,6 @@ Known Bugs:
     manually baking all vertices at generation time)
   - Should test whether this happens on my main computer as well, or if it's just something I have
     no clue how to fix. Anti-aliasing will hopefully hide the problem as well.
+- Directionally sensitive light filtering isn't implemented at all yet in the lighting engine. This
+  means that some cases, such as paved grass, will have incorrect lighting updates.
+- Light filtering isn't added for all blocks. Fix this when we implement waterlogging.

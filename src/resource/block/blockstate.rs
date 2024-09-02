@@ -99,7 +99,7 @@ fn load_blockstate_variants(
         // Check every replacement property is replacing something in the blockstate file.
         // Doesn't check if they're the same type.
         for (property_name, _) in replacement_properties {
-            if variants
+            if !variants
                 .keys()
                 .flat_map(|condition_set| {
                     condition_set
@@ -107,8 +107,7 @@ fn load_blockstate_variants(
                         .filter(|condition| condition != &"")
                         .map(|condition| condition.split_once('=').unwrap().0)
                 })
-                .find(|variant_name| variant_name == property_name)
-                .is_none()
+                .any(|variant_name| &variant_name == property_name)
             {
                 bail!(
                     "Replacement property {:?} not found in blockstate file",
@@ -208,6 +207,7 @@ fn load_blockstate_variants(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
+                            extra_info: BlockstateInfo::default(),
                             model_data: ModelData::Single(model.clone()),
                         });
                     }
@@ -215,7 +215,7 @@ fn load_blockstate_variants(
                 }
                 Variant::List(models) => {
                     let mut models = models
-                        .into_iter()
+                        .iter()
                         .map(|model_info| {
                             let model_location = Identifier::parse(&model_info.model)?;
                             let model = model_cache.load_model(
@@ -272,6 +272,7 @@ fn load_blockstate_variants(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
+                            extra_info: BlockstateInfo::default(),
                             model_data: ModelData::RandomChoice(models.clone()),
                         });
                     }
@@ -343,6 +344,7 @@ fn load_blockstate_variants(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
+                            extra_info: BlockstateInfo::default(),
                             model_data: ModelData::Single(model.clone()),
                         });
                     }
@@ -407,6 +409,7 @@ fn load_blockstate_variants(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
+                            extra_info: BlockstateInfo::default(),
                             model_data: ModelData::RandomChoice(models.clone()),
                         });
                     }
@@ -426,6 +429,10 @@ fn load_blockstate_multipart_cases(
     properties: &[(&str, CustomPropertyType)],
     model_cache: &mut ModelCache,
     texture_atlas: &mut texture::AtlasBuilder,
+    // TODO:
+    // - Add `extra_info` default and cases
+    // - Each case is a list of ANDed conditions, and an info modifier
+    // - Write a method on BlockstateInfo like `merge_modification`
 ) -> anyhow::Result<Vec<Blockstate>> {
     // Rescale weighted cases, so for each case, all weights sum to 1.0
     for case in &mut cases {
@@ -474,7 +481,7 @@ fn load_blockstate_multipart_cases(
             .collect();
         // Some blockstate files use a multipart with only one variant (useful for generating
         // models with randomised parts)
-        if properties.len() == 0 {
+        if properties.is_empty() {
             is_final_state = true;
         }
         log::debug!("Generating model for state {state:?}");
@@ -539,7 +546,7 @@ fn load_blockstate_multipart_cases(
                                 group.parts.push(variant_part.clone());
                                 group.weight *= variant.weight
                             }
-                            new_model_part_groups.extend(combined_group_set.drain(..));
+                            new_model_part_groups.append(&mut combined_group_set);
                         }
                         model_part_groups = new_model_part_groups;
                     }
@@ -550,7 +557,7 @@ fn load_blockstate_multipart_cases(
             log::debug!("^ no parts");
         }
         // Generate models for current state
-        if let &[ref model_parts] = &model_part_groups[..] {
+        if let [model_parts] = &model_part_groups[..] {
             // Only one possible model
             let model = model_cache
                 .load_combined_model(&model_parts.parts, texture_atlas)
@@ -558,6 +565,7 @@ fn load_blockstate_multipart_cases(
             blockstates.push(Blockstate {
                 block_index,
                 properties: condition_map,
+                extra_info: BlockstateInfo::default(),
                 model_data: ModelData::Single(model),
             });
         } else {
@@ -579,6 +587,7 @@ fn load_blockstate_multipart_cases(
             blockstates.push(Blockstate {
                 block_index,
                 properties: condition_map,
+                extra_info: BlockstateInfo::default(),
                 model_data: ModelData::RandomChoice(models),
             })
         }
@@ -624,15 +633,11 @@ pub fn load_full_custom_blockstates(
         assert!(
             properties
                 .iter()
-                .find(|(prop_name, _)| prop_name == skip_prop)
-                .is_some(),
+                .any(|(prop_name, _)| prop_name == skip_prop),
             "Skip property '{skip_prop}' not found in properties"
         );
     }
-    let skip_properties: AHashSet<_> = skip_properties
-        .into_iter()
-        .map(|p| Atom::from(*p))
-        .collect();
+    let skip_properties: AHashSet<_> = skip_properties.iter().map(|p| Atom::from(*p)).collect();
     let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
         .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
     let file: File = serde_json::from_slice(&blockstate_json_bytes)
@@ -712,12 +717,13 @@ pub fn load_full_custom_blockstates(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
+                            extra_info: BlockstateInfo::default(),
                             model_data: ModelData::Single(model),
                         });
                     }
                     Variant::List(models) => {
                         let mut models = models
-                            .into_iter()
+                            .iter()
                             .map(|model_info| {
                                 let model_location = Identifier::parse(&model_info.model)?;
                                 let model = model_cache.load_model(
@@ -746,6 +752,7 @@ pub fn load_full_custom_blockstates(
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
+                            extra_info: BlockstateInfo::default(),
                             model_data: ModelData::RandomChoice(models.clone()),
                         });
                     }
@@ -803,6 +810,7 @@ pub fn load_liquid_blockstates(
             properties: [(Atom::from("level"), Atom::from(format!("{i}")))]
                 .into_iter()
                 .collect(),
+            extra_info: BlockstateInfo::default(),
             model_data: ModelData::Single(model.clone()),
         });
     }
@@ -810,7 +818,7 @@ pub fn load_liquid_blockstates(
 }
 
 fn is_valid_condition_set(set: &str) -> bool {
-    if set == "" {
+    if set.is_empty() {
         return true;
     }
     #[derive(Clone, Copy)]
@@ -887,6 +895,7 @@ pub enum CustomPropertyIteratorType<'a, 'b> {
 
 impl<'b> CustomPropertyIterator<'_, 'b> {
     /// Returns the next value, along with whether the value has just reset
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> (Cow<'b, str>, bool) {
         let (state, is_last_state) = match &mut self.type_state {
             CustomPropertyIteratorType::Bool {
@@ -940,8 +949,76 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
 #[derive(Clone, Debug)]
 pub struct Blockstate {
     pub block_index: RegistryIndex,
+    pub extra_info: BlockstateInfo,
     pub properties: AHashMap<Atom, Atom>,
     pub model_data: ModelData,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub struct BlockstateInfo {
+    pub opacity: BlockOpacity,
+    pub light_info: BlockLightInfo,
+}
+
+impl Default for BlockstateInfo {
+    fn default() -> Self {
+        Self {
+            opacity: BlockOpacity::Opaque,
+            light_info: BlockLightInfo::default(),
+        }
+    }
+}
+
+impl BlockstateInfo {
+    pub fn merge_modifier(&mut self, modifier: BlockstateInfoModifier) {
+        self.opacity = modifier.opacity.unwrap_or(self.opacity);
+        self.light_info = modifier.light_info.unwrap_or(self.light_info);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Default)]
+pub struct BlockstateInfoModifier {
+    pub opacity: Option<BlockOpacity>,
+    pub light_info: Option<BlockLightInfo>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub enum BlockOpacity {
+    Opaque,
+    /// Leaves are either opaque or transparent, depending on graphics settings.
+    Leaves,
+    /// Glass is transparent, however it prevents inside faces in adjacent glass blocks from being
+    /// shown.
+    Glass,
+    /// Glass panes are transparent, however it prevents inside faces in connected glass panes from
+    /// being shown.
+    GlassPane,
+    Transparent,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub struct BlockLightInfo {
+    pub sky_light_opacity: SkyLightOpacity,
+    pub emission_level: u8,
+}
+
+impl Default for BlockLightInfo {
+    fn default() -> Self {
+        Self {
+            sky_light_opacity: SkyLightOpacity::Opaque,
+            emission_level: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub enum SkyLightOpacity {
+    /// Transparent blocks allow sky light through unaffected.
+    Transparent,
+    /// Translucent blocks reduce incoming sky light by 1.
+    Translucent,
+    /// Opaque blocks block all sky light.
+    Opaque,
 }
 
 #[derive(Clone, Debug)]

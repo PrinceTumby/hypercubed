@@ -137,7 +137,7 @@ pub enum Particle {
     } = 105,
     OminousSpawning = 106,
     RaidOmen = 107,
-    TrailOmen = 108,
+    TrialOmen = 108,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
