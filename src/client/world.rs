@@ -356,9 +356,8 @@ pub fn process_subchunks(
                     .iter()
                     .copied()
                     .next()
-                    .map(|coord| {
-                        queue.remove(&coord);
-                        coord
+                    .inspect(|coord| {
+                        queue.remove(coord);
                     })
                     .unwrap_or_else(|| {
                         // No more blocks in queue, make a new group and grab a new block
@@ -490,9 +489,9 @@ pub fn recalculate_light(
     new_block_id: GlobalPaletteIndex,
 ) {
     let old_blockstate_info = &graphics_resources.block_registry[old_block_id];
-    let old_extra_info = old_blockstate_info.extra_info;
+    let old_extra_info = &old_blockstate_info.extra_info;
     let new_blockstate_info = &graphics_resources.block_registry[new_block_id];
-    let new_extra_info = new_blockstate_info.extra_info;
+    let new_extra_info = &new_blockstate_info.extra_info;
     if old_extra_info == new_extra_info {
         return;
     }
@@ -828,7 +827,7 @@ fn get_block_light_level_and_info(
             let light_level = light_section.get(x, y, z);
             let global_palette_index = chunk_section.block_states.get(x, y, z);
             let blockstate_info = &graphics_resources.block_registry[global_palette_index];
-            let extra_info = blockstate_info.extra_info;
+            let extra_info = &blockstate_info.extra_info;
             (
                 light_level,
                 extra_info.opacity,
@@ -850,7 +849,7 @@ fn get_sky_light_level_and_opacity(
             let light_level = light_section.get(x, y, z);
             let global_palette_index = chunk_section.block_states.get(x, y, z);
             let blockstate_info = &graphics_resources.block_registry[global_palette_index];
-            let extra_info = blockstate_info.extra_info;
+            let extra_info = &blockstate_info.extra_info;
             (light_level, extra_info.light_info.sky_light_opacity)
         }
     }

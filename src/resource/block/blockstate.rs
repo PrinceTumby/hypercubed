@@ -10,6 +10,7 @@ use string_cache::DefaultAtom as Atom;
 use super::model::{CombinedModelPart, ModelCache, ModelRotationInfo, ModelType};
 use super::RightAngleRotation;
 use super::{texture, Identifier};
+use crate::physics::AABB;
 use crate::resource::manager::{get_resource_file, ResourceType};
 use crate::resource::RegistryIndex;
 
@@ -209,12 +210,14 @@ fn load_blockstate_variants(
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
                             model_data: ModelData::Single(model.clone()),
+                            rough_x_rotation: model_info.x_rotation,
+                            rough_y_rotation: model_info.y_rotation,
                         });
                     }
                     is_final_custom_state = false;
                 }
-                Variant::List(models) => {
-                    let mut models = models
+                Variant::List(raw_models) => {
+                    let mut models = raw_models
                         .iter()
                         .map(|model_info| {
                             let model_location = Identifier::parse(&model_info.model)?;
@@ -269,11 +272,18 @@ fn load_blockstate_variants(
                         for (name, value) in custom_state.into_iter() {
                             condition_map.insert(Atom::from(name), Atom::from(value));
                         }
+                        let first_model = raw_models.first();
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
                             model_data: ModelData::RandomChoice(models.clone()),
+                            rough_x_rotation: first_model
+                                .map(|model| model.x_rotation)
+                                .unwrap_or(RightAngleRotation::Zero),
+                            rough_y_rotation: first_model
+                                .map(|model| model.y_rotation)
+                                .unwrap_or(RightAngleRotation::Zero),
                         });
                     }
                     is_final_custom_state = false;
@@ -346,12 +356,21 @@ fn load_blockstate_variants(
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
                             model_data: ModelData::Single(model.clone()),
+                            rough_x_rotation: model_info.x_rotation,
+                            rough_y_rotation: model_info.y_rotation,
                         });
                     }
                     is_final_custom_state = false;
                 }
-                Variant::List(models) => {
-                    let mut models = models
+                Variant::List(raw_models) => {
+                    let first_model = raw_models.first();
+                    let rough_x_rotation = first_model
+                        .map(|model| model.x_rotation)
+                        .unwrap_or(RightAngleRotation::Zero);
+                    let rough_y_rotation = first_model
+                        .map(|model| model.y_rotation)
+                        .unwrap_or(RightAngleRotation::Zero);
+                    let mut models = raw_models
                         .into_iter()
                         .map(|model_info| {
                             let model_location = Identifier::parse(&model_info.model)?;
@@ -411,6 +430,8 @@ fn load_blockstate_variants(
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
                             model_data: ModelData::RandomChoice(models.clone()),
+                            rough_x_rotation,
+                            rough_y_rotation,
                         });
                     }
                     is_final_custom_state = false;
@@ -567,6 +588,8 @@ fn load_blockstate_multipart_cases(
                 properties: condition_map,
                 extra_info: BlockstateInfo::default(),
                 model_data: ModelData::Single(model),
+                rough_x_rotation: RightAngleRotation::Zero,
+                rough_y_rotation: RightAngleRotation::Zero,
             });
         } else {
             // Multiple possible models, generate one for each possibility
@@ -589,6 +612,8 @@ fn load_blockstate_multipart_cases(
                 properties: condition_map,
                 extra_info: BlockstateInfo::default(),
                 model_data: ModelData::RandomChoice(models),
+                rough_x_rotation: RightAngleRotation::Zero,
+                rough_y_rotation: RightAngleRotation::Zero,
             })
         }
     }
@@ -719,10 +744,12 @@ pub fn load_full_custom_blockstates(
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
                             model_data: ModelData::Single(model),
+                            rough_x_rotation: model_info.x_rotation,
+                            rough_y_rotation: model_info.y_rotation,
                         });
                     }
-                    Variant::List(models) => {
-                        let mut models = models
+                    Variant::List(raw_models) => {
+                        let mut models = raw_models
                             .iter()
                             .map(|model_info| {
                                 let model_location = Identifier::parse(&model_info.model)?;
@@ -749,11 +776,18 @@ pub fn load_full_custom_blockstates(
                                 model.weight /= total_weight;
                             }
                         }
+                        let first_model = raw_models.first();
                         blockstates.push(Blockstate {
                             block_index,
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
                             model_data: ModelData::RandomChoice(models.clone()),
+                            rough_x_rotation: first_model
+                                .map(|model| model.x_rotation)
+                                .unwrap_or(RightAngleRotation::Zero),
+                            rough_y_rotation: first_model
+                                .map(|model| model.y_rotation)
+                                .unwrap_or(RightAngleRotation::Zero),
                         });
                     }
                 }
@@ -812,6 +846,8 @@ pub fn load_liquid_blockstates(
                 .collect(),
             extra_info: BlockstateInfo::default(),
             model_data: ModelData::Single(model.clone()),
+            rough_x_rotation: RightAngleRotation::Zero,
+            rough_y_rotation: RightAngleRotation::Zero,
         });
     }
     Ok(blockstates)
@@ -952,12 +988,16 @@ pub struct Blockstate {
     pub extra_info: BlockstateInfo,
     pub properties: AHashMap<Atom, Atom>,
     pub model_data: ModelData,
+    // Used for rotating collision AABBs.
+    pub rough_x_rotation: RightAngleRotation,
+    pub rough_y_rotation: RightAngleRotation,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct BlockstateInfo {
     pub opacity: BlockOpacity,
     pub light_info: BlockLightInfo,
+    pub collision_info: CollisionInfo,
 }
 
 impl Default for BlockstateInfo {
@@ -965,21 +1005,33 @@ impl Default for BlockstateInfo {
         Self {
             opacity: BlockOpacity::Opaque,
             light_info: BlockLightInfo::default(),
+            collision_info: CollisionInfo::FullBlock,
         }
     }
 }
 
 impl BlockstateInfo {
     pub fn merge_modifier(&mut self, modifier: BlockstateInfoModifier) {
-        self.opacity = modifier.opacity.unwrap_or(self.opacity);
-        self.light_info = modifier.light_info.unwrap_or(self.light_info);
+        // We manually deconstruct here to make sure changes to the `BlockstateInfoModifier` struct
+        // force changes here too.
+        let BlockstateInfoModifier {
+            opacity,
+            light_info,
+            collision_info,
+        } = modifier;
+        self.opacity = opacity.unwrap_or(self.opacity);
+        self.light_info = light_info.unwrap_or(self.light_info);
+        // Can't move out of the mutable reference, so we do this to avoid a clone.
+        let self_collision_info = std::mem::replace(&mut self.collision_info, CollisionInfo::Empty);
+        self.collision_info = collision_info.unwrap_or(self_collision_info);
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize, Default)]
 pub struct BlockstateInfoModifier {
     pub opacity: Option<BlockOpacity>,
     pub light_info: Option<BlockLightInfo>,
+    pub collision_info: Option<CollisionInfo>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1019,6 +1071,13 @@ pub enum SkyLightOpacity {
     Translucent,
     /// Opaque blocks block all sky light.
     Opaque,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub enum CollisionInfo {
+    Empty,
+    FullBlock,
+    Complex(Box<[AABB]>),
 }
 
 #[derive(Clone, Debug)]

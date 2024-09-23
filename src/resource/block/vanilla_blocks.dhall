@@ -1,4 +1,5 @@
 -- vim: ts=2:sw=2
+
 -- Common properties
 let CustomPropertyType =
       < Boolean : { Boolean : {} }
@@ -77,19 +78,43 @@ let BlockOpacity = < Opaque | Leaves | Glass | GlassPane | Transparent >
 
 let SkyLightOpacity = < Opaque | Translucent | Transparent >
 
+let AABB = { corner_1 : List Double, corner_2 : List Double }
+
+let makeAABB =
+  λ(start : List Double) →
+  λ(end : List Double) →
+    { corner_1 = start, corner_2 = end }
+
+let CollisionInfo =
+      < Empty : { Empty : {} }
+      | FullBlock : { FullBlock : {} }
+      | Complex : { Complex : List AABB }
+      >
+
+let emptyCollisionInfo = CollisionInfo.Empty { Empty = {=} }
+
+let complexCollisionInfo =
+  λ(aabbs : List AABB) →
+    CollisionInfo.Complex { Complex = aabbs }
+
 let BlockstateInfo =
       { Type =
           { opacity : BlockOpacity
           , light_info :
               { sky_light_opacity : SkyLightOpacity, emission_level : Natural }
+          , collision_info : CollisionInfo
           }
       , default =
         { opacity = BlockOpacity.Opaque
         , light_info =
-          { sky_light_opacity = SkyLightOpacity.Opaque
-          , emission_level = 0
-          }
+          { sky_light_opacity = SkyLightOpacity.Opaque, emission_level = 0 }
+        , collision_info = CollisionInfo.FullBlock { FullBlock = {=} }
         }
+      }
+
+let skyTransparentInfo =
+      { sky_light_opacity = SkyLightOpacity.Transparent
+      , emission_level = 0
       }
 
 let BlockstateInfoModifier =
@@ -100,6 +125,7 @@ let BlockstateInfoModifier =
                 , sky_light_opacity : SkyLightOpacity
                 , emission_level : Natural
                 }
+          , collision_info : Optional CollisionInfo
           }
       , default =
         { opacity = None BlockOpacity
@@ -108,6 +134,7 @@ let BlockstateInfoModifier =
               , sky_light_opacity : SkyLightOpacity
               , emission_level : Natural
               }
+        , collision_info = None CollisionInfo
         }
       }
 
@@ -234,10 +261,7 @@ let registerTransparent =
           , identifier
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
-            , light_info = {
-              , sky_light_opacity = SkyLightOpacity.Transparent
-              , emission_level = 0
-              }
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -253,6 +277,34 @@ let registerTransparentLight =
               , sky_light_opacity = SkyLightOpacity.Transparent
               , emission_level
               }
+            }
+          }
+
+let registerTransparentNoCollider =
+      λ(identifier : Text) →
+        Registration.Standard
+          StandardRegistration::{
+          , identifier
+          , default_extra_info = BlockstateInfo::{
+            , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
+            }
+          }
+
+let registerTransparentLightNoCollider =
+      λ(identifier : Text) →
+      λ(emission_level : Natural) →
+        Registration.Standard
+          StandardRegistration::{
+          , identifier
+          , default_extra_info = BlockstateInfo::{
+            , opacity = BlockOpacity.Transparent
+            , light_info = {
+              , sky_light_opacity = SkyLightOpacity.Transparent
+              , emission_level
+              }
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -302,6 +354,9 @@ let registerBed =
               )
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , collision_info = complexCollisionInfo [
+              , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5625, 1.0 ]
+              ]
             }
           }
 
@@ -318,6 +373,22 @@ let registerSlab =
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
             }
+          , extra_info_modifiers =
+            [ { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap (toMap { type = "bottom" })
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.5, 0.0 ] [ 1.0, 1.0, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap (toMap { type = "top" })
+              }
+            ]
           }
 
 let registerStairs =
@@ -351,6 +422,50 @@ let registerStairs =
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
             }
+          , extra_info_modifiers =
+            [ { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5, 1.0 ]
+                  , makeAABB [ 0.5, 0.5, 0.0 ] [ 1.0, 1.0, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap (toMap { shape = "straight" })
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5, 1.0 ]
+                  , makeAABB [ 0.5, 0.5, 0.0 ] [ 1.0, 1.0, 1.0 ]
+                  , makeAABB [ 0.0, 0.5, 0.0 ] [ 0.5, 1.0, 0.5 ]
+                  ])
+                }
+              , conditions = toNewMap (toMap { shape = "inner_left" })
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5, 1.0 ]
+                  , makeAABB [ 0.5, 0.5, 0.0 ] [ 1.0, 1.0, 1.0 ]
+                  , makeAABB [ 0.0, 0.5, 0.5 ] [ 0.5, 1.0, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap (toMap { shape = "inner_right" })
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5, 1.0 ]
+                  , makeAABB [ 0.5, 0.5, 0.5 ] [ 1.0, 1.0, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap (toMap { shape = "outer_left" })
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5, 1.0 ]
+                  , makeAABB [ 0.5, 0.5, 0.5 ] [ 1.0, 1.0, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap (toMap { shape = "outer_right" })
+              }
+            ]
           }
 
 let registerFence =
@@ -378,7 +493,243 @@ let registerFence =
               )
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
+          , extra_info_modifiers =
+            [ { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.375 ] [ 0.625, 1.5, 0.625 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "false"
+                  , south = "false"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.375 ] [ 1.0, 1.5, 0.625 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "false"
+                  , south = "false"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 0.625 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "true"
+                  , south = "false"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.375 ] [ 1.0, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 0.375 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "true"
+                  , south = "false"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.375 ] [ 0.625, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "false"
+                  , south = "true"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.375 ] [ 1.0, 1.5, 1.0 ]
+                  , makeAABB [ 0.375, 0.0, 0.625 ] [ 1.0, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "false"
+                  , south = "true"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "true"
+                  , south = "true"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.375, 0.0, 0.375 ] [ 1.0, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "true"
+                  , south = "true"
+                  , west = "false"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 0.625, 1.5, 0.625 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "false"
+                  , south = "false"
+                  , west = "true"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 1.0, 1.5, 0.625 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "false"
+                  , south = "false"
+                  , west = "true"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 0.375, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 0.625 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "true"
+                  , south = "false"
+                  , west = "true"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 1.0, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 0.375 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "true"
+                  , south = "false"
+                  , west = "true"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 0.375, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.375 ] [ 0.625, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "false"
+                  , south = "true"
+                  , west = "true"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 1.0, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.625 ] [ 1.0, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "false"
+                  , south = "true"
+                  , west = "true"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 0.625, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "false"
+                  , north = "true"
+                  , south = "true"
+                  , west = "true"
+                  }
+                )
+              }
+            , { modifier = BlockstateInfoModifier::{
+                , collision_info = Some (complexCollisionInfo [
+                  , makeAABB [ 0.0, 0.0, 0.375 ] [ 1.0, 1.5, 0.625 ]
+                  , makeAABB [ 0.375, 0.0, 0.0 ] [ 0.625, 1.5, 1.0 ]
+                  ])
+                }
+              , conditions = toNewMap
+                ( toMap
+                  { east = "true"
+                  , north = "true"
+                  , south = "true"
+                  , west = "true"
+                  }
+                )
+              }
+            ]
           }
 
 let registerFenceGate =
@@ -519,6 +870,8 @@ let registerSign =
               (toNewMap (toMap { rotation = "0", waterlogged = "false" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -532,6 +885,8 @@ let registerWallSign =
               (toNewMap (toMap { facing = "north", waterlogged = "false" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -553,6 +908,7 @@ let registerHangingSign =
               )
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -566,6 +922,7 @@ let registerWallHangingSign =
               (toNewMap (toMap { facing = "north", waterlogged = "false" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -576,6 +933,7 @@ let registerStainedGlass =
           , identifier
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -588,6 +946,7 @@ let registerGrate =
           , default_override = Some (toNewMap (toMap { waterlogged = "false" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -600,6 +959,8 @@ let registerPressurePlate =
           , default_override = Some (toNewMap (toMap { powered = "false" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -619,6 +980,8 @@ let registerButton =
               )
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -647,6 +1010,7 @@ let registerHead =
               (toNewMap (toMap { powered = "false", rotation = "0" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -660,6 +1024,7 @@ let registerWallHead =
               (toNewMap (toMap { facing = "north", powered = "false" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -671,6 +1036,8 @@ let registerWeightedPressurePlate =
           , replacement_variants = Some [ intProp "power" 0 15 ]
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -699,6 +1066,7 @@ let registerGlassPane =
               )
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -710,6 +1078,8 @@ let registerBanner =
           , custom_variants = Some [ rotation_0_15 ]
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -721,6 +1091,8 @@ let registerWallBanner =
           , custom_variants = Some [ facing_nswe ]
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -733,6 +1105,7 @@ let registerShulkerBox =
           , default_override = Some (toNewMap (toMap { facing = "up" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -752,6 +1125,8 @@ let registerCoral =
           , custom_variants = Some [ waterlogged ]
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
+            , collision_info = emptyCollisionInfo
             }
           }
 
@@ -764,6 +1139,7 @@ let registerCoralWallFan =
           , custom_variants = Some [ waterlogged ]
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -801,10 +1177,7 @@ let registerCandle =
               )
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
-            , light_info = {
-              , sky_light_opacity = SkyLightOpacity.Transparent
-              , emission_level = 0
-              }
+            , light_info = skyTransparentInfo
             }
           , extra_info_modifiers =
             [ { modifier = BlockstateInfoModifier::{
@@ -851,6 +1224,7 @@ let registerCandleCake =
           , default_override = Some (toNewMap (toMap { lit = "false" }))
           , default_extra_info = BlockstateInfo::{
             , opacity = BlockOpacity.Transparent
+            , light_info = skyTransparentInfo
             }
           }
 
@@ -893,6 +1267,7 @@ in  [ Registration.Standard
             , sky_light_opacity = SkyLightOpacity.Transparent
             , emission_level = 0
             }
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerBasic "stone"
@@ -933,6 +1308,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ stage_0_1 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -941,6 +1318,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ stage_0_1 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -949,6 +1328,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ stage_0_1 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -957,6 +1338,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ stage_0_1 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -965,6 +1348,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ stage_0_1 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -973,6 +1358,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ stage_0_1 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -981,6 +1368,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ stage_0_1 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -1000,6 +1389,8 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerBasic "bedrock"
@@ -1170,6 +1561,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1199,6 +1591,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1210,16 +1603,20 @@ in  [ Registration.Standard
         , extra_info_modifiers =
           [ { modifier = BlockstateInfoModifier::{
               , opacity = Some BlockOpacity.Transparent
+              , light_info = Some skyTransparentInfo
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.25 ] [ 1.0, 1.0, 1.0 ]
+                ])
               }
-            , conditions = toNewMap (toMap { extended = "false" })
+            , conditions = toNewMap (toMap { extended = "true" })
             }
           ]
         }
-    , registerTransparent "cobweb"
-    , registerTransparent "short_grass"
-    , registerTransparent "fern"
-    , registerTransparent "dead_bush"
-    , registerTransparent "seagrass"
+    , registerTransparentNoCollider "cobweb"
+    , registerTransparentNoCollider "short_grass"
+    , registerTransparentNoCollider "fern"
+    , registerTransparentNoCollider "dead_bush"
+    , registerTransparentNoCollider "seagrass"
     , Registration.Standard
         StandardRegistration::{
         , identifier = "tall_seagrass"
@@ -1227,6 +1624,7 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1238,8 +1636,12 @@ in  [ Registration.Standard
         , extra_info_modifiers =
           [ { modifier = BlockstateInfoModifier::{
               , opacity = Some BlockOpacity.Transparent
+              , light_info = Some skyTransparentInfo
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.25 ] [ 1.0, 1.0, 1.0 ]
+                ])
               }
-            , conditions = toNewMap (toMap { extended = "false" })
+            , conditions = toNewMap (toMap { extended = "true" })
             }
           ]
         }
@@ -1257,6 +1659,13 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = complexCollisionInfo [
+            -- Stem
+            , makeAABB [ 0.375, 0.375, 0.25 ] [ 0.625, 0.625, 1.0 ]
+            -- Head
+            , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 1.0, 0.25 ]
+            ]
           }
         }
     , registerBasic "white_wool"
@@ -1282,24 +1691,25 @@ in  [ Registration.Standard
           [ facing_neswud, enumProp "type" [ "normal", "sticky" ] ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
-    , registerTransparent "dandelion"
-    , registerTransparent "torchflower"
-    , registerTransparent "poppy"
-    , registerTransparent "blue_orchid"
-    , registerTransparent "allium"
-    , registerTransparent "azure_bluet"
-    , registerTransparent "red_tulip"
-    , registerTransparent "orange_tulip"
-    , registerTransparent "white_tulip"
-    , registerTransparent "pink_tulip"
-    , registerTransparent "oxeye_daisy"
-    , registerTransparent "cornflower"
-    , registerTransparent "wither_rose"
-    , registerTransparent "lily_of_the_valley"
+    , registerTransparentNoCollider "dandelion"
+    , registerTransparentNoCollider "torchflower"
+    , registerTransparentNoCollider "poppy"
+    , registerTransparentNoCollider "blue_orchid"
+    , registerTransparentNoCollider "allium"
+    , registerTransparentNoCollider "azure_bluet"
+    , registerTransparentNoCollider "red_tulip"
+    , registerTransparentNoCollider "orange_tulip"
+    , registerTransparentNoCollider "white_tulip"
+    , registerTransparentNoCollider "pink_tulip"
+    , registerTransparentNoCollider "oxeye_daisy"
+    , registerTransparentNoCollider "cornflower"
+    , registerTransparentNoCollider "wither_rose"
+    , registerTransparentNoCollider "lily_of_the_valley"
     , registerTransparentLight "brown_mushroom" 1
-    , registerTransparent "red_mushroom"
+    , registerTransparentNoCollider "red_mushroom"
     , registerBasic "gold_block"
     , registerBasic "iron_block"
     , registerBasic "bricks"
@@ -1338,7 +1748,7 @@ in  [ Registration.Standard
         }
     , registerBasic "mossy_cobblestone"
     , registerBasic "obsidian"
-    , registerTransparentLight "torch" 14
+    , registerTransparentLightNoCollider "torch" 14
     , Registration.Standard
         StandardRegistration::{
         , identifier = "wall_torch"
@@ -1349,6 +1759,7 @@ in  [ Registration.Standard
             , sky_light_opacity = SkyLightOpacity.Transparent
             , emission_level = 14
             }
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -1380,6 +1791,7 @@ in  [ Registration.Standard
             , sky_light_opacity = SkyLightOpacity.Transparent
             , emission_level = 15
             }
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -1392,6 +1804,7 @@ in  [ Registration.Standard
             , sky_light_opacity = SkyLightOpacity.Transparent
             , emission_level = 10
             }
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerTransparent "spawner"
@@ -1420,13 +1833,14 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "diamond_ore"
     , registerBasic "deepslate_diamond_ore"
     , registerBasic "diamond_block"
     , registerBasic "crafting_table"
-    , registerTransparent "wheat"
+    , registerTransparentNoCollider "wheat"
     , registerTransparent "farmland"
     , Registration.Standard
         StandardRegistration::{
@@ -1464,6 +1878,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { facing = "north", waterlogged = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1489,6 +1904,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { shape = "north_south", waterlogged = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerStairs "cobblestone_stairs"
@@ -1537,6 +1953,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerPressurePlate "stone_pressure_plate"
@@ -1563,6 +1980,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerPressurePlate "oak_pressure_plate"
@@ -1612,6 +2030,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ lit ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , collision_info = emptyCollisionInfo
           }
         , extra_info_modifiers =
           [ { modifier = BlockstateInfoModifier::{
@@ -1630,10 +2049,75 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe, lit ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerButton "stone_button"
-    , registerTransparent "snow"
+    , Registration.Standard
+        StandardRegistration::{
+        , identifier = "snow"
+        , default_extra_info = BlockstateInfo::{
+          , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          }
+        , extra_info_modifiers =
+          [ { modifier = BlockstateInfoModifier::{
+              , collision_info = Some emptyCollisionInfo
+              }
+            , conditions = toNewMap (toMap { layers = "1" })
+            }
+          , { modifier = BlockstateInfoModifier::{
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.125, 1.0 ]
+                ])
+              }
+            , conditions = toNewMap (toMap { layers = "2" })
+            }
+          , { modifier = BlockstateInfoModifier::{
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.25, 1.0 ]
+                ])
+              }
+            , conditions = toNewMap (toMap { layers = "3" })
+            }
+          , { modifier = BlockstateInfoModifier::{
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.375, 1.0 ]
+                ])
+              }
+            , conditions = toNewMap (toMap { layers = "4" })
+            }
+          , { modifier = BlockstateInfoModifier::{
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.5, 1.0 ]
+                ])
+              }
+            , conditions = toNewMap (toMap { layers = "5" })
+            }
+          , { modifier = BlockstateInfoModifier::{
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.625, 1.0 ]
+                ])
+              }
+            , conditions = toNewMap (toMap { layers = "6" })
+            }
+          , { modifier = BlockstateInfoModifier::{
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.75, 1.0 ]
+                ])
+              }
+            , conditions = toNewMap (toMap { layers = "7" })
+            }
+          , { modifier = BlockstateInfoModifier::{
+              , collision_info = Some (complexCollisionInfo [
+                , makeAABB [ 0.0, 0.0, 0.0 ] [ 1.0, 0.875, 1.0 ]
+                ])
+              }
+            , conditions = toNewMap (toMap { layers = "8" })
+            }
+          ]
+        }
     , registerTransparent "ice"
     , registerBasic "snow_block"
     , Registration.Standard
@@ -1642,6 +2126,7 @@ in  [ Registration.Standard
         , custom_variants = Some [ age_0_15 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "clay"
@@ -1651,6 +2136,8 @@ in  [ Registration.Standard
         , custom_variants = Some [ age_0_15 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -1673,13 +2160,18 @@ in  [ Registration.Standard
         , identifier = "polished_basalt"
         , default_override = Some (toNewMap (toMap { axis = "y" }))
         }
-    , registerTransparentLight "soul_torch" 10
+    , registerTransparentLightNoCollider "soul_torch" 10
     , Registration.Standard
         StandardRegistration::{
         , identifier = "soul_wall_torch"
         , replacement_variants = Some [ facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = {
+            , sky_light_opacity = SkyLightOpacity.Transparent
+            , emission_level = 10
+            }
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerBasicLight "glowstone" 15
@@ -1722,6 +2214,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerStainedGlass "white_stained_glass"
@@ -1787,6 +2280,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1797,6 +2291,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { axis = "y", waterlogged = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1822,6 +2317,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.GlassPane
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "pumpkin"
@@ -1832,6 +2328,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1840,6 +2337,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerTransparent "pumpkin_stem"
@@ -1867,6 +2365,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -1900,6 +2399,7 @@ in  [ Registration.Standard
             , sky_light_opacity = SkyLightOpacity.Transparent
             , emission_level = 7
             }
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerFenceGate "oak_fence_gate"
@@ -1986,6 +2486,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ intProp "age" 0 2, facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerStairs "sandstone_stairs"
@@ -2018,6 +2519,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.FullCustom
@@ -2048,6 +2550,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "emerald_block"
@@ -2123,6 +2626,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -2131,6 +2635,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -2139,6 +2644,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerChest "trapped_chest"
@@ -2157,6 +2663,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -2168,6 +2675,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { inverted = "false", power = "0" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "redstone_block"
@@ -2182,6 +2690,7 @@ in  [ Registration.Standard
         , skip_properties = [ "enabled" ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "quartz_block"
@@ -2190,9 +2699,6 @@ in  [ Registration.Standard
         StandardRegistration::{
         , identifier = "quartz_pillar"
         , default_override = Some (toNewMap (toMap { axis = "y" }))
-        , default_extra_info = BlockstateInfo::{
-          , opacity = BlockOpacity.Transparent
-          }
         }
     , Registration.Standard
         StandardRegistration::{
@@ -2222,6 +2728,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -2251,6 +2758,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -2307,6 +2815,7 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { waterlogged = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -2318,17 +2827,11 @@ in  [ Registration.Standard
             (toNewMap (toMap { level = "15", waterlogged = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
-          , light_info = {
-            , sky_light_opacity = SkyLightOpacity.Transparent
-            , emission_level = 0
-            }
+          , light_info = skyTransparentInfo
           }
         , extra_info_modifiers =
           [ { modifier = BlockstateInfoModifier::{
-              , light_info = Some {
-                , sky_light_opacity = SkyLightOpacity.Transparent
-                , emission_level = 0
-                }
+              , light_info = Some skyTransparentInfo
               }
             , conditions = toNewMap (toMap { level = "0" })
             }
@@ -2496,6 +2999,8 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -2505,6 +3010,8 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -2514,6 +3021,8 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -2523,6 +3032,8 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -2532,6 +3043,8 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -2541,6 +3054,8 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerBanner "white_banner"
@@ -2669,6 +3184,8 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerTransparent "chorus_flower"
@@ -2690,6 +3207,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { age = "0", half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -2699,6 +3217,8 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { half = "lower" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , registerTransparent "beetroots"
@@ -2806,9 +3326,10 @@ in  [ Registration.Standard
         , custom_variants = Some [ intProp "age" 0 25 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
-    , registerTransparent "kelp_plant"
+    , registerTransparentNoCollider "kelp_plant"
     , registerBasic "dried_kelp_block"
     , registerTransparent "turtle_egg"
     , registerTransparent "sniffer_egg"
@@ -2925,6 +3446,7 @@ in  [ Registration.Standard
           ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerTransparent "potted_bamboo"
@@ -2934,10 +3456,8 @@ in  [ Registration.Standard
         , properties = Properties::{ air_like = True }
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
-          , light_info = {
-            , sky_light_opacity = SkyLightOpacity.Transparent
-            , emission_level = 0
-            }
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -2946,10 +3466,8 @@ in  [ Registration.Standard
         , properties = Properties::{ air_like = True }
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
-          , light_info = {
-            , sky_light_opacity = SkyLightOpacity.Transparent
-            , emission_level = 0
-            }
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -2958,6 +3476,7 @@ in  [ Registration.Standard
         , custom_variants = Some [ boolProp "drag" ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerStairs "polished_granite_stairs"
@@ -3013,6 +3532,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3072,6 +3592,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { face = "wall", facing = "north" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3087,6 +3608,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "smithing_table"
@@ -3096,6 +3618,7 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3119,6 +3642,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerLantern "lantern" 15
@@ -3140,6 +3664,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         , extra_info_modifiers =
           [ { modifier = BlockstateInfoModifier::{
@@ -3169,6 +3694,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         , extra_info_modifiers =
           [ { modifier = BlockstateInfoModifier::{
@@ -3181,7 +3707,7 @@ in  [ Registration.Standard
             }
           ]
         }
-    , registerTransparent "sweet_berry_bush"
+    , registerTransparentNoCollider "sweet_berry_bush"
     , Registration.Standard
         StandardRegistration::{
         , identifier = "warped_stem"
@@ -3236,6 +3762,7 @@ in  [ Registration.Standard
         , custom_variants = Some [ age_0_25 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerTransparent "weeping_vines_plant"
@@ -3245,6 +3772,7 @@ in  [ Registration.Standard
         , custom_variants = Some [ age_0_25 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerTransparent "twisting_vines_plant"
@@ -3307,6 +3835,7 @@ in  [ Registration.Standard
         , custom_variants = Some [ intProp "level" 0 8 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3511,6 +4040,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "sculk"
@@ -3541,6 +4071,8 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
+          , collision_info = emptyCollisionInfo
           }
         }
     , Registration.Standard
@@ -3571,6 +4103,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "copper_block"
@@ -3660,6 +4193,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3683,6 +4217,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerBasic "dripstone_block"
@@ -3695,10 +4230,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { age = "0", berries = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
-          , light_info =
-            { sky_light_opacity = SkyLightOpacity.Transparent
-            , emission_level = 0
-            }
+          , light_info = skyTransparentInfo
           }
         , extra_info_modifiers =
           [ { modifier = BlockstateInfoModifier::{
@@ -3718,6 +4250,7 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { berries = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerTransparent "spore_blossom"
@@ -3730,6 +4263,7 @@ in  [ Registration.Standard
         , custom_variants = Some [ facing_nswe, intProp "flower_amount" 1 4 ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , registerTransparent "moss_block"
@@ -3749,6 +4283,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3760,6 +4295,7 @@ in  [ Registration.Standard
             (toNewMap (toMap { facing = "north", waterlogged = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3776,6 +4312,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3872,6 +4409,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3927,6 +4465,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3950,6 +4489,7 @@ in  [ Registration.Standard
             )
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     , Registration.Standard
@@ -3959,6 +4499,7 @@ in  [ Registration.Standard
         , default_override = Some (toNewMap (toMap { waterlogged = "false" }))
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
+          , light_info = skyTransparentInfo
           }
         }
     ]

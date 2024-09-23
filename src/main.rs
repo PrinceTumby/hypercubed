@@ -3,6 +3,7 @@
 
 pub mod basic_types;
 pub mod client;
+pub mod physics;
 pub mod protocol;
 pub mod resource;
 pub mod world;

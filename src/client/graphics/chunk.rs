@@ -279,6 +279,12 @@ enum BufferAreaUsage {
     Used([i32; 3]),
 }
 
+// TODO:
+// - Convert generics to `CHUNK_SIZE` and `INITIAL_NUM_CHUNKS`
+// - When the buffer fills up, allocate a new buffer increased by `INITIAL_NUM_CHUNKS`
+// - Copy all old buffer contents over to new buffer
+// - Expand `usage_map` with the new free space
+// - Retry allocation
 #[derive(Debug)]
 pub struct BufferManager<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize> {
     buffer: Buffer,

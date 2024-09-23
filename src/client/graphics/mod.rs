@@ -5,7 +5,7 @@ pub mod egui_renderer;
 use crate::basic_types::AxisDirection;
 use crate::resource;
 use ahash::{AHashMap, AHashSet};
-use nalgebra::{Isometry3, Matrix4, Point3, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
@@ -21,7 +21,7 @@ use chunk::{
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
     pub pos: Point3<f32>,
-    pub proj_matrix: Matrix4<f32>,
+    pub proj_matrix: Perspective3<f32>,
     /// Represented in degrees.
     pub yaw: f32,
     /// Represented in degrees.
@@ -31,15 +31,6 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn get_mc_rot(&self) -> (f32, f32) {
-        ((self.yaw - 180.0) % 360.0, -self.pitch)
-    }
-
-    pub fn set_mc_rot(&mut self, yaw: f32, pitch: f32) {
-        self.yaw = (yaw + 180.0) % 360.0;
-        self.pitch = -pitch.clamp(-90.0, 90.0);
-    }
-
     pub fn get_rot(&self) -> UnitQuaternion<f32> {
         UnitQuaternion::from_euler_angles(
             self.pitch.to_radians(),
@@ -53,7 +44,7 @@ impl Camera {
             .inverse()
             .to_matrix();
         let rotate = self.get_rot().inverse().to_homogeneous();
-        self.proj_matrix * rotate * translate
+        self.proj_matrix.as_matrix() * rotate * translate
     }
 
     pub fn generate_reversed_depth_view_matrix(&self) -> Matrix4<f32> {
@@ -72,7 +63,7 @@ impl Camera {
         let fake_pos = Point3::from(self.get_rot() * Vector3::z().scale(30.0));
         let up = self.get_rot() * Vector3::y();
         let look_at = Matrix4::look_at_rh(&fake_pos, &Point3::origin(), &up);
-        let view_matrix = self.proj_matrix * look_at;
+        let view_matrix = self.proj_matrix.as_matrix() * look_at;
         *view_matrix.as_ref()
     }
 
@@ -103,10 +94,11 @@ impl Camera {
     }
 }
 
-pub struct GraphicsResources<'a> {
-    pub surface: wgpu::Surface<'a>,
+pub struct GraphicsResources {
+    pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    // TODO: Change to `global_palette`
     pub block_registry: resource::block::Registry,
 }
 
@@ -138,8 +130,8 @@ pub struct GraphicsBufferManagers {
     pub custom_block_instance: CustomBlockInstanceBufferManager,
 }
 
-pub struct GraphicsState<'a> {
-    pub resources: Arc<GraphicsResources<'a>>,
+pub struct GraphicsState {
+    pub resources: Arc<GraphicsResources>,
     pub buffer_managers: GraphicsBufferManagers,
     pub config: wgpu::SurfaceConfiguration,
     pub graphics_options: GraphicsOptions,
@@ -168,8 +160,7 @@ pub struct GraphicsState<'a> {
 pub struct DebugState {
     pub cull_planes_active: usize,
     pub rendering_view_frustum: bool,
-    pub cull_camera_moving_with_player: bool,
-    pub cull_camera: Camera,
+    pub free_cam: bool,
     pub cave_cull_check_unflipped: bool,
     pub cave_cull_check_not_backwards: bool,
     pub cave_cull_check_frustum: bool,
@@ -185,13 +176,13 @@ pub struct DebugOutput {
     pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
 }
 
-impl<'a> GraphicsState<'a> {
-    pub const DEFAULT_FOV: f32 = 70.0;
+impl GraphicsState {
+    pub const DEFAULT_FOV: f32 = 80.0;
     pub const DEFAULT_ZNEAR: f32 = 0.01;
     pub const DEFAULT_ZFAR: f32 = 1024.0;
 
     #[tracing::instrument(skip_all)]
-    pub async fn new<F>(window: Window, register_blocks: F) -> anyhow::Result<Self>
+    pub async fn new<F>(window: &'static Window, register_blocks: F) -> anyhow::Result<Self>
     where
         F: FnOnce(
             &mut resource::block::Registry,
@@ -413,7 +404,7 @@ impl<'a> GraphicsState<'a> {
             TintedBlockFaceInstanceBufferManager::new(&device);
         let custom_block_instance_buffer_manager = CustomBlockInstanceBufferManager::new(&device);
         // Buffers
-        let proj_matrix = Matrix4::new_perspective(
+        let proj_matrix = Perspective3::new(
             (size.width as f32) / (size.height as f32),
             f32::to_radians(GraphicsState::DEFAULT_FOV),
             GraphicsState::DEFAULT_ZNEAR,
@@ -534,12 +525,9 @@ impl<'a> GraphicsState<'a> {
                 &self.config,
                 "depth_texture",
             );
-            self.camera.proj_matrix = Matrix4::new_perspective(
-                (new_size.width as f32) / (new_size.height as f32),
-                f32::to_radians(GraphicsState::DEFAULT_FOV),
-                GraphicsState::DEFAULT_ZNEAR,
-                GraphicsState::DEFAULT_ZFAR,
-            );
+            self.camera
+                .proj_matrix
+                .set_aspect((new_size.width as f32) / (new_size.height as f32));
         }
     }
 
@@ -609,8 +597,8 @@ impl<'a> GraphicsState<'a> {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            //let camera_clipping_planes = self.camera.generate_clipping_planes();
-            let camera_clipping_planes = debug_state.cull_camera.generate_clipping_planes();
+            let camera_clipping_planes = self.camera.generate_clipping_planes();
+            // let camera_clipping_planes = debug_state.cull_camera.generate_clipping_planes();
             let mut rendered_chunks: AHashSet<[i32; 3]> = AHashSet::new();
             let mut visited_chunks: AHashSet<[i32; 3]> = AHashSet::new();
             #[derive(Clone, Copy, Debug)]
@@ -633,7 +621,8 @@ impl<'a> GraphicsState<'a> {
             //let mut subchunk_graph: DiGraph<QueuedChunk, ()> = DiGraph::new();
             let mut chunk_queue: VecDeque<QueuedChunk> = VecDeque::new();
             let camera_chunk_coords = {
-                let camera_pos = debug_state.cull_camera.pos;
+                // let camera_pos = debug_state.cull_camera.pos;
+                let camera_pos = self.camera.pos;
                 let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
                 let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
                     .div_euclid(SUBCHUNK_AXIS_LEN_I32);
@@ -705,10 +694,11 @@ impl<'a> GraphicsState<'a> {
                         ([chunk_x, chunk_y - 1, chunk_z], AxisDirection::Down),
                         ([chunk_x, chunk_y + 1, chunk_z], AxisDirection::Up),
                     ];
-                    let facing_dir = debug_state
-                        .cull_camera
-                        .get_rot()
-                        .transform_vector(&-Vector3::z());
+                    // let facing_dir = debug_state
+                    //     .cull_camera
+                    //     .get_rot()
+                    //     .transform_vector(&-Vector3::z());
+                    let facing_dir = self.camera.get_rot().transform_vector(&-Vector3::z());
                     'neighbour_loop: for (neighbour_coord, to_dir) in neighbour_chunks {
                         const WORLD_HEIGHT_I32: i32 = 384;
                         if neighbour_coord[1] < 0 || neighbour_coord[1] > WORLD_HEIGHT_I32 / 16 {

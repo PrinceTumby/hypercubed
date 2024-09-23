@@ -4,7 +4,9 @@ pub mod model;
 use super::{texture, Identifier, RegistryData, RegistryIndex};
 use ahash::AHashSet;
 use anyhow::{anyhow, Context};
-use blockstate::{BlockOpacity, BlockstateInfo, BlockstateInfoModifier, CustomPropertyType};
+use blockstate::{
+    BlockOpacity, BlockstateInfo, BlockstateInfoModifier, CollisionInfo, CustomPropertyType,
+};
 use model::ModelCache;
 use serde::Deserialize;
 use serde_repr::Deserialize_repr;
@@ -125,15 +127,33 @@ impl Registry {
         // Apply extra information
         let extra_info_modifiers_iter = extra_info_modifiers.into_iter();
         for blockstate in &mut blockstates {
-            blockstate.extra_info = default_extra_info;
+            blockstate.extra_info = default_extra_info.clone();
             'case_loop: for (info_modifier, property_set) in extra_info_modifiers_iter.clone() {
                 for (k, v) in property_set {
-                    if blockstate.properties[k] != **v {
+                    let property_value = blockstate.properties.get(k).with_context(|| {
+                        format!(
+                            "{} \"{}\" {} {:?}",
+                            "Extra info property",
+                            k,
+                            "not found in blockstate properties for",
+                            &identifier,
+                        )
+                    })?;
+                    if property_value != *v {
                         continue 'case_loop;
                     }
                 }
                 // If all property conditions in a property modifier match, then apply.
                 blockstate.extra_info.merge_modifier(info_modifier);
+            }
+            // Apply blockstate rotation to custom AABBs
+            if let CollisionInfo::Complex(aabbs) = &mut blockstate.extra_info.collision_info {
+                for aabb in aabbs.iter_mut() {
+                    aabb.apply_blockstate_rotations(
+                        blockstate.rough_x_rotation,
+                        blockstate.rough_y_rotation,
+                    );
+                }
             }
         }
         let blockstate_id_range =
@@ -205,7 +225,7 @@ impl Registry {
         // Apply extra information
         let extra_info_modifiers_iter = extra_info_modifiers.into_iter();
         for blockstate in &mut blockstates {
-            blockstate.extra_info = default_extra_info;
+            blockstate.extra_info = default_extra_info.clone();
             'case_loop: for (info_modifier, property_set) in extra_info_modifiers_iter.clone() {
                 for (k, v) in property_set {
                     if blockstate.properties[k] != **v {
@@ -214,6 +234,15 @@ impl Registry {
                 }
                 // If all property conditions in a property modifier match, then apply.
                 blockstate.extra_info.merge_modifier(info_modifier);
+            }
+            // Apply blockstate rotation to custom AABBs
+            if let CollisionInfo::Complex(aabbs) = &mut blockstate.extra_info.collision_info {
+                for aabb in aabbs {
+                    aabb.apply_blockstate_rotations(
+                        blockstate.rough_x_rotation,
+                        blockstate.rough_y_rotation,
+                    );
+                }
             }
         }
         let blockstate_id_range =
@@ -273,7 +302,7 @@ impl Registry {
         // Apply extra information
         let extra_info_modifiers_iter = extra_info_modifiers.into_iter();
         for blockstate in &mut blockstates {
-            blockstate.extra_info = default_extra_info;
+            blockstate.extra_info = default_extra_info.clone();
             'case_loop: for (info_modifier, property_set) in extra_info_modifiers_iter.clone() {
                 for (k, v) in property_set {
                     if blockstate.properties[k] != **v {
@@ -555,7 +584,7 @@ pub fn register_blocks_from_json(
                     .iter()
                     .map(|modifier_case| {
                         (
-                            modifier_case.modifier,
+                            modifier_case.modifier.clone(),
                             modifier_case
                                 .conditions
                                 .iter()
@@ -575,7 +604,7 @@ pub fn register_blocks_from_json(
                     standard_reg.default_extra_info,
                     extra_info_modifiers
                         .iter()
-                        .map(|(modifier, conditions)| (*modifier, conditions.as_slice())),
+                        .map(|(modifier, conditions)| (modifier.clone(), conditions.as_slice())),
                 )?;
             }
             Registration::FullCustom(custom_reg) => {
@@ -593,7 +622,7 @@ pub fn register_blocks_from_json(
                     .iter()
                     .map(|modifier_case| {
                         (
-                            modifier_case.modifier,
+                            modifier_case.modifier.clone(),
                             modifier_case
                                 .conditions
                                 .iter()
@@ -613,7 +642,7 @@ pub fn register_blocks_from_json(
                     custom_reg.default_extra_info,
                     extra_info_modifiers
                         .iter()
-                        .map(|(modifier, conditions)| (*modifier, conditions.as_slice())),
+                        .map(|(modifier, conditions)| (modifier.clone(), conditions.as_slice())),
                 )?;
             }
             Registration::Liquid(liquid_reg) => {
@@ -623,7 +652,7 @@ pub fn register_blocks_from_json(
                     .iter()
                     .map(|modifier_case| {
                         (
-                            modifier_case.modifier,
+                            modifier_case.modifier.clone(),
                             modifier_case
                                 .conditions
                                 .iter()
@@ -640,7 +669,7 @@ pub fn register_blocks_from_json(
                     liquid_reg.default_extra_info,
                     extra_info_modifiers
                         .iter()
-                        .map(|(modifier, conditions)| (*modifier, conditions.as_slice())),
+                        .map(|(modifier, conditions)| (modifier.clone(), conditions.as_slice())),
                 )?;
             }
         }

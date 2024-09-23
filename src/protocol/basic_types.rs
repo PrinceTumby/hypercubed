@@ -229,6 +229,7 @@ impl TryFrom<VarInt> for usize {
     }
 }
 
+// FIXME: All the tests need to be fixed to work with LocatedSpan, currently they assume &[u8].
 #[cfg(test)]
 mod var_int_tests {
     use super::{Deserialize, Serialize, VarInt};

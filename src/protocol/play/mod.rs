@@ -79,7 +79,10 @@ pub enum Clientbound {
         chunk_z: i32,
         chunk_x: i32,
     } = 0x21,
-    GameEvent(GameEvent) = 0x22,
+    GameEvent {
+        event: GameEventType,
+        value: f32,
+    } = 0x22,
     InitializeWorldBorder(InitializeWorldBorder) = 0x25,
     KeepAlive {
         id: u64,
@@ -233,13 +236,7 @@ pub struct BlockUpdate {
     pub block_id: VarInt,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct GameEvent {
-    pub event: GameEventType,
-    pub value: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameEventType {
     NoRespawnBlockAvailable = 0,
     EndRaining = 1,
@@ -1208,6 +1205,10 @@ pub mod serverbound {
     pub struct ConfirmTeleportation {
         pub id: VarInt,
     }
+
+    #[derive(Clone, Debug, Serialize, PacketWrite)]
+    #[packet_write(id = 0x04)]
+    pub struct ChatCommand(pub String);
 
     #[derive(Clone, Copy, Debug, Serialize, PacketWrite)]
     #[packet_write(id = 0x08)]
