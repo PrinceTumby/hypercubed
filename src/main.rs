@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
         SERVER_PORT,
         configuration::ClientInformation {
             locale: "en_GB",
-            view_distance: 8,
+            view_distance: 1,
             chat_mode: configuration::ChatMode::Enabled,
             chat_colors_enabled: true,
             displayed_skin_parts: 0x7F,

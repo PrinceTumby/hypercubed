@@ -170,11 +170,16 @@ pub fn process_subchunks(
                                             continue;
                                         }
                                         block_faces[i].push(
-                                            graphics::chunk::block_face::Instance::new(
+                                            graphics::chunk_rc::block_face::Instance::new(
                                                 [x as u8, y as u8, z as u8],
                                                 info.per_face_atlas_uvs[i],
                                                 info.per_face_uv_rotations[i],
                                                 face_light_map[i],
+                                                blockstate_info
+                                                    .extra_info
+                                                    .light_info
+                                                    .emission_level
+                                                    > 0,
                                             ),
                                         );
                                     }
@@ -185,7 +190,7 @@ pub fn process_subchunks(
                                             continue;
                                         }
                                         tinted_block_faces[i].push(
-                                            graphics::chunk::tinted_block_face::Instance::new(
+                                            graphics::chunk_rc::tinted_block_face::Instance::new(
                                                 [x as u8, y as u8, z as u8],
                                                 info.per_face_atlas_uvs[i],
                                                 info.per_face_uv_rotations[i],
@@ -193,6 +198,11 @@ pub fn process_subchunks(
                                                 // Block doesn't have any tint, so just use
                                                 // transparent white as a null value.
                                                 [0xFF, 0xFF, 0xFF, 0x00],
+                                                blockstate_info
+                                                    .extra_info
+                                                    .light_info
+                                                    .emission_level
+                                                    > 0,
                                             ),
                                         );
                                     }
@@ -205,12 +215,13 @@ pub fn process_subchunks(
                                     continue;
                                 }
                                 tinted_block_faces[i].push(
-                                    graphics::chunk::tinted_block_face::Instance::new(
+                                    graphics::chunk_rc::tinted_block_face::Instance::new(
                                         [x as u8, y as u8, z as u8],
                                         info.per_face_atlas_uvs[i],
                                         info.per_face_uv_rotations[i],
                                         face_light_map[i],
                                         tint_color,
+                                        blockstate_info.extra_info.light_info.emission_level > 0,
                                     ),
                                 );
                             }
@@ -223,21 +234,25 @@ pub fn process_subchunks(
                                 if let Some(tint) = face.tint {
                                     assert!(tint == Tint::Biome, "TODO: Alternative tints");
                                     tinted_block_faces[face.face_i as usize].push(
-                                        graphics::chunk::tinted_block_face::Instance::new(
+                                        graphics::chunk_rc::tinted_block_face::Instance::new(
                                             [x as u8, y as u8, z as u8],
                                             face.atlas_uvs,
                                             face.uv_rotation,
                                             face_light_map[face.face_i as usize],
                                             tint_color,
+                                            blockstate_info.extra_info.light_info.emission_level
+                                                > 0,
                                         ),
                                     );
                                 } else {
                                     block_faces[face.face_i as usize].push(
-                                        graphics::chunk::block_face::Instance::new(
+                                        graphics::chunk_rc::block_face::Instance::new(
                                             [x as u8, y as u8, z as u8],
                                             face.atlas_uvs,
                                             face.uv_rotation,
                                             face_light_map[face.face_i as usize],
+                                            blockstate_info.extra_info.light_info.emission_level
+                                                > 0,
                                         ),
                                     );
                                 }
@@ -255,11 +270,12 @@ pub fn process_subchunks(
                             let block_instances = custom_block_instance_groups
                                 .entry(info)
                                 .or_insert_with(Vec::new);
-                            block_instances.push(graphics::chunk::custom_block::Instance::new(
+                            block_instances.push(graphics::chunk_rc::custom_block::Instance::new(
                                 [global_x, global_y, global_z],
                                 tint_color,
                                 light_section.get(x, y, z),
                                 face_light_map,
+                                blockstate_info.extra_info.light_info.emission_level > 0,
                             ));
                         }
                         _ => {}
@@ -271,7 +287,7 @@ pub fn process_subchunks(
         // face generation.
         // Outlined here: https://tomcc.github.io/2014/08/31/visibility-1.html
         let connected_faces = 'connected_faces: {
-            use graphics::chunk::SubchunkConnectivity;
+            use graphics::chunk_rc::SubchunkConnectivity;
             use protocol_chunk::Palette;
             // If we can immediately tell all the subchunk blocks are opaque, skip this entire
             // process and just return that no subchunk faces are connected.
@@ -436,7 +452,7 @@ pub fn process_subchunks(
                 continue;
             }
             let base_quad =
-                graphics::chunk::block_face::Vertex::generate_base_quad(start_coords, i);
+                graphics::chunk_rc::block_face::Vertex::generate_base_quad(start_coords, i);
             block_face_quads[i] = Some(base_quad);
         }
         // Tinted block faces
@@ -447,7 +463,7 @@ pub fn process_subchunks(
                 continue;
             }
             let base_quad =
-                graphics::chunk::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
+                graphics::chunk_rc::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
             tinted_block_face_quads[i] = Some(base_quad);
         }
         // Custom block groups

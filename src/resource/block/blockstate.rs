@@ -450,10 +450,6 @@ fn load_blockstate_multipart_cases(
     properties: &[(&str, CustomPropertyType)],
     model_cache: &mut ModelCache,
     texture_atlas: &mut texture::AtlasBuilder,
-    // TODO:
-    // - Add `extra_info` default and cases
-    // - Each case is a list of ANDed conditions, and an info modifier
-    // - Write a method on BlockstateInfo like `merge_modification`
 ) -> anyhow::Result<Vec<Blockstate>> {
     // Rescale weighted cases, so for each case, all weights sum to 1.0
     for case in &mut cases {

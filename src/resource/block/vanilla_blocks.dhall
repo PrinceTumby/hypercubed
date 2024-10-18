@@ -2049,7 +2049,10 @@ in  [ Registration.Standard
         , replacement_variants = Some [ facing_nswe, lit ]
         , default_extra_info = BlockstateInfo::{
           , opacity = BlockOpacity.Transparent
-          , light_info = skyTransparentInfo
+          , light_info = {
+            , sky_light_opacity = SkyLightOpacity.Opaque
+            , emission_level = 7
+            }
           , collision_info = emptyCollisionInfo
           }
         }

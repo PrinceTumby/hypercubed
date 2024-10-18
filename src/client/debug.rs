@@ -1,9 +1,9 @@
-use crate::client::graphics::{self, GraphicsState, Camera};
+use crate::client::graphics::{self, Camera, GraphicsState};
 use crate::client::{ClientPlayState, MIN_HEIGHT_I32};
 use crate::protocol::play::GameMode;
+use crate::PlayConnection;
 use nalgebra::Point3;
 use std::collections::VecDeque;
-use crate::PlayConnection;
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_debug_ui(
@@ -50,8 +50,7 @@ pub fn render_debug_ui(
         use egui::*;
         let width_f32 = graphics_state.size.width as f32 / scale_factor as f32;
         let height_f32 = graphics_state.size.height as f32 / scale_factor as f32;
-        let painter =
-            Painter::new(ctx.clone(), LayerId::background(), Rect::EVERYTHING);
+        let painter = Painter::new(ctx.clone(), LayerId::background(), Rect::EVERYTHING);
         Window::new("Debug Info").resizable(false).show(ctx, |ui| {
             ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
             // VSync
@@ -60,12 +59,11 @@ pub fn render_debug_ui(
                 let old_vsync = graphics_options.vsync;
                 ui.checkbox(&mut graphics_options.vsync, "VSync");
                 if graphics_options.vsync != old_vsync {
-                    graphics_state.config.present_mode =
-                        graphics_options.get_present_mode();
-                    graphics_state.resources.surface.configure(
-                        &graphics_state.resources.device,
-                        &graphics_state.config,
-                    );
+                    graphics_state.config.present_mode = graphics_options.get_present_mode();
+                    graphics_state
+                        .resources
+                        .surface
+                        .configure(&graphics_state.resources.device, &graphics_state.config);
                 }
             }
             ui.label(format!("Position: {:.2?}", graphics_state.camera.pos));
@@ -73,10 +71,7 @@ pub fn render_debug_ui(
                 "Subchunks Culled: {}",
                 debug_output.subchunks_culled
             ));
-            ui.add(
-                Slider::new(&mut debug_state.cull_planes_active, 0..=6)
-                    .text("Planes active"),
-            );
+            ui.add(Slider::new(&mut debug_state.cull_planes_active, 0..=6).text("Planes active"));
             ui.add(
                 Slider::new(&mut debug_state.max_render_chunks, 0..=3000)
                     .drag_value_speed(1.0)
@@ -110,34 +105,26 @@ pub fn render_debug_ui(
                 ui.radio_value(&mut game_mode, GameMode::Spectator, "Spectator");
                 if game_mode != player.game_mode {
                     server_connection
-                        .send_packet(crate::protocol::play::serverbound::ChatCommand(
-                            format!(
-                                "gamemode {} @s",
-                                match game_mode {
-                                    GameMode::Survival => "survival",
-                                    GameMode::Creative => "creative",
-                                    GameMode::Adventure => "adventure",
-                                    GameMode::Spectator => "spectator",
-                                }
-                            )
-                        ))
+                        .send_packet(crate::protocol::play::serverbound::ChatCommand(format!(
+                            "gamemode {} @s",
+                            match game_mode {
+                                GameMode::Survival => "survival",
+                                GameMode::Creative => "creative",
+                                GameMode::Adventure => "adventure",
+                                GameMode::Spectator => "spectator",
+                            }
+                        )))
                         .unwrap();
                     server_connection.flush().unwrap();
                 }
             });
             ui.collapsing("Cave Culling", |ui| {
-                ui.checkbox(
-                    &mut debug_state.cave_cull_check_unflipped,
-                    "Flip check",
-                );
+                ui.checkbox(&mut debug_state.cave_cull_check_unflipped, "Flip check");
                 ui.checkbox(
                     &mut debug_state.cave_cull_check_not_backwards,
                     "Backwards check",
                 );
-                ui.checkbox(
-                    &mut debug_state.cave_cull_check_frustum,
-                    "Frustum check",
-                );
+                ui.checkbox(&mut debug_state.cave_cull_check_frustum, "Frustum check");
                 ui.checkbox(
                     &mut debug_state.cave_cull_check_connectivity,
                     "Connectivity check",
@@ -151,12 +138,9 @@ pub fn render_debug_ui(
                     "Render subchunk traversal graph",
                 );
                 ui.add(
-                    Slider::new(
-                        &mut debug_state.cave_cull_debug_render_dist,
-                        0.0..=64.0,
-                    )
-                    .clamp_to_range(false)
-                    .text("Render distance"),
+                    Slider::new(&mut debug_state.cave_cull_debug_render_dist, 0.0..=64.0)
+                        .clamp_to_range(false)
+                        .text("Render distance"),
                 );
             });
             ui.collapsing("Block Info", |ui| {
@@ -175,10 +159,9 @@ pub fn render_debug_ui(
                         ui.label("Blockstate data: N/A");
                     } else {
                         let chunk_section = &chunk.sections[section_i];
-                        let global_palette_index =
-                            chunk_section.block_states.get(x, y, z);
-                        let blockstate = &graphics_state.resources.block_registry
-                            [global_palette_index];
+                        let global_palette_index = chunk_section.block_states.get(x, y, z);
+                        let blockstate =
+                            &graphics_state.resources.block_registry[global_palette_index];
                         let identifier = graphics_state
                             .resources
                             .block_registry
@@ -211,6 +194,27 @@ pub fn render_debug_ui(
                     ui.label("Subchunk connectivity info: N/A");
                 }
             });
+            ui.collapsing("Radiance Cascades", |ui| {
+                // if ui.button("Update Radiance Lighting").clicked() {
+                //     graphics_state.update_all_subchunks_radiance_lighting(&play_state.subchunks);
+                // }
+                if ui.button("Calculate lighting").clicked() {
+                    graphics_state.update_all_subchunks_radiance_lighting(&play_state.subchunks);
+                }
+                ui.collapsing("Debug Frame", |ui| {
+                    if ui.button("Render Debug Frame").clicked() {
+                        graphics_state.radiance_cascades_debug_render(&play_state.subchunks);
+                    }
+                    ui.image(graphics_state.radiance_probe_debug_egui_texture);
+                });
+                let debug_info = *graphics_state.radiance_probe_debug_info.lock().unwrap();
+                ui.checkbox(
+                    &mut debug_state.radiance_cascades_ray_visualiser,
+                    "Ray visualiser",
+                );
+                ui.add(Slider::new(&mut debug_state.max_radiance_cascade, 0..=6).text("Cascade"));
+                ui.label(format!("GPU Debug info: {debug_info:?}"));
+            });
             ui.collapsing("Frametimes", |ui| {
                 use egui_plot::{Line, Plot, PlotPoints};
                 Plot::new("frame_time_plot")
@@ -239,8 +243,7 @@ pub fn render_debug_ui(
         if debug_state.rendering_view_frustum {
             use nalgebra::Point3;
             let camera = &graphics_state.camera;
-            let inv_cull_view_mat =
-                camera.generate_view_matrix().try_inverse().unwrap();
+            let inv_cull_view_mat = camera.generate_view_matrix().try_inverse().unwrap();
             let plane_point_groups: [[Point3<f32>; 4]; 6] = [
                 [
                     Point3::new(-1.0, 1.0, 0.9999),
@@ -355,11 +358,8 @@ pub fn render_debug_ui(
             for subchunk in subchunks.values() {
                 let pairs = subchunk.connected_faces.get_pairs();
                 let subchunk_centre = subchunk.start_coords.map(|n| (n + 8) as f32);
-                let subchunk_centre = Point3::new(
-                    subchunk_centre[0],
-                    subchunk_centre[1],
-                    subchunk_centre[2],
-                );
+                let subchunk_centre =
+                    Point3::new(subchunk_centre[0], subchunk_centre[1], subchunk_centre[2]);
                 // Render bounding box
                 {
                     let start = Point3::new(
@@ -367,8 +367,7 @@ pub fn render_debug_ui(
                         subchunk.start_coords[1] as f32,
                         subchunk.start_coords[2] as f32,
                     );
-                    let end =
-                        Point3::new(start.x + 16.0, start.y + 16.0, start.z + 16.0);
+                    let end = Point3::new(start.x + 16.0, start.y + 16.0, start.z + 16.0);
                     let corners = [
                         Point3::new(start.x, start.y, start.z),
                         Point3::new(end.x, start.y, start.z),
@@ -398,22 +397,16 @@ pub fn render_debug_ui(
                     ];
                     for line in lines {
                         let max_dist = debug_state.cave_cull_debug_render_dist;
-                        let end_1_dist =
-                            (graphics_camera.pos - line[0]).magnitude();
-                        let end_2_dist =
-                            (graphics_camera.pos - line[1]).magnitude();
+                        let end_1_dist = (graphics_camera.pos - line[0]).magnitude();
+                        let end_2_dist = (graphics_camera.pos - line[1]).magnitude();
                         if end_1_dist > max_dist || end_2_dist > max_dist {
                             continue;
                         }
-                        let Some(line) =
-                            debug_clip_and_project_line(line, graphics_camera)
-                        else {
+                        let Some(line) = debug_clip_and_project_line(line, graphics_camera) else {
                             continue;
                         };
-                        let centre_dist =
-                            (graphics_camera.pos - subchunk_centre).magnitude();
-                        let alpha =
-                            (1.0 - (centre_dist / max_dist.max(0.01))).max(0.0);
+                        let centre_dist = (graphics_camera.pos - subchunk_centre).magnitude();
+                        let alpha = (1.0 - (centre_dist / max_dist.max(0.01))).max(0.0);
                         painter.add(Shape::line_segment(
                             line.map(|p| {
                                 Pos2::new(
@@ -423,17 +416,13 @@ pub fn render_debug_ui(
                             }),
                             (
                                 5.0 * alpha,
-                                Color32::from_rgba_unmultiplied(
-                                    0xFF, 0x00, 0xFF, 0xFF,
-                                )
-                                .gamma_multiply(alpha),
+                                Color32::from_rgba_unmultiplied(0xFF, 0x00, 0xFF, 0xFF)
+                                    .gamma_multiply(alpha),
                             ),
                         ));
                     }
                 }
-                for (i, ([dir_1, dir_2], pair_connected)) in
-                    pairs.into_iter().enumerate()
-                {
+                for (i, ([dir_1, dir_2], pair_connected)) in pairs.into_iter().enumerate() {
                     if !pair_connected {
                         continue;
                     }
@@ -449,12 +438,10 @@ pub fn render_debug_ui(
                         continue;
                     }
                     let average_dist = (end_1_dist + end_2_dist) / 2.0;
-                    let alpha =
-                        (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
-                    if let Some(line_1) = debug_clip_and_project_line(
-                        [pair_centre, end_1],
-                        graphics_camera,
-                    ) {
+                    let alpha = (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
+                    if let Some(line_1) =
+                        debug_clip_and_project_line([pair_centre, end_1], graphics_camera)
+                    {
                         painter.add(Shape::line_segment(
                             line_1.map(|p| {
                                 Pos2::new(
@@ -465,10 +452,9 @@ pub fn render_debug_ui(
                             (5.0 * alpha, colour.gamma_multiply(alpha)),
                         ));
                     }
-                    if let Some(line_2) = debug_clip_and_project_line(
-                        [pair_centre, end_2],
-                        graphics_camera,
-                    ) {
+                    if let Some(line_2) =
+                        debug_clip_and_project_line([pair_centre, end_2], graphics_camera)
+                    {
                         painter.add(Shape::line_segment(
                             line_2.map(|p| {
                                 Pos2::new(
@@ -480,6 +466,92 @@ pub fn render_debug_ui(
                         ));
                     }
                 }
+            }
+        }
+        if debug_state.radiance_cascades_ray_visualiser {
+            use nalgebra::{Point3, Vector3};
+            let graphics_camera = &graphics_state.camera;
+            // let start_pos = Point3::new(17.5, 157.0, -13.5);
+            let start_pos = Point3::new(16.03125, 155.0, -16.21875);
+            // fn append_rays(
+            //     output_dirs: &mut Vec<Vector3<f32>>,
+            //     current_dir: Vector3<f32>,
+            //     current_cascade_i: i32,
+            //     target_cascade_i: i32,
+            // ) {
+            //     let raw_ray_dirs = [
+            //         Vector3::new(-1.0, 1.0, 1.0),
+            //         Vector3::new(1.0, 1.0, 1.0),
+            //         Vector3::new(-1.0, 1.0, -1.0),
+            //         Vector3::new(1.0, 1.0, -1.0),
+            //     ]
+            //     .map(|raw_ray_dir| raw_ray_dir.normalize());
+            //     for dir in raw_ray_dirs {
+            //         let dir_modifier = dir / (2.0_f32).powi(current_cascade_i);
+            //         let new_dir = (current_dir + dir_modifier).normalize();
+            //         if current_cascade_i < target_cascade_i {
+            //             append_rays(output_dirs, new_dir, current_cascade_i + 1, target_cascade_i);
+            //         } else {
+            //             output_dirs.push(new_dir);
+            //         }
+            //     }
+            // }
+            // let rays = {
+            //     let mut rays = Vec::new();
+            //     append_rays(&mut rays, Vector3::zeros(), 0, debug_state.max_radiance_cascade);
+            //     rays
+            // };
+            let rays = {
+                let mut rays = Vec::new();
+                let phi = std::f32::consts::PI * ((5.0_f32).sqrt() - 1.0);
+                let num_samples = 16 * 8_i32.pow(debug_state.max_radiance_cascade);
+                for ray_i in 0..num_samples {
+                    let y = 1.0 - (ray_i as f32 / (num_samples * 2 - 1) as f32) * 2.0;
+                    let radius = (1.0 - y.powi(2)).sqrt();
+                    let theta = phi * ray_i as f32;
+                    let x = theta.cos() * radius;
+                    let z = theta.sin() * radius;
+                    rays.push(Vector3::new(x, y, z));
+                }
+                rays
+            };
+            for ray_dir in rays {
+                // let ray_raw = match ray_i {
+                //     0 => Vector3::new(-1.0, 1.0, 1.0),
+                //     1 => Vector3::new(1.0, 1.0, 1.0),
+                //     2 => Vector3::new(-1.0, 1.0, -1.0),
+                //     3 => Vector3::new(1.0, 1.0, -1.0),
+                //     _ => unreachable!(),
+                // };
+                // let ray_dir = ray_raw.normalize();
+                let ray_start = if debug_state.max_radiance_cascade > 0 {
+                    start_pos
+                        + (ray_dir
+                            * (1.0 / 16.0)
+                            * (8.0_f32).powi(debug_state.max_radiance_cascade as i32 - 1))
+                } else {
+                    start_pos
+                };
+                let ray_end = start_pos
+                    + (ray_dir * (1.0 / 16.0) * (8.0_f32).powi(debug_state.max_radiance_cascade as i32));
+                let Some(line) = debug_clip_and_project_line([ray_start, ray_end], graphics_camera)
+                else {
+                    continue;
+                };
+                let max_dist: f32 = 25.0;
+                let start_dist = (graphics_camera.pos - ray_start).magnitude();
+                let end_dist = (graphics_camera.pos - ray_end).magnitude();
+                let average_dist = f32::min(start_dist, end_dist);
+                let alpha = (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
+                painter.add(Shape::line_segment(
+                    line.map(|p| {
+                        Pos2::new(
+                            (p.x + 1.0) / 2.0 * width_f32,
+                            (-p.y + 1.0) / 2.0 * height_f32,
+                        )
+                    }),
+                    (5.0 * alpha, Color32::RED.gamma_multiply(alpha)),
+                ));
             }
         }
         if debug_state.cave_cull_render_traversal_graph {
@@ -495,18 +567,14 @@ pub fn render_debug_ui(
                     )
                 });
                 let max_dist = debug_state.cave_cull_debug_render_dist;
-                let from_centre_dist =
-                    (graphics_camera.pos - chunk_centres[0]).magnitude();
-                let to_centre_dist =
-                    (graphics_camera.pos - chunk_centres[1]).magnitude();
+                let from_centre_dist = (graphics_camera.pos - chunk_centres[0]).magnitude();
+                let to_centre_dist = (graphics_camera.pos - chunk_centres[1]).magnitude();
                 if from_centre_dist > max_dist || to_centre_dist > max_dist {
                     continue;
                 }
                 let average_dist = (from_centre_dist + to_centre_dist) / 2.0;
                 let alpha = (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
-                if let Some(line) =
-                    debug_clip_and_project_line(chunk_centres, graphics_camera)
-                {
+                if let Some(line) = debug_clip_and_project_line(chunk_centres, graphics_camera) {
                     painter.add(Shape::line_segment(
                         line.map(|p| {
                             Pos2::new(

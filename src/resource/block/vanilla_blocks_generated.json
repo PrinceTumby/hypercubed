@@ -8594,8 +8594,8 @@
         "Empty": {}
       },
       "light_info": {
-        "emission_level": 0,
-        "sky_light_opacity": "Transparent"
+        "emission_level": 7,
+        "sky_light_opacity": "Opaque"
       },
       "opacity": "Transparent"
     },

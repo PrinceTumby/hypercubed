@@ -1,4 +1,5 @@
 pub mod chunk;
+pub mod chunk_rc;
 pub mod debug;
 pub mod egui_renderer;
 
@@ -7,12 +8,12 @@ use crate::resource;
 use ahash::{AHashMap, AHashSet};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt as _;
 use winit::window::Window;
 //use petgraph::graph::DiGraph;
 use super::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use chunk::{
+use chunk_rc::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
@@ -130,11 +131,30 @@ pub struct GraphicsBufferManagers {
     pub custom_block_instance: CustomBlockInstanceBufferManager,
 }
 
+// XXX: DEBUG
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct RadianceProbeDebugInfo {
+    pub debug_floats: [f32; 4],
+    pub debug_ints: [u32; 4],
+}
+
 pub struct GraphicsState {
     pub resources: Arc<GraphicsResources>,
     pub buffer_managers: GraphicsBufferManagers,
     pub config: wgpu::SurfaceConfiguration,
     pub graphics_options: GraphicsOptions,
+    pub radiance_probe_update_pipelines: [wgpu::ComputePipeline; 2],
+    pub radiance_probe_debug_pipeline: wgpu::ComputePipeline,
+    pub radiance_probe_info_bind_group_layout: wgpu::BindGroupLayout,
+    pub radiance_probe_debug_texture_storage_bind_group: wgpu::BindGroup,
+    pub radiance_probe_debug_egui_texture: egui::load::SizedTexture,
+    pub radiance_probe_debug_info_buffer: Arc<wgpu::Buffer>,
+    pub radiance_probe_debug_info: Arc<Mutex<RadianceProbeDebugInfo>>,
+    pub radiance_probe_lightmap_bind_group_layout: wgpu::BindGroupLayout,
+    // TODO:
+    // - Render to an HDR texture
+    // - Implement an HDR pipeline for tonemapping to sRGB
     pub block_render_pipeline: wgpu::RenderPipeline,
     pub tinted_block_render_pipeline: wgpu::RenderPipeline,
     pub custom_block_render_pipeline: wgpu::RenderPipeline,
@@ -143,6 +163,7 @@ pub struct GraphicsState {
     pub depth_texture: Texture,
     pub custom_block_vertices_buffer: wgpu::Buffer,
     pub custom_block_indices_buffer: wgpu::Buffer,
+    pub block_item_atlas: resource::texture::Atlas,
     pub block_item_atlas_bind_group: wgpu::BindGroup,
     pub camera: Camera,
     pub camera_buffer: wgpu::Buffer,
@@ -169,6 +190,28 @@ pub struct DebugState {
     pub cave_cull_render_traversal_graph: bool,
     pub cave_cull_debug_render_dist: f32,
     pub max_render_chunks: usize,
+    pub radiance_cascades_ray_visualiser: bool,
+    pub max_radiance_cascade: u32,
+}
+
+impl Default for DebugState {
+    fn default() -> Self {
+        Self {
+            cull_planes_active: 6,
+            rendering_view_frustum: false,
+            free_cam: false,
+            cave_cull_check_unflipped: true,
+            cave_cull_check_not_backwards: false,
+            cave_cull_check_frustum: true,
+            cave_cull_check_connectivity: true,
+            cave_cull_render_connectivity: false,
+            cave_cull_render_traversal_graph: false,
+            cave_cull_debug_render_dist: 24.0,
+            max_render_chunks: 3000,
+            radiance_cascades_ray_visualiser: false,
+            max_radiance_cascade: 0,
+        }
+    }
 }
 
 pub struct DebugOutput {
@@ -201,14 +244,28 @@ impl GraphicsState {
             })
             .await
             .unwrap();
+        dbg!(adapter.get_info());
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    required_features: wgpu::Features::POLYGON_MODE_LINE
-                        | wgpu::Features::MULTI_DRAW_INDIRECT
-                        | wgpu::Features::INDIRECT_FIRST_INSTANCE,
-                    required_limits: wgpu::Limits::default(),
+                    required_features: wgpu::Features::MULTI_DRAW_INDIRECT
+                        | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                        // XXX: DEBUG
+                        | wgpu::Features::POLYGON_MODE_LINE
+                        | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+                        // NOTE: RADIANCE CASCADES
+                        | wgpu::Features::PUSH_CONSTANTS,
+                    required_limits: wgpu::Limits {
+                        // max_push_constant_size: 24,
+                        // XXX: DEBUG
+                        max_push_constant_size: 64,
+                        // NOTE: RADIANCE CASCADES
+                        max_storage_buffers_per_shader_stage: 10,
+                        max_storage_buffer_binding_size: 1024 * 1024 * 1024,
+                        max_buffer_size: 1024 * 1024 * 1024,
+                        ..Default::default()
+                    },
                     memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
@@ -253,7 +310,7 @@ impl GraphicsState {
                 label: Some("matrices_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -278,7 +335,7 @@ impl GraphicsState {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
@@ -293,6 +350,20 @@ impl GraphicsState {
                         count: None,
                     },
                 ],
+            });
+        let lightmap_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Light Map Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
             });
         let (
             block_item_texture_atlas,
@@ -314,13 +385,13 @@ impl GraphicsState {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Custom Block Vertices Buffer"),
                     contents: bytemuck::cast_slice(&model_cache.custom_block_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
                 });
             let custom_block_indices_buffer =
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Custom Block Indices Buffer"),
                     contents: bytemuck::cast_slice(&model_cache.custom_block_indices),
-                    usage: wgpu::BufferUsages::INDEX,
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::STORAGE,
                 });
             (
                 atlas,
@@ -363,24 +434,225 @@ impl GraphicsState {
                     &camera_bind_group_layout,
                     &atlas_bind_group_layout,
                     &matrices_bind_group_layout,
+                    &lightmap_bind_group_layout,
                 ],
                 push_constant_ranges: &[],
             });
-        let block_render_pipeline = chunk::block_face::create_render_pipeline(
+        let block_render_pipeline = chunk_rc::block_face::create_render_pipeline(
             &device,
             &config,
             &generic_block_pipeline_layout,
         );
-        let tinted_block_render_pipeline = chunk::tinted_block_face::create_render_pipeline(
+        let tinted_block_render_pipeline = chunk_rc::tinted_block_face::create_render_pipeline(
             &device,
             &config,
             &generic_block_pipeline_layout,
         );
-        let custom_block_render_pipeline = chunk::custom_block::create_render_pipeline(
+        let custom_block_render_pipeline = chunk_rc::custom_block::create_render_pipeline(
             &device,
             &config,
             &generic_block_pipeline_layout,
         );
+        let radiance_probe_info_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Radiance Probe Info Bind Group Layout"),
+                entries: &[
+                    // Subchunk Hash Map
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Block Face Instances
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Tinted Block Face Instances
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Custom Block Vertices
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Custom Block Indices
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Custom Block Instances
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Custom Block Groups
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Update Info Buffer
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Output Lightmap Buffer
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Previous Cascade Buffer
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 9,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Block and Item Luma Atlas Texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 10,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let radiance_probe_debug_texture_storage_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Debug Radiance Probe Texture Storage Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                }],
+            });
+        let radiance_probe_update_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Radiance Probe Update Pipeline Layout"),
+                bind_group_layouts: &[
+                    &atlas_bind_group_layout,
+                    &matrices_bind_group_layout,
+                    &radiance_probe_info_bind_group_layout,
+                    &radiance_probe_debug_texture_storage_layout,
+                ],
+                push_constant_ranges: &[wgpu::PushConstantRange {
+                    stages: wgpu::ShaderStages::COMPUTE,
+                    // range: 0..24,
+                    // XXX: DEBUG
+                    range: 0..64,
+                }],
+            });
+        let radiance_probe_update_pipelines = chunk_rc::compute::create_cascade_update_pipelines(
+            &device,
+            &radiance_probe_update_pipeline_layout,
+        );
+        let radiance_probe_debug_pipeline = chunk_rc::compute::create_raytracing_debug_pipeline(
+            &device,
+            &radiance_probe_update_pipeline_layout,
+        );
+        // XXX: DEBUG
+        let radiance_probe_debug_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Radiance Probe Debug Texture"),
+            size: wgpu::Extent3d {
+                width: 960,
+                height: 540,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+        let radiance_probe_debug_texture_storage_bind_group = {
+            let view =
+                radiance_probe_debug_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let storage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Debug Radiance Probe Texture Storage Bind Group"),
+                layout: &radiance_probe_debug_texture_storage_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                }],
+            });
+            storage_bind_group
+        };
+        let radiance_probe_debug_info_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Radiance Probe Debug Info Buffer"),
+                contents: bytemuck::cast_slice(&[RadianceProbeDebugInfo::default()]),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_READ,
+            });
+        let radiance_probe_debug_info_buffer = Arc::new(radiance_probe_debug_info_buffer);
         // Debug information pipelines
         let debug_crosshair_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -394,14 +666,21 @@ impl GraphicsState {
             &debug_crosshair_pipeline_layout,
         );
         // egui renderer
-        let egui_renderer = egui_renderer::Renderer::new(&device, &config);
+        let mut egui_renderer = egui_renderer::Renderer::new(&device, &config);
+        // XXX: DEBUG
+        let radiance_probe_debug_egui_texture_id = egui_renderer.register_user_texture(
+            &device,
+            radiance_probe_debug_texture,
+            egui::TextureOptions::NEAREST,
+        );
         // Buffer managers
         let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device);
-        let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device);
+        let block_face_instance_buffer_manager =
+            BlockFaceInstanceBufferManager::new(&device, "Block Face");
         let tinted_block_face_vertex_buffer_manager =
             TintedBlockFaceVertexBufferManager::new(&device);
         let tinted_block_face_instance_buffer_manager =
-            TintedBlockFaceInstanceBufferManager::new(&device);
+            TintedBlockFaceInstanceBufferManager::new(&device, "Tinted Block Face");
         let custom_block_instance_buffer_manager = CustomBlockInstanceBufferManager::new(&device);
         // Buffers
         let proj_matrix = Perspective3::new(
@@ -432,7 +711,7 @@ impl GraphicsState {
         });
         let face_matrices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Face Matrices Buffer"),
-            contents: bytemuck::cast_slice(&chunk::block_face::face_matrices::generate_array()),
+            contents: bytemuck::cast_slice(&chunk_rc::block_face::face_matrices::generate_array()),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let matrices_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -483,6 +762,17 @@ impl GraphicsState {
             },
             config,
             graphics_options,
+            radiance_probe_debug_pipeline,
+            radiance_probe_update_pipelines,
+            radiance_probe_info_bind_group_layout,
+            radiance_probe_debug_texture_storage_bind_group,
+            radiance_probe_debug_egui_texture: egui::load::SizedTexture {
+                id: radiance_probe_debug_egui_texture_id,
+                size: (960.0, 540.0).into(),
+            },
+            radiance_probe_debug_info_buffer,
+            radiance_probe_debug_info: Arc::new(Mutex::new(RadianceProbeDebugInfo::default())),
+            radiance_probe_lightmap_bind_group_layout: lightmap_bind_group_layout,
             block_render_pipeline,
             tinted_block_render_pipeline,
             custom_block_render_pipeline,
@@ -491,6 +781,7 @@ impl GraphicsState {
             depth_texture,
             custom_block_vertices_buffer,
             custom_block_indices_buffer,
+            block_item_atlas: block_item_texture_atlas,
             block_item_atlas_bind_group,
             camera,
             camera_buffer,
@@ -534,7 +825,7 @@ impl GraphicsState {
     #[tracing::instrument(skip_all)]
     pub fn render(
         &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk::Subchunk>,
+        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
         loaded_chunks: &AHashSet<[i32; 2]>,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
@@ -844,11 +1135,11 @@ impl GraphicsState {
                 // Custom blocks
                 for group in &subchunk.custom_block_groups {
                     custom_block_draw_args.push(DrawIndexedIndirectArgs {
-                        num_indices: group.start_index_and_len.1,
-                        num_instances: group.start_instance_and_len.1,
-                        start_index: group.start_index_and_len.0,
+                        num_indices: group.start_index_and_len[1],
+                        num_instances: group.start_instance_and_len[1],
+                        start_index: group.start_index_and_len[0],
                         start_vertex: group.start_vertex,
-                        start_instance: group.start_instance_and_len.0,
+                        start_instance: group.start_instance_and_len[0],
                     });
                 }
             }
@@ -856,6 +1147,22 @@ impl GraphicsState {
                 let subchunk_coord_set: AHashSet<_> = subchunks.keys().copied().collect();
                 subchunks_skipped = subchunk_coord_set.difference(&rendered_chunks).count()
             }
+            let lightmap_bind_group =
+                self.resources
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Lightmap Bind Group"),
+                        layout: &self.radiance_probe_lightmap_bind_group_layout,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
+                                .as_entire_binding(),
+                        }],
+                    });
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
+            render_pass.set_bind_group(3, &lightmap_bind_group, &[]);
             // Base block faces
             if !block_face_draw_args.is_empty() {
                 block_face_draw_args_buffer =
@@ -867,9 +1174,6 @@ impl GraphicsState {
                             usage: wgpu::BufferUsages::INDIRECT,
                         });
                 render_pass.set_pipeline(&self.block_render_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
                 render_pass
                     .set_vertex_buffer(0, self.buffer_managers.block_face_vertex.get_slice());
                 render_pass
@@ -891,9 +1195,6 @@ impl GraphicsState {
                             usage: wgpu::BufferUsages::INDIRECT,
                         });
                 render_pass.set_pipeline(&self.tinted_block_render_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
                 render_pass.set_vertex_buffer(
                     0,
                     self.buffer_managers.tinted_block_face_vertex.get_slice(),
@@ -919,9 +1220,6 @@ impl GraphicsState {
                             usage: wgpu::BufferUsages::INDIRECT,
                         });
                 render_pass.set_pipeline(&self.custom_block_render_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.custom_block_vertices_buffer.slice(..));
                 render_pass
                     .set_vertex_buffer(1, self.buffer_managers.custom_block_instance.get_slice());
@@ -956,6 +1254,570 @@ impl GraphicsState {
             subchunks_culled: subchunks_skipped,
             subchunk_traversal_graph,
         })
+    }
+
+    pub fn radiance_cascades_debug_render(
+        &mut self,
+        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
+    ) {
+        let device = &self.resources.device;
+        let (subchunk_hash_map_buffer, custom_block_group_buffer) = {
+            #[repr(C)]
+            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+            struct SubchunkHashMapEntry {
+                pub pos: [f32; 3],
+                pub block_face_instance_slices: [[u32; 2]; 6],
+                pub tinted_block_face_instance_slices: [[u32; 2]; 6],
+                pub custom_block_group_slice: [u32; 2],
+            }
+            const EMPTY_ENTRY: SubchunkHashMapEntry = SubchunkHashMapEntry {
+                pos: [0.1; 3],
+                block_face_instance_slices: [[0; 2]; 6],
+                tinted_block_face_instance_slices: [[0; 2]; 6],
+                custom_block_group_slice: [0; 2],
+            };
+            struct SubchunkHashMap {
+                pub entries: Vec<SubchunkHashMapEntry>,
+                pub num_stored_entries: usize,
+            }
+            impl SubchunkHashMap {
+                fn murmur_32_scramble(mut k: u32) -> u32 {
+                    k = k.wrapping_mul(0xCC9E2D51);
+                    k = (k << 15) | (k >> 17);
+                    k = k.wrapping_mul(0x1B873593);
+                    k
+                }
+
+                fn subchunk_hash(key: [f32; 3]) -> u32 {
+                    // Hash components of key
+                    let mut hash: u32 = 0;
+                    for component in key {
+                        hash ^= Self::murmur_32_scramble(component.to_bits());
+                        hash = (hash << 13) | (hash >> 19);
+                        hash = hash.wrapping_mul(5).wrapping_add(0xE6546B64);
+                    }
+                    // Finalise hash
+                    hash ^= hash >> 16;
+                    hash = hash.wrapping_mul(0x85EBCA6B);
+                    hash ^= hash >> 13;
+                    hash = hash.wrapping_mul(0xC2B2AE35);
+                    hash ^= hash >> 16;
+                    hash
+                }
+
+                pub fn insert(&mut self, new_entry: SubchunkHashMapEntry) {
+                    debug_assert!(self.num_stored_entries < self.entries.len() - 1);
+                    // Insert entry
+                    let mut current_slot = usize::try_from(Self::subchunk_hash(new_entry.pos))
+                        .unwrap()
+                        % self.entries.len();
+                    loop {
+                        if self.entries[current_slot].pos == [0.1; 3] {
+                            self.entries[current_slot] = new_entry;
+                            self.num_stored_entries += 1;
+                            return;
+                        }
+                        current_slot += 1;
+                        current_slot %= self.entries.len();
+                    }
+                }
+
+                pub fn lookup(&self, pos: [f32; 3]) -> Option<SubchunkHashMapEntry> {
+                    let mut entries_searched: usize = 1;
+                    let mut current_slot =
+                        usize::try_from(Self::subchunk_hash(pos)).unwrap() % self.entries.len();
+                    loop {
+                        let entry = &self.entries[current_slot];
+                        if entry.pos == pos {
+                            dbg!(entries_searched);
+                            return Some(*entry);
+                        } else if self.entries[current_slot].pos == [0.1; 3] {
+                            dbg!(entries_searched);
+                            return None;
+                        }
+                        current_slot += 1;
+                        current_slot %= self.entries.len();
+                        entries_searched += 1;
+                    }
+                }
+            }
+            let subchunk_hash_map_capacity = if subchunks.len().is_power_of_two() {
+                (subchunks.len() + 1).next_power_of_two()
+            } else {
+                subchunks.len().next_power_of_two()
+            };
+            let mut subchunk_hash_map = SubchunkHashMap {
+                entries: vec![EMPTY_ENTRY; subchunk_hash_map_capacity],
+                num_stored_entries: 0,
+            };
+            let mut custom_block_groups: Vec<chunk_rc::CustomBlockGroup> = Vec::new();
+            for (_subchunk_pos, subchunk) in subchunks {
+                let custom_block_group_slice = if !subchunk.custom_block_groups.is_empty() {
+                    let group_start: u32 = custom_block_groups.len().try_into().unwrap();
+                    let group_len: u32 = subchunk.custom_block_groups.len().try_into().unwrap();
+                    custom_block_groups.extend(&subchunk.custom_block_groups);
+                    [group_start, group_len]
+                } else {
+                    [0; 2]
+                };
+                subchunk_hash_map.insert(SubchunkHashMapEntry {
+                    pos: subchunk.start_coords.map(|n| (n / 16) as f32),
+                    block_face_instance_slices: subchunk
+                        .block_face_instance_groups
+                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
+                    tinted_block_face_instance_slices: subchunk
+                        .tinted_block_face_instance_groups
+                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
+                    custom_block_group_slice,
+                });
+            }
+            let hash_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Subchunk Hash Map Buffer"),
+                contents: bytemuck::cast_slice(&subchunk_hash_map.entries),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            let group_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Custom Block Group Buffer"),
+                contents: bytemuck::cast_slice(&custom_block_groups),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            (hash_map_buffer, group_buffer)
+        };
+        let radiance_probe_info_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Radiance Probe Info Bind Group"),
+            layout: &self.radiance_probe_info_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: subchunk_hash_map_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self
+                        .buffer_managers
+                        .block_face_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self
+                        .buffer_managers
+                        .tinted_block_face_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.custom_block_vertices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.custom_block_indices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self
+                        .buffer_managers
+                        .custom_block_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: custom_block_group_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.radiance_probe_debug_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[1]
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&self.block_item_atlas.luma_view),
+                },
+            ],
+        });
+        let mut encoder =
+            self.resources
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Compute Encoder"),
+                });
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Subchunk Radiance Cascade Update Compute Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.radiance_probe_debug_pipeline);
+            compute_pass.set_bind_group(0, &self.block_item_atlas_bind_group, &[]);
+            compute_pass.set_bind_group(1, &self.matrices_bind_group, &[]);
+            compute_pass.set_bind_group(2, &radiance_probe_info_bind_group, &[]);
+            compute_pass.set_bind_group(
+                3,
+                &self.radiance_probe_debug_texture_storage_bind_group,
+                &[],
+            );
+            #[repr(C)]
+            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+            struct UpdateInfo {
+                pub inv_view_matrix: [[f32; 4]; 4],
+            }
+            compute_pass.set_push_constants(
+                0,
+                bytemuck::cast_slice(&[UpdateInfo {
+                    inv_view_matrix: *self
+                        .camera
+                        .generate_view_matrix()
+                        .try_inverse()
+                        .unwrap()
+                        .as_ref(),
+                }]),
+            );
+            // compute_pass.dispatch_workgroups(1, 1, 1);
+            compute_pass.dispatch_workgroups(960 / 16, 540 / 4, 1);
+        }
+        self.resources
+            .queue
+            .submit(std::iter::once(encoder.finish()));
+        // Read back debug info
+        {
+            let buffer = &self.radiance_probe_debug_info_buffer;
+            let buffer_capturable = buffer.clone();
+            let debug_info = self.radiance_probe_debug_info.clone();
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    if result.is_ok() {
+                        let view = buffer_capturable.slice(..).get_mapped_range();
+                        let info_slice: &[RadianceProbeDebugInfo] = bytemuck::cast_slice(&view);
+                        let info = info_slice[0];
+                        drop(view);
+                        buffer_capturable.unmap();
+                        *debug_info.lock().unwrap() = info;
+                    }
+                });
+        }
+        self.resources.queue.submit([]);
+    }
+
+    pub fn update_all_subchunks_radiance_lighting(
+        &mut self,
+        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
+    ) {
+        let device = &self.resources.device;
+        let (subchunk_hash_map_buffer, custom_block_group_buffer) = {
+            #[repr(C)]
+            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+            struct SubchunkHashMapEntry {
+                pub pos: [f32; 3],
+                pub block_face_instance_slices: [[u32; 2]; 6],
+                pub tinted_block_face_instance_slices: [[u32; 2]; 6],
+                pub custom_block_group_slice: [u32; 2],
+            }
+            const EMPTY_ENTRY: SubchunkHashMapEntry = SubchunkHashMapEntry {
+                pos: [0.1; 3],
+                block_face_instance_slices: [[0; 2]; 6],
+                tinted_block_face_instance_slices: [[0; 2]; 6],
+                custom_block_group_slice: [0; 2],
+            };
+            struct SubchunkHashMap {
+                pub entries: Vec<SubchunkHashMapEntry>,
+                pub num_stored_entries: usize,
+            }
+            impl SubchunkHashMap {
+                fn murmur_32_scramble(mut k: u32) -> u32 {
+                    k = k.wrapping_mul(0xCC9E2D51);
+                    k = (k << 15) | (k >> 17);
+                    k = k.wrapping_mul(0x1B873593);
+                    k
+                }
+
+                fn subchunk_hash(key: [f32; 3]) -> u32 {
+                    // Hash components of key
+                    let mut hash: u32 = 0;
+                    for component in key {
+                        hash ^= Self::murmur_32_scramble(component.to_bits());
+                        hash = (hash << 13) | (hash >> 19);
+                        hash = hash.wrapping_mul(5).wrapping_add(0xE6546B64);
+                    }
+                    // Finalise hash
+                    hash ^= hash >> 16;
+                    hash = hash.wrapping_mul(0x85EBCA6B);
+                    hash ^= hash >> 13;
+                    hash = hash.wrapping_mul(0xC2B2AE35);
+                    hash ^= hash >> 16;
+                    hash
+                }
+
+                pub fn insert(&mut self, new_entry: SubchunkHashMapEntry) {
+                    debug_assert!(self.num_stored_entries < self.entries.len() - 1);
+                    // Insert entry
+                    let mut current_slot = usize::try_from(Self::subchunk_hash(new_entry.pos))
+                        .unwrap()
+                        % self.entries.len();
+                    loop {
+                        if self.entries[current_slot].pos == [0.1; 3] {
+                            self.entries[current_slot] = new_entry;
+                            self.num_stored_entries += 1;
+                            return;
+                        }
+                        current_slot += 1;
+                        current_slot %= self.entries.len();
+                    }
+                }
+            }
+            let subchunk_hash_map_capacity = if subchunks.len().is_power_of_two() {
+                (subchunks.len() + 1).next_power_of_two()
+            } else {
+                subchunks.len().next_power_of_two()
+            };
+            let mut subchunk_hash_map = SubchunkHashMap {
+                entries: vec![EMPTY_ENTRY; subchunk_hash_map_capacity],
+                num_stored_entries: 0,
+            };
+            let mut custom_block_groups: Vec<chunk_rc::CustomBlockGroup> = Vec::new();
+            for (_subchunk_pos, subchunk) in subchunks {
+                let custom_block_group_slice = if !subchunk.custom_block_groups.is_empty() {
+                    let group_start: u32 = custom_block_groups.len().try_into().unwrap();
+                    let group_len: u32 = subchunk.custom_block_groups.len().try_into().unwrap();
+                    custom_block_groups.extend(&subchunk.custom_block_groups);
+                    [group_start, group_len]
+                } else {
+                    [0; 2]
+                };
+                subchunk_hash_map.insert(SubchunkHashMapEntry {
+                    pos: subchunk.start_coords.map(|n| (n / 16) as f32),
+                    block_face_instance_slices: subchunk
+                        .block_face_instance_groups
+                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
+                    tinted_block_face_instance_slices: subchunk
+                        .tinted_block_face_instance_groups
+                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
+                    custom_block_group_slice,
+                });
+            }
+            let hash_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Subchunk Hash Map Buffer"),
+                contents: bytemuck::cast_slice(&subchunk_hash_map.entries),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            let group_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Custom Block Group Buffer"),
+                contents: bytemuck::cast_slice(&custom_block_groups),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            (hash_map_buffer, group_buffer)
+        };
+        // XXX: DEBUG
+        {
+            let block_face_buffer_usage =
+                self.buffer_managers.block_face_instance.usage_fraction() * 100.0;
+            let tinted_block_face_buffer_usage = self
+                .buffer_managers
+                .tinted_block_face_instance
+                .usage_fraction()
+                * 100.0;
+            println!("Block Face Buffer Usage: {block_face_buffer_usage:.1}%");
+            println!("Tinted Block Face Buffer Usage: {tinted_block_face_buffer_usage:.1}%");
+        }
+        let (update_info_buffer, num_updates, max_dispatch_width) = {
+            #[repr(C)]
+            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+            struct UpdateInfo {
+                pub subchunk_start_coords: [f32; 3],
+                pub faces_start: u32,
+                pub faces_len: u32,
+                pub faces_dir_i: u32,
+            }
+            let mut updates = Vec::new();
+            let mut max_dispatch_width = 0;
+            for subchunk in subchunks.values() {
+                for dir_i in 0..6 {
+                    if subchunk.block_face_start_vertices[dir_i] != u32::MAX {
+                        let instance_group = &subchunk.block_face_instance_groups[dir_i];
+                        updates.push(UpdateInfo {
+                            subchunk_start_coords: subchunk.start_coords.map(|n| n as f32),
+                            faces_start: instance_group.0,
+                            faces_len: instance_group.1,
+                            faces_dir_i: dir_i.try_into().unwrap(),
+                        });
+                        let dispatch_width = instance_group.1;
+                        if dispatch_width > max_dispatch_width {
+                            max_dispatch_width = dispatch_width;
+                        }
+                    }
+                }
+            }
+            let update_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Subchunk Hash Map Buffer"),
+                contents: bytemuck::cast_slice(&updates),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            (
+                update_info_buffer,
+                u32::try_from(updates.len()).unwrap(),
+                max_dispatch_width,
+            )
+        };
+        let radiance_probe_info_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Radiance Probe Info Bind Group"),
+            layout: &self.radiance_probe_info_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: subchunk_hash_map_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self
+                        .buffer_managers
+                        .block_face_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self
+                        .buffer_managers
+                        .tinted_block_face_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.custom_block_vertices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.custom_block_indices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self
+                        .buffer_managers
+                        .custom_block_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: custom_block_group_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: update_info_buffer.as_entire_binding(),
+                },
+                // TODO: Move input and output buffers into a new bind group
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[1]
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&self.block_item_atlas.luma_view),
+                },
+            ],
+        });
+        let cascade_1_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cascade 1 Radiance Probe Info Bind Group"),
+            layout: &self.radiance_probe_info_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: subchunk_hash_map_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self
+                        .buffer_managers
+                        .block_face_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self
+                        .buffer_managers
+                        .tinted_block_face_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.custom_block_vertices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.custom_block_indices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self
+                        .buffer_managers
+                        .custom_block_instance
+                        .get_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: custom_block_group_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: update_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[1]
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&self.block_item_atlas.luma_view),
+                },
+            ],
+        });
+        let mut encoder =
+            self.resources
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Compute Encoder"),
+                });
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Subchunk Radiance Cascade Update Compute Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.radiance_probe_update_pipelines[1]);
+            compute_pass.set_bind_group(0, &self.block_item_atlas_bind_group, &[]);
+            compute_pass.set_bind_group(1, &self.matrices_bind_group, &[]);
+            compute_pass.set_bind_group(2, &cascade_1_bind_group, &[]);
+            compute_pass.set_bind_group(
+                3,
+                &self.radiance_probe_debug_texture_storage_bind_group,
+                &[],
+            );
+            compute_pass.dispatch_workgroups(max_dispatch_width, num_updates, 1);
+            compute_pass.set_pipeline(&self.radiance_probe_update_pipelines[0]);
+            compute_pass.set_bind_group(2, &radiance_probe_info_bind_group, &[]);
+            compute_pass.dispatch_workgroups(max_dispatch_width, num_updates, 1);
+        }
+        self.resources
+            .queue
+            .submit(std::iter::once(encoder.finish()));
+        self.resources.queue.submit([]);
     }
 }
 

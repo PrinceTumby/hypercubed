@@ -12,9 +12,9 @@ use ahash::{AHashMap, AHashSet};
 use graphics::GraphicsState;
 use input::PlayControlState;
 use nalgebra::Point3;
+use std::collections::VecDeque;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
-use std::collections::VecDeque;
 use threadpool::ThreadPool;
 use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -24,7 +24,7 @@ pub struct ClientPlayState {
     pub raw_chunks: Arc<AHashMap<[i32; 2], Arc<RawChunk>>>,
     // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
     //       coordinate. Consider changing to actually be the Y coordinate.
-    pub subchunks: AHashMap<[i32; 3], graphics::chunk::Subchunk>,
+    pub subchunks: AHashMap<[i32; 3], graphics::chunk_rc::Subchunk>,
     pub visible_chunks: AHashSet<[i32; 2]>,
     pub pending_subchunk_update_ids: AHashMap<[i32; 3], usize>,
     pub player: Player,
@@ -70,19 +70,20 @@ pub enum ClientPlayStateUpdate {
 #[derive(Debug)]
 pub struct RawSubchunk {
     pub start_coords: [i32; 3],
-    pub block_face_quads: [Option<[graphics::chunk::block_face::Vertex; 4]>; 6],
-    pub block_face_instance_groups: [Vec<graphics::chunk::block_face::Instance>; 6],
-    pub tinted_block_face_quads: [Option<[graphics::chunk::tinted_block_face::Vertex; 4]>; 6],
-    pub tinted_block_face_instance_groups: [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
+    pub block_face_quads: [Option<[graphics::chunk_rc::block_face::Vertex; 4]>; 6],
+    pub block_face_instance_groups: [Vec<graphics::chunk_rc::block_face::Instance>; 6],
+    pub tinted_block_face_quads: [Option<[graphics::chunk_rc::tinted_block_face::Vertex; 4]>; 6],
+    pub tinted_block_face_instance_groups:
+        [Vec<graphics::chunk_rc::tinted_block_face::Instance>; 6],
     pub custom_block_groups: Vec<RawCustomBlockGroup>,
-    pub connected_faces: graphics::chunk::SubchunkConnectivity,
+    pub connected_faces: graphics::chunk_rc::SubchunkConnectivity,
 }
 
 #[derive(Debug)]
 pub struct RawCustomBlockGroup {
     pub start_vertex: u32,
-    pub start_index_and_len: (u32, u32),
-    pub instances: Vec<graphics::chunk::custom_block::Instance>,
+    pub start_index_and_len: [u32; 2],
+    pub instances: Vec<graphics::chunk_rc::custom_block::Instance>,
 }
 
 pub const SUBCHUNK_AXIS_LEN: usize = 16;
@@ -129,19 +130,7 @@ pub(crate) async fn window_run(
     let (play_state_update_tx, play_state_update_rx) = mpsc::channel::<ClientPlayStateUpdate>();
     let mut last_mouse_pos = egui::Pos2::new(0.0, 0.0);
     let mut events: Vec<egui::Event> = Vec::new();
-    let mut debug_state = graphics::DebugState {
-        cull_planes_active: 6,
-        rendering_view_frustum: false,
-        free_cam: false,
-        cave_cull_check_unflipped: true,
-        cave_cull_check_not_backwards: false,
-        cave_cull_check_frustum: true,
-        cave_cull_check_connectivity: true,
-        cave_cull_render_connectivity: false,
-        cave_cull_render_traversal_graph: false,
-        cave_cull_debug_render_dist: 24.0,
-        max_render_chunks: 3000,
-    };
+    let mut debug_state = graphics::DebugState::default();
     let mut debug_output = graphics::DebugOutput {
         subchunks_culled: 0,
         subchunk_traversal_graph: Vec::new(),
@@ -189,9 +178,14 @@ pub(crate) async fn window_run(
                 // Reset cursor to middle if locked
                 if input_state.mouse_locked && window.has_focus() {
                     let size = graphics_state.size;
+                    let physical_x = size.width as i32 / 2;
+                    let physical_y = size.height as i32 / 2;
+                    last_mouse_pos = egui::Pos2 {
+                        x: (physical_x as f64 / scale_factor) as f32,
+                        y: (physical_y as f64 / scale_factor) as f32,
+                    };
                     _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(
-                        size.width as i32 / 2,
-                        size.height as i32 / 2,
+                        physical_x, physical_y,
                     ));
                 }
                 // Main rendering
@@ -254,12 +248,11 @@ pub(crate) async fn window_run(
                     device_id: _,
                     position,
                 } if !input_state.mouse_locked => {
-                    let egui_pos = egui::Pos2 {
+                    last_mouse_pos = egui::Pos2 {
                         x: (position.x / scale_factor) as f32,
                         y: (position.y / scale_factor) as f32,
                     };
-                    last_mouse_pos = egui_pos;
-                    events.push(egui::Event::PointerMoved(egui_pos));
+                    events.push(egui::Event::PointerMoved(last_mouse_pos));
                 }
                 WindowEvent::CursorLeft { device_id: _ } => events.push(egui::Event::PointerGone),
                 WindowEvent::MouseInput {
@@ -311,17 +304,20 @@ pub(crate) async fn window_run(
                         play_state.player.game_mode == GameMode::Spectator || debug_state.free_cam,
                     );
                     if input_state.mouse_locked != old_mouse_locked {
+                        use winit::window::CursorGrabMode;
                         if input_state.mouse_locked {
                             // No issue if locking the cursor doesn't work, we hide it and
                             // keep setting the position to the centre anyway.
-                            _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+                            _ = window
+                                .set_cursor_grab(CursorGrabMode::Locked)
+                                .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Confined));
                             window.set_cursor_visible(false);
+                            events.push(egui::Event::PointerGone);
                         } else {
                             // Releasing the cursor never fails.
-                            window
-                                .set_cursor_grab(winit::window::CursorGrabMode::None)
-                                .unwrap();
+                            window.set_cursor_grab(CursorGrabMode::None).unwrap();
                             window.set_cursor_visible(true);
+                            events.push(egui::Event::PointerMoved(last_mouse_pos));
                         }
                     }
                     if input_state.fullscreen != old_fullscreen {

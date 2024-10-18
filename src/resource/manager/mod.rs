@@ -1,5 +1,6 @@
 mod internal_overlay;
 
+use anyhow::bail;
 use super::Identifier;
 use ahash::{AHashMap, AHashSet};
 use lazy_static::lazy_static;
@@ -16,6 +17,7 @@ pub fn get_resource_file(
         &ResourceType::Blockstate => &overlay_set.blockstates,
         &ResourceType::Model => &overlay_set.models,
         &ResourceType::Texture | &ResourceType::TextureMeta => &overlay_set.textures,
+        &ResourceType::TextureLuma => &overlay_set.luma_textures,
     };
     if let Some(&filesystem_index) = set.get(identifier) {
         let filesystem = &overlay_set.filesystems[filesystem_index];
@@ -28,6 +30,7 @@ pub fn get_resource_file(
             &ResourceType::Blockstate => "blockstates",
             &ResourceType::Model => "models",
             &ResourceType::Texture | &ResourceType::TextureMeta => "textures",
+            &ResourceType::TextureLuma => bail!("Luma textures not supported by vanilla assets"),
         });
         for segment in &identifier.path_prefix_segments {
             path.push(segment.as_ref());
@@ -37,6 +40,7 @@ pub fn get_resource_file(
             &ResourceType::Blockstate | &ResourceType::Model => "json",
             &ResourceType::Texture => "png",
             &ResourceType::TextureMeta => "png.mcmeta",
+            &ResourceType::TextureLuma => unimplemented!(),
         });
         Ok(Cow::Owned(std::fs::read(&path)?))
     }
@@ -48,6 +52,8 @@ pub enum ResourceType {
     Model,
     Texture,
     TextureMeta,
+    // NOTE: RADIANCE CASCADES
+    TextureLuma,
 }
 
 lazy_static! {
@@ -56,11 +62,13 @@ lazy_static! {
             internal_overlay::BLOCKSTATES.keys().cloned().collect();
         let internal_models: AHashSet<_> = internal_overlay::MODELS.keys().cloned().collect();
         let internal_textures: AHashSet<_> = internal_overlay::TEXTURES.keys().cloned().collect();
+        let internal_luma_textures: AHashSet<_> = internal_overlay::TEXTURE_LUMAS.keys().cloned().collect();
         let internal_filesystem_overlay = FilesystemOverlay {
             filesystem: Box::new(internal_overlay::InternalOverlayFilesystem),
             blockstates: internal_blockstates,
             models: internal_models,
             textures: internal_textures,
+            luma_textures: internal_luma_textures,
         };
         RwLock::new(GlobalOverlays::new(
             [internal_filesystem_overlay].into_iter(),
@@ -73,6 +81,7 @@ struct GlobalOverlays {
     pub blockstates: AHashMap<Identifier, usize>,
     pub models: AHashMap<Identifier, usize>,
     pub textures: AHashMap<Identifier, usize>,
+    pub luma_textures: AHashMap<Identifier, usize>,
 }
 
 impl GlobalOverlays {
@@ -81,6 +90,7 @@ impl GlobalOverlays {
         let mut blockstates = AHashMap::new();
         let mut models = AHashMap::new();
         let mut textures = AHashMap::new();
+        let mut luma_textures = AHashMap::new();
         for filesystem_overlay in filesystem_overlays {
             let filesystem_index = filesystems.len();
             filesystems.push(filesystem_overlay.filesystem);
@@ -96,15 +106,21 @@ impl GlobalOverlays {
                 .textures
                 .into_iter()
                 .map(|identifier| (identifier, filesystem_index));
+            let luma_texture_entries = filesystem_overlay
+                .luma_textures
+                .into_iter()
+                .map(|identifier| (identifier, filesystem_index));
             blockstates.extend(blockstate_entries);
             models.extend(model_entries);
             textures.extend(texture_entries);
+            luma_textures.extend(luma_texture_entries);
         }
         Self {
             filesystems,
             blockstates,
             models,
             textures,
+            luma_textures,
         }
     }
 }
@@ -114,6 +130,7 @@ struct FilesystemOverlay {
     pub blockstates: AHashSet<Identifier>,
     pub models: AHashSet<Identifier>,
     pub textures: AHashSet<Identifier>,
+    pub luma_textures: AHashSet<Identifier>,
 }
 
 trait Filesystem: Send + Sync {

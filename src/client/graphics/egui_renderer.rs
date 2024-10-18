@@ -11,6 +11,7 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     textures: AHashMap<TextureId, TextureData>,
     sampler_cache: AHashMap<epaint::textures::TextureOptions, wgpu::Sampler>,
+    next_user_texture_id: u64,
 }
 
 struct TextureData {
@@ -199,6 +200,7 @@ impl Renderer {
             texture_bind_group_layout,
             textures: AHashMap::new(),
             sampler_cache: AHashMap::new(),
+            next_user_texture_id: 0,
         }
     }
 
@@ -467,5 +469,61 @@ impl Renderer {
             );
             render_pass.draw_indexed(mesh.index_slice.clone(), mesh.base_vertex, 0..1);
         }
+    }
+
+    pub fn register_user_texture(
+        &mut self,
+        device: &wgpu::Device,
+        texture: wgpu::Texture,
+        options: egui::TextureOptions,
+    ) -> TextureId {
+        let texture_id = egui::TextureId::User(self.next_user_texture_id);
+        self.next_user_texture_id += 1;
+        let sampler = self.sampler_cache.entry(options).or_insert_with(|| {
+            use epaint::textures::{TextureFilter, TextureWrapMode};
+            fn convert_filter(filter: TextureFilter) -> wgpu::FilterMode {
+                match filter {
+                    TextureFilter::Nearest => wgpu::FilterMode::Nearest,
+                    TextureFilter::Linear => wgpu::FilterMode::Linear,
+                }
+            }
+            let address_mode = match options.wrap_mode {
+                TextureWrapMode::ClampToEdge => wgpu::AddressMode::ClampToEdge,
+                TextureWrapMode::Repeat => wgpu::AddressMode::Repeat,
+                TextureWrapMode::MirroredRepeat => wgpu::AddressMode::MirrorRepeat,
+            };
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: None,
+                mag_filter: convert_filter(options.magnification),
+                min_filter: convert_filter(options.minification),
+                address_mode_u: address_mode,
+                address_mode_v: address_mode,
+                ..Default::default()
+            })
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        self.textures.insert(
+            texture_id,
+            TextureData {
+                texture,
+                bind_group,
+            },
+        );
+        texture_id
     }
 }

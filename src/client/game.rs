@@ -99,7 +99,10 @@ pub fn process_game_events(
                 println!("Server MOTD: {:?}", data.motd);
             }
             // Gameplay
-            ClientboundPacket::SystemChatMessage { content, at_action_bar: _ } => {
+            ClientboundPacket::SystemChatMessage {
+                content,
+                at_action_bar: _,
+            } => {
                 println!("System Chat Message: {content:?}");
             }
             ClientboundPacket::ChunkBatchStart => {}
@@ -674,16 +677,16 @@ pub fn process_game_events(
                                 &group.instances,
                             );
                             let num_instances: u32 = group.instances.len().try_into().unwrap();
-                            graphics::chunk::CustomBlockGroup {
+                            graphics::chunk_rc::CustomBlockGroup {
                                 start_vertex: group.start_vertex,
                                 start_index_and_len: group.start_index_and_len,
-                                start_instance_and_len: (start_instance, num_instances),
+                                start_instance_and_len: [start_instance, num_instances],
                             }
                         })
                         .collect();
                     play_state.subchunks.insert(
                         subchunk_coords,
-                        graphics::chunk::Subchunk {
+                        graphics::chunk_rc::Subchunk {
                             start_coords: raw_subchunk.start_coords,
                             block_face_start_vertices,
                             block_face_instance_groups,

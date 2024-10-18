@@ -6,7 +6,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::{texture, Identifier, RightAngleRotation};
-use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
+// use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
+use crate::client::graphics::chunk_rc::custom_block::Vertex as GraphicsCustomBlockVertex;
 use crate::resource::manager::{get_resource_file, ResourceType};
 
 #[derive(Debug, Default)]
@@ -56,12 +57,12 @@ impl ModelCache {
         location: &Identifier,
         texture_atlas: &mut texture::AtlasBuilder,
     ) -> anyhow::Result<Arc<ModelType>> {
-        // HACK: Unfortunately we don't have the `Equivalent` trait from indexmap for normal
-        //       hashmaps, and we don't have a good way of transposing
-        //       `(&Identifier, &ModelRotationInfo)` to `&(Identifier, ModelRotationInfo)` for
-        //       getting the completed model, so we have to do this instead.
-        //       Most liquids are only loaded once though, so this clone would have to happen
-        //       anyway to store the liquid model.
+        // Unfortunately we don't have the `Equivalent` trait from indexmap for normal hashmaps,
+        // and we don't have a good way of transposing `(&Identifier, &ModelRotationInfo)` to
+        // `&(Identifier, ModelRotationInfo)` for getting the completed model, so we have to do
+        // this instead.
+        // Most liquids are only loaded once though, so this clone would have to happen anyway to
+        // store the liquid model.
         let location_and_rotation = (location.clone(), ModelRotationInfo::default());
         if let Some(model_type) = self.completed_models.get(&location_and_rotation) {
             ensure!(
@@ -173,7 +174,6 @@ impl ModelCache {
         texture_atlas: &mut texture::AtlasBuilder,
         skip_finalising_model: bool,
     ) -> anyhow::Result<ModelState> {
-        // HACK: See above on liquid loading for why we have to clone the location.
         let location_and_rotation = (location.clone(), *rotation);
         if let (false, Some(model)) = (
             skip_finalising_model,
@@ -297,18 +297,20 @@ impl ModelCache {
         rotation: &ModelRotationInfo,
         texture_atlas: &mut texture::AtlasBuilder,
         debug_identifier: Option<&Identifier>,
-        // TODO: Add block properties parameter, force non-opaque blocks to be at least tinted
     ) -> anyhow::Result<ModelType> {
+        if debug_identifier == Some(&crate::identifier!("glass")) {
+            println!("Found glass");
+        }
         let rotation = *rotation;
         // Try various specialisations on model
-        'specialize_empty: {
+        'specialise_empty: {
             if model_template
                 .elements
                 .as_ref()
                 .map(|elements| !elements.is_empty())
                 .unwrap_or(false)
             {
-                break 'specialize_empty;
+                break 'specialise_empty;
             }
             return Ok(ModelType::None);
         }
@@ -320,26 +322,29 @@ impl ModelCache {
             pub east: TemplateElementFace,
             pub west: TemplateElementFace,
         }
-        'specialize_block: {
+        // NOTE: Currently untinted non-opaque blocks, such as glass, are specialised as normal
+        //       blocks. Block faces are then swapped later for tinted faces during chunk
+        //       generation.
+        'specialise_block: {
             let elements = model_template.elements.as_ref().unwrap();
             let [element] = &elements[..] else {
-                break 'specialize_block;
+                break 'specialise_block;
             };
             if element.start_pos != point![0., 0., 0.] || element.end_pos != point![16., 16., 16.] {
-                break 'specialize_block;
+                break 'specialise_block;
             }
             if element.rotation.is_some() {
-                break 'specialize_block;
+                break 'specialise_block;
             }
             if element.faces.iter().any(|(_, face)| face.is_none()) {
-                break 'specialize_block;
+                break 'specialise_block;
             }
             if element
                 .faces
                 .iter()
                 .any(|(_, face)| face.map(|f| f.tint_index != -1).unwrap_or(false))
             {
-                break 'specialize_block;
+                break 'specialise_block;
             }
             if element.blockstate_rotation.is_some() {
                 // Currently blockstate rotation is applied at the template level for blocks.
@@ -460,26 +465,26 @@ impl ModelCache {
                 per_face_uv_rotations,
             }));
         }
-        'specialize_tinted_block: {
+        'specialise_tinted_block: {
             let elements = model_template.elements.as_ref().unwrap();
             let [element] = &elements[..] else {
-                break 'specialize_tinted_block;
+                break 'specialise_tinted_block;
             };
             if element.start_pos != point![0., 0., 0.] || element.end_pos != point![16., 16., 16.] {
-                break 'specialize_tinted_block;
+                break 'specialise_tinted_block;
             }
             if element.rotation.is_some() {
-                break 'specialize_tinted_block;
+                break 'specialise_tinted_block;
             }
             if element.faces.iter().any(|(_, face)| face.is_none()) {
-                break 'specialize_tinted_block;
+                break 'specialise_tinted_block;
             }
             if element
                 .faces
                 .iter()
                 .any(|(_, face)| face.map(|f| f.tint_index == -1).unwrap_or(false))
             {
-                break 'specialize_tinted_block;
+                break 'specialise_tinted_block;
             }
             if element.blockstate_rotation.is_some() {
                 unimplemented!(
@@ -598,16 +603,16 @@ impl ModelCache {
                 per_face_uv_rotations,
             }));
         }
-        'specialize_overlayed_block: {
+        'specialise_overlayed_block: {
             let elements = model_template.elements.as_ref().unwrap();
             if elements.iter().any(|element| {
                 element.start_pos != point![0.0, 0.0, 0.0]
                     || element.end_pos != point![16.0, 16.0, 16.0]
             }) {
-                break 'specialize_overlayed_block;
+                break 'specialise_overlayed_block;
             }
             if elements.iter().any(|element| element.rotation.is_some()) {
-                break 'specialize_overlayed_block;
+                break 'specialise_overlayed_block;
             }
             if elements
                 .iter()
@@ -751,7 +756,7 @@ impl ModelCache {
                 faces,
             }));
         }
-        // Fall back to more expensive model rendering if we can't specialize
+        // Fall back to more expensive model rendering if we can't specialise
         let mut converted_vertices: Vec<ModelVertex> = Vec::new();
         let mut converted_indices: Vec<u32> = Vec::new();
         for template_element in model_template.elements.unwrap() {
@@ -956,27 +961,35 @@ impl ModelCache {
         let start_vertex: u32 = self.custom_block_vertices.len().try_into().unwrap();
         let start_index: u32 = self.custom_block_indices.len().try_into().unwrap();
         let num_indices: u32 = converted_indices.len().try_into().unwrap();
-        self.custom_block_vertices
-            .extend(
-                converted_vertices
-                    .iter()
-                    .map(|v| GraphicsCustomBlockVertex {
-                        pos: *v.local_pos.coords.as_ref(),
-                        uvs: v.uvs,
-                        normal: *v.normal.as_ref(),
-                        tint_percentage: match v.tint {
-                            None => 0.0,
-                            Some(Tint::Biome) => 1.0,
-                        },
-                    }),
-            );
+        self.custom_block_vertices.extend(
+            converted_vertices
+                .iter()
+                // NOTE: RADIANCE CASCADES
+                .map(|v| {
+                    GraphicsCustomBlockVertex::new(
+                        *v.local_pos.coords.as_ref(),
+                        v.uvs,
+                        *v.normal.as_ref(),
+                        matches!(v.tint, Some(Tint::Biome)),
+                    )
+                }),
+            // .map(|v| GraphicsCustomBlockVertex {
+            //     pos: *v.local_pos.coords.as_ref(),
+            //     uvs: v.uvs,
+            //     normal: *v.normal.as_ref(),
+            //     tint_percentage: match v.tint {
+            //         None => 0.0,
+            //         Some(Tint::Biome) => 1.0,
+            //     },
+            // }),
+        );
         self.custom_block_indices
             .extend(converted_indices.iter().copied());
         Ok(ModelType::Other(OtherInfo {
             vertices: converted_vertices,
             indices: converted_indices,
             start_vertex,
-            start_index_and_len: (start_index, num_indices),
+            start_index_and_len: [start_index, num_indices],
         }))
     }
 
@@ -1160,7 +1173,7 @@ pub enum ModelType {
     BiomeTintedCross(CrossInfo),
     /// Hardcoded rendering, faces dynamically generated. Example: Water
     Liquid(LiquidInfo),
-    /// Any other type of model, unspecialized. Example: Farmland
+    /// Any other type of model, unspecialised. Example: Farmland
     Other(OtherInfo),
 }
 
@@ -1209,7 +1222,7 @@ pub struct OtherInfo {
     pub vertices: Vec<ModelVertex>,
     pub indices: Vec<u32>,
     pub start_vertex: u32,
-    pub start_index_and_len: (u32, u32),
+    pub start_index_and_len: [u32; 2],
 }
 
 #[derive(Clone, Copy, Debug)]

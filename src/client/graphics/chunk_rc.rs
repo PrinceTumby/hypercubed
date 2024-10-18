@@ -1,265 +1,26 @@
 use super::Texture;
-use crate::basic_types::AxisDirection;
 use crate::resource::block::RightAngleRotation;
 use nalgebra::{Matrix3, Rotation3};
+use std::collections::HashMap;
 use std::marker::PhantomData;
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
-    include_wgsl, vertex_attr_array, Buffer, BufferSlice, Device, PipelineLayout, RenderPipeline,
+    include_wgsl, vertex_attr_array, Buffer, BufferSlice, ComputePipeline,
+    ComputePipelineDescriptor, Device, PipelineCompilationOptions, PipelineLayout, RenderPipeline,
     RenderPipelineDescriptor, SurfaceConfiguration, VertexAttribute,
 };
 
-pub struct Subchunk {
-    pub start_coords: [i32; 3],
-    /// Equal to `u32::MAX` if the direction group contains no instances.
-    pub block_face_start_vertices: [u32; 6],
-    /// Equal to `(0, 0)` if the direction group contains no instances.
-    pub block_face_instance_groups: [(u32, u32); 6],
-    /// Equal to `u32::MAX` if the direction group contains no instances.
-    pub tinted_block_face_start_vertices: [u32; 6],
-    /// Equal to `(0, 0)` if the direction group contains no instances.
-    pub tinted_block_face_instance_groups: [(u32, u32); 6],
-    pub custom_block_groups: Vec<CustomBlockGroup>,
-    pub connected_faces: SubchunkConnectivity,
-}
+pub use super::chunk::{
+    BufferManager, CustomBlockGroup, DrawArgsBuffer, IndexListBuffer, Subchunk,
+    SubchunkConnectivity, VertexBufferManager, VertexListBuffer,
+};
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct CustomBlockGroup {
-    pub start_vertex: u32,
-    pub start_index_and_len: [u32; 2],
-    pub start_instance_and_len: [u32; 2],
-}
-
-// Bits (least to most significant) store if each of these pairs of faces are connected:
-// 0: Down-Up
-// 1: Down-North
-// 2: Down-South
-// 3: Down-West
-// 4: Down-East
-// 5: Up-North
-// 6: Up-South
-// 7: Up-West
-// 8: Up-East
-// 9: North-South
-// 10: North-West
-// 11: North-East
-// 12: South-West
-// 13: South-East
-// 14: West-East
-#[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SubchunkConnectivity(u16);
-
-impl SubchunkConnectivity {
-    pub fn empty() -> Self {
-        Self(0)
-    }
-
-    pub fn full() -> Self {
-        Self(0x7FFF)
-    }
-
-    pub fn add_connection(&mut self, face_1: &AxisDirection, face_2: &AxisDirection) {
-        use AxisDirection::*;
-        match (face_1, face_2) {
-            (&Down, &Down) | (&Up, &Up) => {}
-            (&North, &North) | (&South, &South) => {}
-            (&West, &West) | (&East, &East) => {}
-            (&Down, &Up) | (&Up, &Down) => self.0 |= 0x1,
-            (&Down, &North) | (&North, &Down) => self.0 |= 0x2,
-            (&Down, &South) | (&South, &Down) => self.0 |= 0x4,
-            (&Down, &West) | (&West, &Down) => self.0 |= 0x8,
-            (&Down, &East) | (&East, &Down) => self.0 |= 0x10,
-            (&Up, &North) | (&North, &Up) => self.0 |= 0x20,
-            (&Up, &South) | (&South, &Up) => self.0 |= 0x40,
-            (&Up, &West) | (&West, &Up) => self.0 |= 0x80,
-            (&Up, &East) | (&East, &Up) => self.0 |= 0x100,
-            (&North, &South) | (&South, &North) => self.0 |= 0x200,
-            (&North, &West) | (&West, &North) => self.0 |= 0x400,
-            (&North, &East) | (&East, &North) => self.0 |= 0x800,
-            (&South, &West) | (&West, &South) => self.0 |= 0x1000,
-            (&South, &East) | (&East, &South) => self.0 |= 0x2000,
-            (&West, &East) | (&East, &West) => self.0 |= 0x4000,
-        }
-    }
-
-    pub fn connects(&self, face_1: &AxisDirection, face_2: &AxisDirection) -> bool {
-        use AxisDirection::*;
-        match (face_1, face_2) {
-            (&Down, &Down) | (&Up, &Up) => true,
-            (&North, &North) | (&South, &South) => true,
-            (&West, &West) | (&East, &East) => true,
-            (&Down, &Up) | (&Up, &Down) => self.0 & 0x1 != 0,
-            (&Down, &North) | (&North, &Down) => self.0 & 0x2 != 0,
-            (&Down, &South) | (&South, &Down) => self.0 & 0x4 != 0,
-            (&Down, &West) | (&West, &Down) => self.0 & 0x8 != 0,
-            (&Down, &East) | (&East, &Down) => self.0 & 0x10 != 0,
-            (&Up, &North) | (&North, &Up) => self.0 & 0x20 != 0,
-            (&Up, &South) | (&South, &Up) => self.0 & 0x40 != 0,
-            (&Up, &West) | (&West, &Up) => self.0 & 0x80 != 0,
-            (&Up, &East) | (&East, &Up) => self.0 & 0x100 != 0,
-            (&North, &South) | (&South, &North) => self.0 & 0x200 != 0,
-            (&North, &West) | (&West, &North) => self.0 & 0x400 != 0,
-            (&North, &East) | (&East, &North) => self.0 & 0x800 != 0,
-            (&South, &West) | (&West, &South) => self.0 & 0x1000 != 0,
-            (&South, &East) | (&East, &South) => self.0 & 0x2000 != 0,
-            (&West, &East) | (&East, &West) => self.0 & 0x4000 != 0,
-        }
-    }
-
-    pub fn get_pairs(&self) -> [([AxisDirection; 2], bool); 15] {
-        let fields = [
-            ([AxisDirection::Down, AxisDirection::Up], 0x1),
-            ([AxisDirection::Down, AxisDirection::North], 0x2),
-            ([AxisDirection::Down, AxisDirection::South], 0x4),
-            ([AxisDirection::Down, AxisDirection::West], 0x8),
-            ([AxisDirection::Down, AxisDirection::East], 0x10),
-            ([AxisDirection::Up, AxisDirection::North], 0x20),
-            ([AxisDirection::Up, AxisDirection::South], 0x40),
-            ([AxisDirection::Up, AxisDirection::West], 0x80),
-            ([AxisDirection::Up, AxisDirection::East], 0x100),
-            ([AxisDirection::North, AxisDirection::South], 0x200),
-            ([AxisDirection::North, AxisDirection::West], 0x400),
-            ([AxisDirection::North, AxisDirection::East], 0x800),
-            ([AxisDirection::South, AxisDirection::West], 0x1000),
-            ([AxisDirection::South, AxisDirection::East], 0x2000),
-            ([AxisDirection::West, AxisDirection::East], 0x4000),
-        ];
-        fields.map(|(dirs, mask)| (dirs, self.0 & mask != 0))
-    }
-}
-
-impl std::fmt::Debug for SubchunkConnectivity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        let mut debug_set = f.debug_set();
-        let fields = [
-            ("down_up", 0x1),
-            ("down_north", 0x2),
-            ("down_south", 0x4),
-            ("down_west", 0x8),
-            ("down_east", 0x10),
-            ("up_north", 0x20),
-            ("up_south", 0x40),
-            ("up_west", 0x80),
-            ("up_east", 0x100),
-            ("north_south", 0x200),
-            ("north_west", 0x400),
-            ("north_east", 0x800),
-            ("south_west", 0x1000),
-            ("south_east", 0x2000),
-            ("west_east", 0x4000),
-        ];
-        for (field_name, field_mask) in fields {
-            if self.0 & field_mask != 0 {
-                debug_set.entry(&field_name);
-            }
-        }
-        debug_set.finish()
-    }
-}
-
-#[derive(Debug)]
-pub struct VertexListBuffer<T: bytemuck::Pod> {
-    buffer: Buffer,
-    num_items: u32,
-    phantom: PhantomData<T>,
-}
-
-impl<T: bytemuck::Pod> VertexListBuffer<T> {
-    /// Panics if `items.len() > u32::MAX`.
-    pub fn new(device: &Device, items: &[T]) -> Self {
-        Self {
-            buffer: device.create_buffer_init(&BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(items),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
-            num_items: items.len().try_into().unwrap(),
-            phantom: PhantomData,
-        }
-    }
-
-    pub fn get_slice(&self) -> BufferSlice {
-        self.buffer.slice(..)
-    }
-
-    pub fn num_items(&self) -> u32 {
-        self.num_items
-    }
-
-    pub fn size(&self) -> u64 {
-        self.buffer.size()
-    }
-}
-
-#[derive(Debug)]
-pub struct IndexListBuffer<T: bytemuck::Pod> {
-    buffer: Buffer,
-    num_items: u32,
-    phantom: PhantomData<T>,
-}
-
-impl<T: bytemuck::Pod> IndexListBuffer<T> {
-    /// Panics if `items.len() > u32::MAX`.
-    pub fn new(device: &Device, items: &[T]) -> Self {
-        Self {
-            buffer: device.create_buffer_init(&BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(items),
-                usage: wgpu::BufferUsages::INDEX,
-            }),
-            num_items: items.len().try_into().unwrap(),
-            phantom: PhantomData,
-        }
-    }
-
-    pub fn get_slice(&self) -> BufferSlice {
-        self.buffer.slice(..)
-    }
-
-    pub fn num_items(&self) -> u32 {
-        self.num_items
-    }
-
-    pub fn size(&self) -> u64 {
-        self.buffer.size()
-    }
-}
-
-#[derive(Debug)]
-pub struct DrawArgsBuffer<T: bytemuck::Pod> {
-    buffer: Buffer,
-    num_items: u32,
-    phantom: PhantomData<T>,
-}
-
-impl<T: bytemuck::Pod> DrawArgsBuffer<T> {
-    /// Panics if `items.len() > u32::MAX`.
-    pub fn new(device: &Device, items: &[T]) -> Self {
-        Self {
-            buffer: device.create_buffer_init(&BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(items),
-                usage: wgpu::BufferUsages::INDIRECT,
-            }),
-            num_items: items.len().try_into().unwrap(),
-            phantom: PhantomData,
-        }
-    }
-
-    pub fn get_buffer(&self) -> &Buffer {
-        &self.buffer
-    }
-
-    pub fn num_items(&self) -> u32 {
-        self.num_items
-    }
-
-    pub fn size(&self) -> u64 {
-        self.buffer.size()
-    }
-}
+// const RAY_RESULT_BYTE_SIZE: usize = 16;
+// const BASE_NUM_RAYS: usize = 8;
+// const PROBE_BYTE_SIZE: usize = RAY_RESULT_BYTE_SIZE * BASE_NUM_RAYS;
+// const NUM_CASCADES: usize = 1;
+// const SUBCHUNK_BYTE_SIZE: usize = NUM_CASCADES * PROBE_BYTE_SIZE * 16 * 16 * 16;
+// const INITIAL_NUM_SUBCHUNKS: usize = 256;
+const CASCADE_0_RAY_LENGTH: f64 = 1.25;
 
 #[derive(Clone, Copy, Debug)]
 struct BufferArea {
@@ -290,32 +51,53 @@ enum BufferAreaUsage {
 // - Expand `usage_map` with the new free space
 // - Retry allocation
 #[derive(Debug)]
-pub struct BufferManager<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize> {
-    buffer: Buffer,
+pub struct InstanceBufferManager<
+    T: bytemuck::Pod,
+    const ITEMS_PER_CHUNK: usize,
+    const NUM_CHUNKS: usize,
+> {
+    instance_buffer: Buffer,
+    lightmap_buffers: [Buffer; 2],
     usage_map: Vec<BufferArea>,
-    phantom: PhantomData<([T; BUFFER_SIZE], [T; CHUNK_SIZE])>,
+    phantom: PhantomData<[[T; ITEMS_PER_CHUNK]; NUM_CHUNKS]>,
 }
 
-impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
-    BufferManager<T, BUFFER_SIZE, CHUNK_SIZE>
-{
-    // Assert buffer contains a whole number of chunks
-    const _ASSERT1: () = assert!(BUFFER_SIZE % CHUNK_SIZE == 0);
-    // Assert vertices fit nicely into chunks
-    const _ASSERT2: () = assert!(CHUNK_SIZE % std::mem::size_of::<T>() == 0);
+type LightMap = [u32; 128];
 
-    pub fn new(device: &wgpu::Device, usages: wgpu::BufferUsages) -> Self {
-        let num_chunks = (BUFFER_SIZE / CHUNK_SIZE) as u64;
+impl<T: bytemuck::Pod, const ITEMS_PER_CHUNK: usize, const NUM_CHUNKS: usize>
+    InstanceBufferManager<T, ITEMS_PER_CHUNK, NUM_CHUNKS>
+{
+    pub fn new(device: &wgpu::Device, debug_name: &str) -> Self {
         Self {
-            buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: BUFFER_SIZE as u64,
-                usage: usages | wgpu::BufferUsages::COPY_DST,
+            instance_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("{debug_name} Instance Buffer")),
+                size: std::mem::size_of::<T>() as u64 * ITEMS_PER_CHUNK as u64 * NUM_CHUNKS as u64,
+                usage: wgpu::BufferUsages::VERTEX
+                    | wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            lightmap_buffers: [
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("{debug_name} Cascade 0 Lightmap Buffer")),
+                    size: std::mem::size_of::<LightMap>() as u64
+                        * ITEMS_PER_CHUNK as u64
+                        * NUM_CHUNKS as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("{debug_name} Cascade 1 Lightmap Buffer")),
+                    size: std::mem::size_of::<LightMap>() as u64
+                        * ITEMS_PER_CHUNK as u64
+                        * NUM_CHUNKS as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+            ],
             usage_map: vec![BufferArea {
                 usage: BufferAreaUsage::Free,
-                num_chunks,
+                num_chunks: NUM_CHUNKS as u64,
             }],
             phantom: PhantomData,
         }
@@ -330,7 +112,7 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
         debug_assert!(!items.is_empty());
         let items_byte_slice: &[u8] = bytemuck::cast_slice(items);
         let byte_len = items_byte_slice.len();
-        let num_chunks_needed = byte_len.div_ceil(CHUNK_SIZE) as u64;
+        let num_chunks_needed = (items.len() as u64).div_ceil(ITEMS_PER_CHUNK as u64);
         // Find free area large enough to hold items
         let mut current_start_chunk: u64 = 0;
         for i in 0..self.usage_map.len() {
@@ -358,10 +140,11 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
                     }
                 }
                 // Write items to buffer
-                let buffer_offset = current_start_chunk * CHUNK_SIZE as u64;
+                let buffer_offset =
+                    std::mem::size_of::<T>() as u64 * ITEMS_PER_CHUNK as u64 * current_start_chunk;
                 let mut buffer_window = queue
                     .write_buffer_with(
-                        &self.buffer,
+                        &self.instance_buffer,
                         buffer_offset,
                         (byte_len as u64).try_into().unwrap(),
                     )
@@ -400,118 +183,87 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
     }
 
     pub fn get_slice(&self) -> BufferSlice {
-        self.buffer.slice(..)
+        self.instance_buffer.slice(..)
     }
 
     pub fn get_entire_binding(&self) -> wgpu::BindingResource {
-        self.buffer.as_entire_binding()
+        self.instance_buffer.as_entire_binding()
+    }
+
+    pub fn get_lightmaps(&self) -> &[wgpu::Buffer; 2] {
+        &self.lightmap_buffers
     }
 
     pub fn size(&self) -> wgpu::BufferAddress {
-        self.buffer.size()
+        self.instance_buffer.size()
     }
 
-    pub fn free_bytes(&self) -> u64 {
-        self.usage_map
-            .iter()
-            .map(|area| {
-                if area.is_free() {
-                    area.num_chunks * CHUNK_SIZE as u64
-                } else {
-                    0
-                }
+    pub fn usage_fraction(&self) -> f64 {
+        let mut total_chunks: u64 = 0;
+        let mut used_chunks: u64 = 0;
+        for area in &self.usage_map {
+            total_chunks += area.num_chunks;
+            if !area.is_free() {
+                used_chunks += area.num_chunks;
+            }
+        }
+        used_chunks as f64 / total_chunks as f64
+    }
+}
+
+pub mod compute {
+    use super::*;
+
+    pub fn create_cascade_update_pipelines(
+        device: &Device,
+        layout: &PipelineLayout,
+    ) -> [ComputePipeline; 2] {
+        let cascade_0_pipeline = {
+            let shader =
+                device.create_shader_module(include_wgsl!("shaders/radiance_probe_update.wgsl"));
+            device.create_compute_pipeline(&ComputePipelineDescriptor {
+                label: Some("Cascade 0 Update Compute Pipeline"),
+                layout: Some(layout),
+                module: &shader,
+                entry_point: "update_cascade",
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
             })
-            .sum()
-    }
-}
-
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct VertexBufferManager<V: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>(
-    BufferManager<V, BUFFER_SIZE, CHUNK_SIZE>,
-);
-
-impl<V: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
-    VertexBufferManager<V, BUFFER_SIZE, CHUNK_SIZE>
-{
-    pub fn new(device: &wgpu::Device) -> Self {
-        Self(BufferManager::new(device, wgpu::BufferUsages::VERTEX))
-    }
-
-    /// Returns the `first_vertex` indirect draw argument.
-    pub fn alloc_area(
-        &mut self,
-        queue: &wgpu::Queue,
-        subchunk_coords: [i32; 3],
-        base_quad: [V; 4],
-    ) -> u32 {
-        self.0.alloc_area(queue, subchunk_coords, &base_quad)
+        };
+        let cascade_1_pipeline = {
+            let shader = device
+                .create_shader_module(include_wgsl!("shaders/radiance_cascade_1_update.wgsl"));
+            device.create_compute_pipeline(&ComputePipelineDescriptor {
+                label: Some("Cascade 1 Update Compute Pipeline"),
+                layout: Some(layout),
+                module: &shader,
+                entry_point: "update_cascade",
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+        };
+        [cascade_0_pipeline, cascade_1_pipeline]
     }
 
-    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
-        self.0.free_subchunk_areas(subchunk_coords)
-    }
-
-    pub fn get_slice(&self) -> wgpu::BufferSlice {
-        self.0.get_slice()
-    }
-
-    pub fn size(&self) -> wgpu::BufferAddress {
-        self.0.size()
-    }
-
-    pub fn free_bytes(&self) -> wgpu::BufferAddress {
-        self.0.free_bytes()
-    }
-}
-
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct InstanceBufferManager<
-    I: bytemuck::Pod,
-    const BUFFER_SIZE: usize,
-    const CHUNK_SIZE: usize,
->(BufferManager<I, BUFFER_SIZE, CHUNK_SIZE>);
-
-impl<I: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
-    InstanceBufferManager<I, BUFFER_SIZE, CHUNK_SIZE>
-{
-    pub fn new(device: &wgpu::Device) -> Self {
-        // NOTE: RADIANCE CASCADES
-        Self(BufferManager::new(
-            device,
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
-        ))
-    }
-
-    /// Returns the `first_instance` indirect draw argument.
-    pub fn alloc_area(
-        &mut self,
-        queue: &wgpu::Queue,
-        subchunk_coords: [i32; 3],
-        instances: &[I],
-    ) -> u32 {
-        self.0.alloc_area(queue, subchunk_coords, instances)
-    }
-
-    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
-        self.0.free_subchunk_areas(subchunk_coords)
-    }
-
-    pub fn get_slice(&self) -> wgpu::BufferSlice {
-        self.0.get_slice()
-    }
-
-    pub fn get_entire_binding(&self) -> wgpu::BindingResource {
-        self.0.get_entire_binding()
-    }
-
-    pub fn size(&self) -> wgpu::BufferAddress {
-        self.0.size()
-    }
-
-    pub fn free_bytes(&self) -> wgpu::BufferAddress {
-        self.0.free_bytes()
+    pub fn create_raytracing_debug_pipeline(
+        device: &Device,
+        layout: &PipelineLayout,
+    ) -> ComputePipeline {
+        let shader = device.create_shader_module(include_wgsl!("shaders/rc_test.wgsl"));
+        device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: Some("Raytrace Testing Compute Pipeline"),
+            layout: Some(layout),
+            module: &shader,
+            entry_point: "render_raytraced",
+            compilation_options: PipelineCompilationOptions {
+                constants: &HashMap::from([(
+                    String::from("cascade_0_ray_length"),
+                    CASCADE_0_RAY_LENGTH,
+                )]),
+                ..Default::default()
+            },
+            cache: None,
+        })
     }
 }
 
@@ -523,9 +275,10 @@ pub mod block_face {
         config: &SurfaceConfiguration,
         layout: &PipelineLayout,
     ) -> RenderPipeline {
-        let shader = device.create_shader_module(include_wgsl!("shaders/block_face.wgsl"));
+        let shader =
+            device.create_shader_module(include_wgsl!("shaders/block_face_radiance_cascades.wgsl"));
         device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("Block Face Render Pipeline"),
+            label: Some("Block Face (Radiance Cascades) Render Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -656,6 +409,7 @@ pub mod block_face {
         }
     }
 
+    // NOTE: Keep definitions in radiance probe update shaders in sync with this.
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Instance {
@@ -663,23 +417,21 @@ pub mod block_face {
         /// 0-3: X offset
         /// 4-7: Y offset
         /// 8-11: Z offset
-        /// 12-15: Unused
-        packed_xyz: u16,
-        /// 0-3: UV rotation
-        /// 4-7: Unused
-        /// 8-11: Sky light level
-        /// 12-15: Block light level
-        uv_rotation_and_light_levels: [u8; 2],
+        /// 12-13: UV rotation
+        /// 14: Emits light?
+        /// 15-19: Unused
+        /// 20-23: Sky light level
+        /// 24-27: Block light level
+        /// 28-31: Unused
+        packed_fields: u32,
     }
 
     impl Instance {
         const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
             // uvs
             10 => Uint16x4,
-            // packed_xyz
-            11 => Uint8x2,
-            // uv_rotation_and_light_levels
-            12 => Uint8x2,
+            // packed_fields
+            11 => Uint32,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -695,26 +447,28 @@ pub mod block_face {
             uvs: [u16; 4],
             uv_rotation: RightAngleRotation,
             light_levels: [u8; 2],
+            emits_light: bool,
         ) -> Self {
             debug_assert!(subchunk_xyz[0] < 16);
             debug_assert!(subchunk_xyz[1] < 16);
             debug_assert!(subchunk_xyz[2] < 16);
             debug_assert!(light_levels[0] < 16);
             debug_assert!(light_levels[1] < 16);
+            let packed_uv_rotation = match uv_rotation {
+                RightAngleRotation::Zero => 0,
+                RightAngleRotation::Ninety => 1,
+                RightAngleRotation::OneEighty => 2,
+                RightAngleRotation::TwoSeventy => 3,
+            };
             Self {
                 uvs,
-                packed_xyz: (subchunk_xyz[0] as u16)
-                    | ((subchunk_xyz[1] as u16) << 4)
-                    | ((subchunk_xyz[2] as u16) << 8),
-                uv_rotation_and_light_levels: [
-                    match uv_rotation {
-                        RightAngleRotation::Zero => 0,
-                        RightAngleRotation::Ninety => 1,
-                        RightAngleRotation::OneEighty => 2,
-                        RightAngleRotation::TwoSeventy => 3,
-                    },
-                    light_levels[0] | (light_levels[1] << 4),
-                ],
+                packed_fields: (subchunk_xyz[0] as u32)
+                    | ((subchunk_xyz[1] as u32) << 4)
+                    | ((subchunk_xyz[2] as u32) << 8)
+                    | ((packed_uv_rotation as u32) << 12)
+                    | ((emits_light as u32) << 14)
+                    | ((light_levels[0] as u32) << 20)
+                    | ((light_levels[1] as u32) << 24),
             }
         }
     }
@@ -725,11 +479,7 @@ pub mod block_face {
         { std::mem::size_of::<[Vertex; 4]>() },
     >;
 
-    pub type BlockFaceInstanceBufferManager = InstanceBufferManager<
-        Instance,
-        { std::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
-        { std::mem::size_of::<[Instance; 4]>() },
-    >;
+    pub type BlockFaceInstanceBufferManager = InstanceBufferManager<Instance, 4, { 1 << 18 }>;
 }
 
 pub mod tinted_block_face {
@@ -740,9 +490,11 @@ pub mod tinted_block_face {
         config: &SurfaceConfiguration,
         layout: &PipelineLayout,
     ) -> RenderPipeline {
-        let shader = device.create_shader_module(include_wgsl!("shaders/tinted_block_face.wgsl"));
+        let shader = device.create_shader_module(include_wgsl!(
+            "shaders/tinted_block_face_radiance_cascades.wgsl"
+        ));
         device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("Tinted Block Face Render Pipeline"),
+            label: Some("Tinted Block Face (Radiance Cascades) Render Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -788,6 +540,7 @@ pub mod tinted_block_face {
 
     pub use super::block_face::Vertex;
 
+    // NOTE: Keep definitions in radiance probe update shaders in sync with this.
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Instance {
@@ -796,13 +549,13 @@ pub mod tinted_block_face {
         /// 0-3: X offset
         /// 4-7: Y offset
         /// 8-11: Z offset
-        /// 12-15: Unused
-        packed_xyz: u16,
-        /// 0-3: UV rotation
-        /// 4-7: Unused
-        /// 8-11: Sky light level
-        /// 12-15: Block light level
-        uv_rotation_and_light_levels: [u8; 2],
+        /// 12-13: UV rotation
+        /// 14: Emits light?
+        /// 15-19: Unused
+        /// 20-23: Sky light level
+        /// 24-27: Block light level
+        /// 28-31: Unused
+        packed_fields: u32,
     }
 
     impl Instance {
@@ -811,10 +564,8 @@ pub mod tinted_block_face {
             10 => Uint16x4,
             // tint_color
             11 => Unorm8x4,
-            // packed_xyz
-            12 => Uint8x2,
-            // uv_rotation_and_light_levels
-            13 => Uint8x2,
+            // packed_fields
+            12 => Uint32,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -831,27 +582,29 @@ pub mod tinted_block_face {
             uv_rotation: RightAngleRotation,
             light_levels: [u8; 2],
             tint_color: [u8; 4],
+            emits_light: bool,
         ) -> Self {
             debug_assert!(subchunk_xyz[0] < 16);
             debug_assert!(subchunk_xyz[1] < 16);
             debug_assert!(subchunk_xyz[2] < 16);
             debug_assert!(light_levels[0] < 16);
             debug_assert!(light_levels[1] < 16);
+            let packed_uv_rotation = match uv_rotation {
+                RightAngleRotation::Zero => 0,
+                RightAngleRotation::Ninety => 1,
+                RightAngleRotation::OneEighty => 2,
+                RightAngleRotation::TwoSeventy => 3,
+            };
             Self {
                 uvs,
                 tint_color,
-                packed_xyz: (subchunk_xyz[0] as u16)
-                    | ((subchunk_xyz[1] as u16) << 4)
-                    | ((subchunk_xyz[2] as u16) << 8),
-                uv_rotation_and_light_levels: [
-                    match uv_rotation {
-                        RightAngleRotation::Zero => 0,
-                        RightAngleRotation::Ninety => 1,
-                        RightAngleRotation::OneEighty => 2,
-                        RightAngleRotation::TwoSeventy => 3,
-                    },
-                    light_levels[0] | (light_levels[1] << 4),
-                ],
+                packed_fields: (subchunk_xyz[0] as u32)
+                    | ((subchunk_xyz[1] as u32) << 4)
+                    | ((subchunk_xyz[2] as u32) << 8)
+                    | ((packed_uv_rotation as u32) << 12)
+                    | ((emits_light as u32) << 14)
+                    | ((light_levels[0] as u32) << 20)
+                    | ((light_levels[1] as u32) << 24),
             }
         }
     }
@@ -862,11 +615,7 @@ pub mod tinted_block_face {
         { std::mem::size_of::<[Vertex; 4]>() },
     >;
 
-    pub type TintedBlockFaceInstanceBufferManager = InstanceBufferManager<
-        Instance,
-        { std::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
-        { std::mem::size_of::<[Instance; 4]>() },
-    >;
+    pub type TintedBlockFaceInstanceBufferManager = InstanceBufferManager<Instance, 4, { 1 << 18 }>;
 }
 
 pub mod custom_block {
@@ -877,9 +626,10 @@ pub mod custom_block {
         config: &SurfaceConfiguration,
         layout: &PipelineLayout,
     ) -> RenderPipeline {
-        let shader = device.create_shader_module(include_wgsl!("shaders/custom_block.wgsl"));
+        let shader = device
+            .create_shader_module(include_wgsl!("shaders/custom_block_radiance_cascades.wgsl"));
         device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("Custom Block Render Pipeline"),
+            label: Some("Custom Block (Radiance Cascades) Render Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -926,13 +676,24 @@ pub mod custom_block {
     pub type VertexList = VertexListBuffer<Vertex>;
     pub type IndexList = IndexListBuffer<u32>;
 
+    // TODO:
+    // - Right now VRAM usage is really high for vertex buffer (150MB)
+    // - Switch to using vertex pulling
+    // - Two storage buffers:
+    //   - Vertex buffer replaced by cube buffer, stores packed 4x4 matrix
+    //   - Index buffer replaced by face buffer, stores direction index and cube index
+    // - During rendering, just divide vertex index by 6 to get face index
+    // - Packed matrix could be 4x4 Snorm8
+    // - Radiance Cascade raytracing just needs ray-OBB tests
     #[repr(C)]
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Vertex {
         pub pos: [f32; 3],
         pub uvs: [u16; 2],
         pub normal: [f32; 3],
-        pub tint_percentage: f32,
+        /// 0: Tinted?
+        /// 1-31: Unused
+        pub packed_fields: u32,
     }
 
     impl Vertex {
@@ -943,8 +704,8 @@ pub mod custom_block {
             1 => Uint16x2,
             // normal
             2 => Float32x3,
-            // tint_percentage
-            3 => Float32,
+            // packed_flags
+            3 => Uint32,
         ];
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -952,6 +713,15 @@ pub mod custom_block {
                 array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: Self::ATTRIBUTES,
+            }
+        }
+
+        pub fn new(pos: [f32; 3], uvs: [u16; 2], normal: [f32; 3], is_tinted: bool) -> Self {
+            Self {
+                pos,
+                uvs,
+                normal,
+                packed_fields: is_tinted as u32,
             }
         }
     }
@@ -971,8 +741,10 @@ pub mod custom_block {
         /// 5: South
         /// 6: East
         /// 7: West
-        /// 8: Unused
-        light_level_pairs: [u8; 8],
+        light_level_pairs: [u8; 7],
+        /// 0: Emits light?
+        /// 1-7: Unused
+        packed_fields: u8,
     }
 
     impl Instance {
@@ -983,7 +755,7 @@ pub mod custom_block {
             11 => Unorm8x4,
             // light_level_pairs (first half)
             12 => Uint8x4,
-            // light_level_pairs (second half)
+            // light_level_pairs (second half) and packed_fields
             13 => Uint8x4,
         ];
 
@@ -1000,6 +772,7 @@ pub mod custom_block {
             tint_color: [u8; 4],
             centre_light_levels: [u8; 2],
             neighbour_light_levels: [[u8; 2]; 6],
+            emits_light: bool,
         ) -> Self {
             debug_assert!(centre_light_levels[0] < 16);
             debug_assert!(centre_light_levels[1] < 16);
@@ -1007,7 +780,7 @@ pub mod custom_block {
                 debug_assert!(pair[0] < 16);
                 debug_assert!(pair[1] < 16);
             }
-            let mut converted_light_level_pairs = [0u8; 8];
+            let mut converted_light_level_pairs = [0u8; 7];
             converted_light_level_pairs[0] = centre_light_levels[0] | (centre_light_levels[1] << 4);
             for (i, pair) in neighbour_light_levels.into_iter().enumerate() {
                 converted_light_level_pairs[i + 1] = pair[0] | (pair[1] << 4);
@@ -1016,11 +789,12 @@ pub mod custom_block {
                 pos,
                 tint_color,
                 light_level_pairs: converted_light_level_pairs,
+                packed_fields: emits_light as u8,
             }
         }
     }
 
-    pub type CustomBlockInstanceBufferManager = InstanceBufferManager<
+    pub type CustomBlockInstanceBufferManager = super::super::chunk::InstanceBufferManager<
         Instance,
         { std::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
         { std::mem::size_of::<[Instance; 4]>() },
