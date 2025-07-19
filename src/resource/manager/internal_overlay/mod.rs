@@ -92,6 +92,7 @@ lazy_static! {
         make_entry_macro!(map, "luma_textures", ".png");
         entry!("block/torch");
         entry!("block/glowstone");
+        entry!("block/jack_o_lantern");
         entry!("block/redstone_lamp_on");
         entry!("block/redstone_torch");
         map.shrink_to_fit();

@@ -5,8 +5,8 @@ use nalgebra::{Matrix3, Rotation3};
 use std::marker::PhantomData;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
-    include_wgsl, vertex_attr_array, Buffer, BufferSlice, Device, PipelineLayout, RenderPipeline,
-    RenderPipelineDescriptor, SurfaceConfiguration, VertexAttribute,
+    Buffer, BufferSlice, Device, PipelineLayout, RenderPipeline, RenderPipelineDescriptor,
+    SurfaceConfiguration, VertexAttribute, include_wgsl, vertex_attr_array,
 };
 
 pub struct Subchunk {

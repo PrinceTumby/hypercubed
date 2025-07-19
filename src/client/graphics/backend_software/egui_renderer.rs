@@ -1,6 +1,6 @@
-use super::{GraphicsResources, Texture};
 use ahash::AHashMap;
-use egui::{epaint, TextureId};
+use egui::{TextureId, epaint};
+use pixels::{Pixels, wgpu};
 use wgpu::util::DeviceExt as _;
 use wgpu::{include_wgsl, vertex_attr_array};
 
@@ -75,7 +75,9 @@ struct ScreenSize {
 }
 
 impl Renderer {
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+    pub fn new(pixels: &Pixels) -> Self {
+        let device = pixels.device();
+        let surface_format = pixels.surface_texture_format();
         let screen_size_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Screen Size Bind Group Layout"),
@@ -133,7 +135,8 @@ impl Renderer {
                 ],
             });
         // Render pipeline
-        let shader = device.create_shader_module(include_wgsl!("shaders/egui.wgsl"));
+        let shader =
+            device.create_shader_module(include_wgsl!("../backend_wgpu/shaders/egui.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("egui Pipeline Layout"),
             bind_group_layouts: &[&screen_size_bind_group_layout, &texture_bind_group_layout],
@@ -145,15 +148,13 @@ impl Renderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                compilation_options: Default::default(),
                 buffers: &[Vertex::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
-                compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::One,
@@ -178,20 +179,13 @@ impl Renderer {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
-            cache: None,
         });
         Self {
             pipeline,
@@ -213,10 +207,11 @@ impl Renderer {
 
     fn update_textures(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        pixels: &Pixels,
         textures: Vec<(egui::TextureId, epaint::image::ImageDelta)>,
     ) {
+        let device = pixels.device();
+        let queue = pixels.queue();
         for (texture_id, texture_data) in textures {
             let [width, height] = texture_data.image.size();
             let size = wgpu::Extent3d {
@@ -341,22 +336,22 @@ impl Renderer {
 
     pub fn prepare(
         &mut self,
-        graphics_resources: &GraphicsResources,
+        pixels: &Pixels,
         physical_size: &winit::dpi::PhysicalSize<u32>,
         texture_updates: Vec<(egui::TextureId, epaint::image::ImageDelta)>,
         primitives: Vec<egui::ClippedPrimitive>,
         pixels_per_point: f32,
     ) -> RenderData {
-        let device = &graphics_resources.device;
-        let queue = &graphics_resources.queue;
+        let device = pixels.device();
+        let queue = pixels.queue();
         let width = physical_size.width as f32;
         let height = physical_size.height as f32;
-        graphics_resources.queue.write_buffer(
+        queue.write_buffer(
             &self.screen_size_buffer,
             0,
             bytemuck::cast_slice(&[ScreenSize { width, height }]),
         );
-        self.update_textures(device, queue, texture_updates);
+        self.update_textures(pixels, texture_updates);
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
         let mut meshes: Vec<RenderMeshInfo> = Vec::with_capacity(primitives.len());
@@ -446,28 +441,42 @@ impl Renderer {
         }
     }
 
-    /// Clobbers the render pass scissor rect.
     pub fn render<'a: 'pass, 'pass>(
         &'a self,
-        render_pass: &mut wgpu::RenderPass<'pass>,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
         render_data: &'pass RenderData,
     ) {
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.screen_size_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, render_data.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(
-            render_data.index_buffer.slice(..),
-            wgpu::IndexFormat::Uint32,
-        );
-        for mesh in &render_data.meshes {
-            render_pass.set_bind_group(1, &self.textures[&mesh.texture_id].bind_group, &[]);
-            render_pass.set_scissor_rect(
-                mesh.scissor_rect.x,
-                mesh.scissor_rect.y,
-                mesh.scissor_rect.width,
-                mesh.scissor_rect.height,
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &self.screen_size_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, render_data.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                render_data.index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
             );
-            render_pass.draw_indexed(mesh.index_slice.clone(), mesh.base_vertex, 0..1);
+            for mesh in &render_data.meshes {
+                render_pass.set_bind_group(1, &self.textures[&mesh.texture_id].bind_group, &[]);
+                render_pass.set_scissor_rect(
+                    mesh.scissor_rect.x,
+                    mesh.scissor_rect.y,
+                    mesh.scissor_rect.width,
+                    mesh.scissor_rect.height,
+                );
+                render_pass.draw_indexed(mesh.index_slice.clone(), mesh.base_vertex, 0..1);
+            }
         }
     }
 

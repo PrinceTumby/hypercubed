@@ -1,25 +1,18 @@
 use super::Identifier;
-use crate::resource::manager::{get_resource_file, ResourceType};
+use crate::resource::manager::{ResourceType, get_resource_file};
 use ahash::AHashMap;
 use anyhow::Context;
 use image::error::ImageError;
 use image::{GenericImage, GenericImageView, GrayImage, ImageFormat, RgbaImage};
 use thiserror::Error;
 
-#[derive(Debug)]
-pub struct Atlas {
-    pub texture: wgpu::Texture,
-    pub luma_texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
-    pub luma_view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
-}
+pub use crate::client::graphics::TextureAtlas as Atlas;
 
 #[derive(Clone, Debug)]
 pub struct AtlasBuilder {
-    texture: RgbaImage,
+    pub(crate) texture: RgbaImage,
     // NOTE: RADIANCE CASCADES
-    luma_texture: GrayImage,
+    pub(crate) luma_texture: GrayImage,
     square_length: u16,
     usage_bitmap: UsageBitmap2d,
     stored_textures: AHashMap<Identifier, TextureInfo>,
@@ -178,74 +171,25 @@ impl AtlasBuilder {
         })
     }
 
-    pub fn build(self, device: &wgpu::Device, queue: &wgpu::Queue, label: Option<&str>) -> Atlas {
-        let (width, height) = (self.texture.width(), self.texture.height());
-        let bytes = self.texture.into_vec();
-        let luma_bytes = self.luma_texture.into_vec();
-        let size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label,
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                aspect: wgpu::TextureAspect::All,
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-            },
-            &bytes,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            size,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let luma_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label,
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                aspect: wgpu::TextureAspect::All,
-                texture: &luma_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-            },
-            &luma_bytes,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(width),
-                rows_per_image: Some(height),
-            },
-            size,
-        );
-        let luma_view = luma_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
-        Atlas {
-            texture,
-            luma_texture,
-            view,
-            luma_view,
-            sampler,
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "graphics_backend_vulkan")] {
+            pub fn build(
+                self,
+                device: &std::sync::Arc<vulkano::device::Device>,
+                queue: &std::sync::Arc<vulkano::device::Queue>,
+                memory_allocator: &std::sync::Arc<dyn vulkano::memory::allocator::MemoryAllocator>,
+                command_buffer_allocator: std::sync::Arc<dyn vulkano::command_buffer::allocator::CommandBufferAllocator>,
+            ) -> anyhow::Result<Atlas> {
+                Atlas::from_builder(self, device, queue, memory_allocator, command_buffer_allocator)
+            }
+        } else if #[cfg(feature = "graphics_backend_wgpu")] {
+            pub fn build(self, device: &wgpu::Device, queue: &wgpu::Queue, label: Option<&str>) -> Atlas {
+                Atlas::from_builder(self, device, queue, label)
+            }
+        } else if #[cfg(feature = "graphics_backend_software")] {
+            pub fn build(self) -> Atlas {
+                Atlas::from_builder(self)
+            }
         }
     }
 }

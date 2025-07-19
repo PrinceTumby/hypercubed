@@ -1,9 +1,9 @@
 use crate::protocol::configuration::Property as GameProfileProperty;
 use crate::protocol::prelude::*;
 use ahash::AHashMap;
+use nom::Parser;
 use nom::multi::count;
 use nom::sequence::{pair, tuple};
-use nom::Parser;
 use nom_supreme::ParserExt;
 use protocol_derive::Deserialize;
 

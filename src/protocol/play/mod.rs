@@ -2,16 +2,16 @@ pub mod crafting;
 pub mod entity_metadata;
 pub mod particle;
 
+use super::PluginMessage;
 use super::chunk::RawChunkLightInfo;
 pub use super::configuration::{ChatMode, MainHand};
 use super::prelude::*;
-use super::PluginMessage;
 use crate::resource::block::GlobalPaletteIndex;
+use nom::Parser;
 use nom::bytes::complete::take;
 use nom::combinator::{cond, verify};
 use nom::multi::length_count;
 use nom::sequence::{pair, tuple};
-use nom::Parser;
 use nom_supreme::ParserExt;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
 use uuid::Uuid;

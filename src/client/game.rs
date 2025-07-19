@@ -1,17 +1,21 @@
-use crate::client::graphics::{self, GraphicsState};
+use crate::client::graphics::{self, DEFAULT_FOV, GraphicsState};
 use crate::client::input::PlayControlState;
 use crate::client::{
-    world, ClientPlayState, ClientPlayStateUpdate, RawChunk, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32,
+    ClientPlayState, ClientPlayStateUpdate, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32, world,
 };
 use crate::identifier;
 use crate::physics;
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{
-    self as protocol_play, serverbound as serverbound_packets, Clientbound as ClientboundPacket,
-    GameEventType, GameMode,
+    self as protocol_play, Clientbound as ClientboundPacket, GameEventType, GameMode,
+    serverbound as serverbound_packets,
 };
 use crate::protocol::prelude::*;
 use crate::resource::block::GlobalPaletteIndex;
+#[cfg(feature = "graphics_backend_vulkan")]
+use vulkan_prelude::*;
+#[cfg(feature = "graphics_backend_vulkan")]
+use anyhow::Context;
 use ahash::{AHashMap, AHashSet};
 use indexmap::IndexMap;
 use nalgebra::Vector3;
@@ -505,7 +509,16 @@ pub fn process_game_events(
         }
     }
     // Receive play state updates
+    #[cfg(feature = "graphics_backend_vulkan")]
+    let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
+        graphics_state.resources.command_buffer_allocator.clone(),
+        graphics_state.resources.render_queue.queue_family_index(),
+        VulkanCommandBufferUsage::OneTimeSubmit,
+    )
+    .unwrap();
     let mut subchunks_processed_this_frame = 0;
+    #[cfg(feature = "graphics_backend_vulkan")]
+    let mut rebuild_tlas = false;
     loop {
         if subchunks_processed_this_frame >= 12 {
             break;
@@ -537,26 +550,7 @@ pub fn process_game_events(
                             play_state
                                 .pending_subchunk_update_ids
                                 .remove(&subchunk_coords);
-                            graphics_state
-                                .buffer_managers
-                                .block_face_vertex
-                                .free_subchunk_areas(subchunk_coords);
-                            graphics_state
-                                .buffer_managers
-                                .block_face_instance
-                                .free_subchunk_areas(subchunk_coords);
-                            graphics_state
-                                .buffer_managers
-                                .tinted_block_face_vertex
-                                .free_subchunk_areas(subchunk_coords);
-                            graphics_state
-                                .buffer_managers
-                                .tinted_block_face_instance
-                                .free_subchunk_areas(subchunk_coords);
-                            graphics_state
-                                .buffer_managers
-                                .custom_block_instance
-                                .free_subchunk_areas(subchunk_coords);
+                            graphics_state.free_subchunk_data(subchunk_coords);
                             subchunks_processed_this_frame += 1;
                         }
                     }
@@ -570,7 +564,7 @@ pub fn process_game_events(
             } => {
                 let span = tracing::trace_span!("add_new_subchunks");
                 let _enter = span.enter();
-                let buffer_managers = &mut graphics_state.buffer_managers;
+                #[cfg(feature = "graphics_backend_vulkan")]
                 for (subchunk_coords, raw_subchunk) in new_raw_subchunks {
                     use std::collections::hash_map::Entry;
                     let [subchunk_x, _, subchunk_z] = subchunk_coords;
@@ -603,66 +597,381 @@ pub fn process_game_events(
                         if let Entry::Occupied(entry) = play_state.subchunks.entry(subchunk_coords)
                         {
                             entry.remove();
-                            buffer_managers
-                                .block_face_vertex
-                                .free_subchunk_areas(subchunk_coords);
-                            buffer_managers
-                                .block_face_instance
-                                .free_subchunk_areas(subchunk_coords);
-                            buffer_managers
-                                .tinted_block_face_vertex
-                                .free_subchunk_areas(subchunk_coords);
-                            buffer_managers
-                                .tinted_block_face_instance
-                                .free_subchunk_areas(subchunk_coords);
-                            buffer_managers
-                                .custom_block_instance
-                                .free_subchunk_areas(subchunk_coords);
+                            graphics_state.free_subchunk_data(subchunk_coords);
                         }
                     }
+                    let buffer_managers = &mut graphics_state.buffer_managers;
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature = "graphics_backend_vulkan")] {
+                            macro_rules! alloc_area {
+                                (
+                                    $buffer_manager:ident,
+                                    $subchunk_coords:expr,
+                                    $data:expr $(,)?
+                                ) => {
+                                    buffer_managers.$buffer_manager.alloc_area(
+                                        &mut command_buffer,
+                                        $subchunk_coords,
+                                        $data,
+                                    )
+                                };
+                            }
+                            // TODO:
+                            // - Define a function here to upload
+                        } else if #[cfg(feature = "graphics_backend_wgpu")] {
+                            macro_rules! alloc_area {
+                                (
+                                    $buffer_manager:ident,
+                                    $subchunk_coords:expr,
+                                    $data:expr $(,)?
+                                ) => {
+                                    buffer_managers.$buffer_manager.alloc_area(
+                                        &graphics_state.resources.queue,
+                                        $subchunk_coords,
+                                        $data,
+                                    )
+                                };
+                            }
+                        }
+                    }
+                    // NOTE: RADIANCE CASCADES
+                    #[cfg(feature = "graphics_backend_vulkan")]
+                    let rc_info = 'rc_info_blk: {
+                        // Using the triangle info generated during subchunk processing, create
+                        // BLAS's to be added to the world TLAS.
+                        use anyhow::Context;
+                        let rt_info = raw_subchunk.rt_info;
+                        let vertices = rt_info.vertex_positions;
+                        if vertices.is_empty() {
+                            break 'rc_info_blk None;
+                        }
+                        let num_vertices: u32 = vertices.len().try_into().unwrap();
+                        let vertex_buffer = VulkanBuffer::from_iter(
+                            &graphics_state.resources.memory_allocator,
+                            &VulkanBufferCreateInfo {
+                                usage:
+                                    VulkanBufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                                        | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                                ..Default::default()
+                            },
+                            &VulkanAllocationCreateInfo {
+                                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                                    | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                                ..Default::default()
+                            },
+                            vertices,
+                        )
+                        .context("Error while creating subchunk BLAS vertex buffer")
+                        .unwrap();
+                        // TODO: Allocate one big index buffer, slice individual subbuffers. Should
+                        //       improve performance.
+                        let num_block_face_triangles: u32 =
+                            (rt_info.block_face_triangle_quads.len() * 2)
+                                .try_into()
+                                .unwrap();
+                        let block_face_index_buffer: Option<VulkanIndexBuffer> =
+                            if num_block_face_triangles > 0 {
+                                Some(VulkanBuffer::from_iter(
+                                &graphics_state.resources.memory_allocator,
+                                &VulkanBufferCreateInfo {
+                                    usage: VulkanBufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                                        | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                                    ..Default::default()
+                                },
+                                &VulkanAllocationCreateInfo {
+                                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                                    ..Default::default()
+                                },
+                                rt_info.block_face_triangle_quads,
+                            )
+                            .context("Error while creating subchunk BLAS block face index buffer")
+                            .unwrap()
+                            .reinterpret::<[u32]>()
+                            .into())
+                            } else {
+                                None
+                            };
+                        let num_tinted_block_face_triangles: u32 =
+                            (rt_info.tinted_block_face_triangle_quads.len() * 2)
+                                .try_into()
+                                .unwrap();
+                        let tinted_block_face_index_buffer: Option<VulkanIndexBuffer> =
+                            if num_tinted_block_face_triangles > 0 {
+                                Some(VulkanBuffer::from_iter(
+                                &graphics_state.resources.memory_allocator,
+                                &VulkanBufferCreateInfo {
+                                    usage: VulkanBufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                                        | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                                    ..Default::default()
+                                },
+                                &VulkanAllocationCreateInfo {
+                                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                                    ..Default::default()
+                                },
+                                rt_info.tinted_block_face_triangle_quads,
+                            )
+                            .context("Error while creating subchunk BLAS tinted block face index buffer")
+                            .unwrap()
+                            .reinterpret::<[u32]>()
+                            .into())
+                            } else {
+                                None
+                            };
+                        let num_custom_block_face_triangles: u32 =
+                            (rt_info.custom_block_face_triangle_quads.len() * 2)
+                                .try_into()
+                                .unwrap();
+                        let custom_block_face_index_buffer: Option<VulkanIndexBuffer> =
+                            if num_custom_block_face_triangles > 0 {
+                                Some(VulkanBuffer::from_iter(
+                                &graphics_state.resources.memory_allocator,
+                                &VulkanBufferCreateInfo {
+                                    usage: VulkanBufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                                        | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                                    ..Default::default()
+                                },
+                                &VulkanAllocationCreateInfo {
+                                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                                    ..Default::default()
+                                },
+                                rt_info.custom_block_face_triangle_quads,
+                            )
+                            .context("Error while creating subchunk BLAS custom block index buffer")
+                            .unwrap()
+                            .reinterpret::<[u32]>()
+                            .into())
+                            } else {
+                                None
+                            };
+                        let mut blas_build_geometry_info =
+                            VulkanAccelerationStructureBuildGeometryInfo {
+                                flags: VulkanBuildAccelerationStructureFlags::PREFER_FAST_TRACE,
+                                mode: VulkanBuildAccelerationStructureMode::Build,
+                                dst_acceleration_structure: None,
+                                geometries: VulkanAccelerationStructureGeometries::Triangles(
+                                    [
+                                        // Block faces
+                                        block_face_index_buffer.map(|index_buffer| {
+                                            VulkanAccelerationStructureGeometryTrianglesData {
+                                                flags: VulkanGeometryFlags::OPAQUE,
+                                                vertex_format: VulkanFormat::R32G32B32_SFLOAT,
+                                                vertex_data: Some(
+                                                    vertex_buffer.clone().into_bytes(),
+                                                ),
+                                                vertex_stride: 12,
+                                                max_vertex: num_vertices,
+                                                index_data: Some(index_buffer),
+                                                transform_data: None,
+                                                _ne: vulkano_non_exhaustive(),
+                                            }
+                                        }),
+                                        // Tinted block faces
+                                        tinted_block_face_index_buffer.map(|index_buffer| {
+                                            VulkanAccelerationStructureGeometryTrianglesData {
+                                                flags: VulkanGeometryFlags::empty(),
+                                                vertex_format: VulkanFormat::R32G32B32_SFLOAT,
+                                                vertex_data: Some(
+                                                    vertex_buffer.clone().into_bytes(),
+                                                ),
+                                                vertex_stride: 12,
+                                                max_vertex: num_vertices,
+                                                index_data: Some(index_buffer),
+                                                transform_data: None,
+                                                _ne: vulkano_non_exhaustive(),
+                                            }
+                                        }),
+                                        // Custom block faces
+                                        custom_block_face_index_buffer.map(|index_buffer| {
+                                            VulkanAccelerationStructureGeometryTrianglesData {
+                                                flags: VulkanGeometryFlags::empty(),
+                                                vertex_format: VulkanFormat::R32G32B32_SFLOAT,
+                                                vertex_data: Some(
+                                                    vertex_buffer.clone().into_bytes(),
+                                                ),
+                                                vertex_stride: 12,
+                                                max_vertex: num_vertices,
+                                                index_data: Some(index_buffer),
+                                                transform_data: None,
+                                                _ne: vulkano_non_exhaustive(),
+                                            }
+                                        }),
+                                    ]
+                                    .into_iter()
+                                    .filter_map(std::convert::identity)
+                                    .collect(),
+                                ),
+                                scratch_data: None,
+                                _ne: vulkano_non_exhaustive(),
+                            };
+                        let blas_build_sizes = graphics_state
+                            .resources
+                            .device
+                            .acceleration_structure_build_sizes(
+                                VulkanAccelerationStructureBuildType::HostOrDevice,
+                                &blas_build_geometry_info,
+                                &([
+                                    if num_block_face_triangles > 0 {
+                                        Some(num_block_face_triangles)
+                                    } else {
+                                        None
+                                    },
+                                    if num_tinted_block_face_triangles > 0 {
+                                        Some(num_tinted_block_face_triangles)
+                                    } else {
+                                        None
+                                    },
+                                    if num_custom_block_face_triangles > 0 {
+                                        Some(num_custom_block_face_triangles)
+                                    } else {
+                                        None
+                                    },
+                                ]
+                                .into_iter()
+                                .filter_map(std::convert::identity)
+                                .collect::<Vec<_>>()),
+                            )
+                            .unwrap();
+                        let blas_scratch_buffer: VulkanSubbuffer<[u8]> = VulkanBuffer::new_slice(
+                            &graphics_state.resources.memory_allocator,
+                            &VulkanBufferCreateInfo {
+                                usage: VulkanBufferUsage::STORAGE_BUFFER
+                                    | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                                ..Default::default()
+                            },
+                            &VulkanAllocationCreateInfo {
+                                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
+                                ..Default::default()
+                            },
+                            blas_build_sizes.build_scratch_size,
+                        )
+                        .context("Error while creating subchunk BLAS scratch buffer")
+                        .unwrap();
+                        let blas_buffer: VulkanSubbuffer<[u8]> = VulkanBuffer::new_slice(
+                            &graphics_state.resources.memory_allocator,
+                            &VulkanBufferCreateInfo {
+                                usage: VulkanBufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                                    | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                                ..Default::default()
+                            },
+                            &VulkanAllocationCreateInfo {
+                                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
+                                ..Default::default()
+                            },
+                            blas_build_sizes.acceleration_structure_size,
+                        )
+                        .context("Error while creating subchunk BLAS storage buffer")
+                        .unwrap();
+                        let blas = unsafe {
+                            // SAFETY: `blas_buffer` isn't used anywhere else, and so is definitely
+                            //         not used while the acceleration structure is alive.
+                            VulkanAccelerationStructure::new(
+                                &graphics_state.resources.device,
+                                &VulkanAccelerationStructureCreateInfo {
+                                    create_flags: VulkanAccelerationStructureCreateFlags::empty(),
+                                    buffer: &blas_buffer,
+                                    ty: VulkanAccelerationStructureType::BottomLevel,
+                                    _ne: vulkano_non_exhaustive(),
+                                },
+                            )
+                            .context("Error while creating subchunk BLAS")
+                            .unwrap()
+                        };
+                        blas_build_geometry_info.dst_acceleration_structure = Some(blas.clone());
+                        blas_build_geometry_info.scratch_data = Some(blas_scratch_buffer);
+                        unsafe {
+                            // TODO:
+                            // "vulkano/src/command_buffer/commands/acceleration_structure.rs:1103"
+                            // is wrong, should be `index_data.size()` as far as I can tell.
+                            // So we need to vendor our own version of vulkano, and fix the bug.
+                            command_buffer
+                                .build_acceleration_structure(
+                                    blas_build_geometry_info,
+                                    [
+                                        // Block faces
+                                        if num_block_face_triangles > 0 {
+                                            Some(VulkanAccelerationStructureBuildRangeInfo {
+                                                primitive_count: num_block_face_triangles,
+                                                ..Default::default()
+                                            })
+                                        } else {
+                                            None
+                                        },
+                                        // Tinted block faces
+                                        if num_tinted_block_face_triangles > 0 {
+                                            Some(VulkanAccelerationStructureBuildRangeInfo {
+                                                primitive_count: num_tinted_block_face_triangles,
+                                                ..Default::default()
+                                            })
+                                        } else {
+                                            None
+                                        },
+                                        // Custom block faces
+                                        if num_custom_block_face_triangles > 0 {
+                                            Some(VulkanAccelerationStructureBuildRangeInfo {
+                                                primitive_count: num_custom_block_face_triangles,
+                                                ..Default::default()
+                                            })
+                                        } else {
+                                            None
+                                        },
+                                    ]
+                                    .into_iter()
+                                    .filter_map(std::convert::identity)
+                                    .collect(),
+                                )
+                                .unwrap();
+                        }
+                        rebuild_tlas = true;
+                        Some(graphics::chunk_rc::SubchunkRadianceCascadeInfo {
+                            blas,
+                            quads_info: rt_info.quads_info,
+                            quads_info_offsets: rt_info.quads_info_offsets,
+                        })
+                    };
                     // Base block faces
                     let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
                     let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
-                    for i in 0..6 {
+                    for (i, instance_group) in raw_subchunk
+                        .block_face_instance_groups
+                        .into_iter()
+                        .enumerate()
+                    {
                         let Some(base_quad) = raw_subchunk.block_face_quads[i] else {
                             continue;
                         };
-                        let quad_start_vertex = buffer_managers.block_face_vertex.alloc_area(
-                            &graphics_state.resources.queue,
-                            subchunk_coords,
-                            base_quad,
-                        );
-                        let instance_group = &raw_subchunk.block_face_instance_groups[i];
-                        let instance_group_start = buffer_managers.block_face_instance.alloc_area(
-                            &graphics_state.resources.queue,
-                            subchunk_coords,
-                            instance_group,
-                        );
+                        let quad_start_vertex =
+                            alloc_area!(block_face_vertex, subchunk_coords, base_quad);
                         let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+                        let instance_group_start = alloc_area!(
+                            block_face_instance,
+                            subchunk_coords,
+                            instance_group.into_boxed_slice(),
+                        );
                         block_face_start_vertices[i] = quad_start_vertex;
                         block_face_instance_groups[i] = (instance_group_start, instance_group_len);
                     }
                     // Tinted block faces
                     let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
                     let mut tinted_block_face_instance_groups: [(u32, u32); 6] = Default::default();
-                    for i in 0..6 {
+                    for (i, instance_group) in raw_subchunk
+                        .tinted_block_face_instance_groups
+                        .into_iter()
+                        .enumerate()
+                    {
                         let Some(base_quad) = raw_subchunk.tinted_block_face_quads[i] else {
                             continue;
                         };
                         let quad_start_vertex =
-                            buffer_managers.tinted_block_face_vertex.alloc_area(
-                                &graphics_state.resources.queue,
-                                subchunk_coords,
-                                base_quad,
-                            );
-                        let instance_group = &raw_subchunk.tinted_block_face_instance_groups[i];
-                        let instance_group_start =
-                            buffer_managers.tinted_block_face_instance.alloc_area(
-                                &graphics_state.resources.queue,
-                                subchunk_coords,
-                                instance_group,
-                            );
+                            alloc_area!(tinted_block_face_vertex, subchunk_coords, base_quad);
                         let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+                        let instance_group_start = alloc_area!(
+                            tinted_block_face_instance,
+                            subchunk_coords,
+                            instance_group.into_boxed_slice(),
+                        );
                         tinted_block_face_start_vertices[i] = quad_start_vertex;
                         tinted_block_face_instance_groups[i] =
                             (instance_group_start, instance_group_len);
@@ -671,12 +980,12 @@ pub fn process_game_events(
                         .custom_block_groups
                         .into_iter()
                         .map(|group| {
-                            let start_instance = buffer_managers.custom_block_instance.alloc_area(
-                                &graphics_state.resources.queue,
-                                subchunk_coords,
-                                &group.instances,
-                            );
                             let num_instances: u32 = group.instances.len().try_into().unwrap();
+                            let start_instance = alloc_area!(
+                                custom_block_instance,
+                                subchunk_coords,
+                                group.instances.into_boxed_slice(),
+                            );
                             graphics::chunk_rc::CustomBlockGroup {
                                 start_vertex: group.start_vertex,
                                 start_index_and_len: group.start_index_and_len,
@@ -694,6 +1003,8 @@ pub fn process_game_events(
                             tinted_block_face_instance_groups,
                             custom_block_groups,
                             connected_faces: raw_subchunk.connected_faces,
+                            #[cfg(feature = "graphics_backend_vulkan")]
+                            rc_info,
                         },
                     );
                     subchunks_processed_this_frame += 1;
@@ -702,6 +1013,237 @@ pub fn process_game_events(
             }
         }
     }
+    #[cfg(feature = "graphics_backend_vulkan")]
+    'tlas_blk: {
+        if !rebuild_tlas {
+            break 'tlas_blk;
+        }
+        if play_state.subchunks.is_empty() {
+            graphics_state.radiance_cascades.tlas_info = None;
+            break 'tlas_blk;
+        }
+        // Rebuild world TLAS
+        use anyhow::Context;
+        let blas_instances: Vec<VulkanAccelerationStructureInstance> = play_state
+            .subchunks
+            .values()
+            .filter_map(|subchunk| {
+                let Some(rc_info) = subchunk.rc_info.as_ref() else {
+                    return None;
+                };
+                Some(VulkanAccelerationStructureInstance {
+                    // Subchunk geometries are already in global space, so just use an identity matrix
+                    // here.
+                    transform: [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                    ],
+                    instance_custom_index_and_mask: VulkanPacked24_8::new(0, 0xFF),
+                    instance_shader_binding_table_record_offset_and_flags: VulkanPacked24_8::new(
+                        0, 0,
+                    ),
+                    acceleration_structure_reference: rc_info.blas.device_address().get(),
+                })
+            })
+            .collect();
+        if blas_instances.is_empty() {
+            graphics_state.radiance_cascades.tlas_info = None;
+            break 'tlas_blk;
+        }
+        let num_blas_instances: u32 = blas_instances.len().try_into().unwrap();
+        let blas_instances_buffer = VulkanBuffer::from_iter(
+            &graphics_state.resources.memory_allocator,
+            &VulkanBufferCreateInfo {
+                usage: VulkanBufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                    | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                ..Default::default()
+            },
+            &VulkanAllocationCreateInfo {
+                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                    | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            blas_instances,
+        )
+        .context("Error while creating BLAS instances buffer for TLAS")
+        .unwrap();
+        let mut tlas_build_geometry_info = VulkanAccelerationStructureBuildGeometryInfo {
+            flags: VulkanBuildAccelerationStructureFlags::PREFER_FAST_TRACE,
+            mode: VulkanBuildAccelerationStructureMode::Build,
+            dst_acceleration_structure: None,
+            geometries: VulkanAccelerationStructureGeometries::Instances(
+                VulkanAccelerationStructureGeometryInstancesData::new(
+                    VulkanAccelerationStructureGeometryInstancesDataType::Values(Some(
+                        blas_instances_buffer,
+                    )),
+                ),
+            ),
+            scratch_data: None,
+            _ne: vulkano_non_exhaustive(),
+        };
+        let tlas_build_sizes = graphics_state
+            .resources
+            .device
+            .acceleration_structure_build_sizes(
+                VulkanAccelerationStructureBuildType::HostOrDevice,
+                &tlas_build_geometry_info,
+                &[num_blas_instances] as &[u32],
+            )
+            .unwrap();
+        let tlas_scratch_buffer: VulkanSubbuffer<[u8]> = VulkanBuffer::new_slice(
+            &graphics_state.resources.memory_allocator.clone(),
+            &VulkanBufferCreateInfo {
+                usage: VulkanBufferUsage::STORAGE_BUFFER | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                ..Default::default()
+            },
+            &VulkanAllocationCreateInfo {
+                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            tlas_build_sizes.build_scratch_size,
+        )
+        .context("Error while creating subchunk TLAS scratch buffer")
+        .unwrap();
+        let tlas_buffer: VulkanSubbuffer<[u8]> = VulkanBuffer::new_slice(
+            &graphics_state.resources.memory_allocator,
+            &VulkanBufferCreateInfo {
+                usage: VulkanBufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                    | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                ..Default::default()
+            },
+            &VulkanAllocationCreateInfo {
+                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            tlas_build_sizes.acceleration_structure_size,
+        )
+        .context("Error while creating subchunk TLAS storage buffer")
+        .unwrap();
+        let tlas = unsafe {
+            // SAFETY: `tlas_buffer` isn't used anywhere else, and so is definitely
+            //         not used while the acceleration structure is alive.
+            VulkanAccelerationStructure::new(
+                &graphics_state.resources.device,
+                &VulkanAccelerationStructureCreateInfo {
+                    create_flags: VulkanAccelerationStructureCreateFlags::empty(),
+                    buffer: &tlas_buffer,
+                    ty: VulkanAccelerationStructureType::TopLevel,
+                    _ne: vulkano_non_exhaustive(),
+                },
+            )
+            .context("Error while creating subchunk BLAS")
+            .unwrap()
+        };
+        tlas_build_geometry_info.dst_acceleration_structure = Some(tlas.clone());
+        tlas_build_geometry_info.scratch_data = Some(tlas_scratch_buffer);
+        unsafe {
+            // FIXME: I think it's currently possible that chunk BLAS's could be dropped while the
+            //        new TLAS is still being built, which is undefined behaviour. We'll see if any
+            //        problems come up.
+            command_buffer
+                .build_acceleration_structure(
+                    tlas_build_geometry_info,
+                    SmallVec::from_slice(&[VulkanAccelerationStructureBuildRangeInfo {
+                        primitive_count: num_blas_instances,
+                        ..Default::default()
+                    }]),
+                )
+                .unwrap();
+        }
+        let (instance_info, quads_info) = {
+            let mut instance_info = Vec::new();
+            let mut quads_info = Vec::new();
+            for subchunk in play_state.subchunks.values() {
+                let Some(rc_info) = subchunk.rc_info.as_ref() else {
+                    continue;
+                };
+                let base_offset: u32 = quads_info.len().try_into().unwrap();
+                quads_info.extend(rc_info.quads_info.iter().copied());
+                instance_info.push(graphics::TlasInstanceInfo {
+                    quads_info_offsets: [
+                        base_offset,
+                        base_offset + rc_info.quads_info_offsets[0],
+                        base_offset + rc_info.quads_info_offsets[1],
+                    ],
+                });
+            }
+            (instance_info, quads_info)
+        };
+        let instance_info_buffer = VulkanBuffer::from_iter(
+            &graphics_state.resources.memory_allocator,
+            &VulkanBufferCreateInfo {
+                usage: VulkanBufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            &VulkanAllocationCreateInfo {
+                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                    | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            instance_info,
+        )
+        .context("Error while creating TLAS instance info buffer")
+        .unwrap();
+        let quads_info_buffer = VulkanBuffer::from_iter(
+            &graphics_state.resources.memory_allocator,
+            &VulkanBufferCreateInfo {
+                usage: VulkanBufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            &VulkanAllocationCreateInfo {
+                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                    | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            quads_info,
+        )
+        .context("Error while creating TLAS quads info buffer")
+        .unwrap();
+        // FIXME: This is definitely wrong. I think there's a way to make a semaphore, and run some
+        //        code after the acceleration structure building completes. This would also solve
+        //        the previous fixme, as we could just store Arc's to all the BLAS's until it's
+        //        done.
+        graphics_state.radiance_cascades.tlas_info = Some(graphics::TlasInfo {
+            world_tlas: tlas,
+            instance_info_buffer,
+            quads_info_buffer,
+        });
+    }
+    #[cfg(feature = "graphics_backend_vulkan")]
+    tracing::trace_span!("chunk_command_buffer_submit").in_scope(|| {
+        let built_command_buffer = command_buffer.build().unwrap();
+        // vulkano::sync::now(graphics_state.resources.device.clone())
+        //     .then_execute(
+        //         graphics_state.resources.render_queue.clone(),
+        //         built_command_buffer,
+        //     )
+        //     .unwrap()
+        //     .flush()
+        //     .unwrap();
+        let finish_fence = VulkanFence::from_pool(&graphics_state.resources.device)
+            .map(Arc::new)
+            .context("Error while creating game process fence")
+            .unwrap();
+        graphics_state
+            .resources
+            .render_queue
+            .with(|mut queue_guard| unsafe {
+                queue_guard
+                    .submit(
+                        &[VulkanSubmitInfo {
+                            command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
+                                built_command_buffer,
+                            )],
+                            ..Default::default()
+                        }],
+                        Some(&finish_fence),
+                    )
+                    .unwrap();
+            });
+        finish_fence.wait(None).unwrap();
+    });
+    #[cfg(feature = "graphics_backend_wgpu")]
     tracing::trace_span!("chunk_queue_submit").in_scope(|| {
         graphics_state.resources.queue.submit([]);
     });
@@ -709,7 +1251,7 @@ pub fn process_game_events(
     {
         let span = tracing::trace_span!("tick_updates");
         let _enter = span.enter();
-        let tick_this_frame = if current_time_s >= *next_tick_time_s {
+        let mut tick_this_frame = if current_time_s >= *next_tick_time_s {
             *last_tick_time_s = current_time_s;
             *next_tick_time_s += 1.0 / 20.0;
             true
@@ -723,7 +1265,7 @@ pub fn process_game_events(
             player.yaw = camera.yaw;
             player.pitch = camera.pitch;
         }
-        if tick_this_frame {
+        while tick_this_frame {
             *player_last_tick = player.clone();
             match player.game_mode {
                 GameMode::Spectator => {}
@@ -763,6 +1305,13 @@ pub fn process_game_events(
                     }
                 }
             }
+            tick_this_frame = if current_time_s >= *next_tick_time_s {
+                *last_tick_time_s = current_time_s;
+                *next_tick_time_s += 1.0 / 20.0;
+                true
+            } else {
+                false
+            };
         }
         match player.game_mode {
             GameMode::Spectator if !debug_state.free_cam => {
@@ -796,12 +1345,12 @@ pub fn process_game_events(
                         // Camera FOV
                         mix(
                             match player_last_tick.physics_state.sprinting {
-                                false => GraphicsState::DEFAULT_FOV,
-                                true => GraphicsState::DEFAULT_FOV + 10.0,
+                                false => DEFAULT_FOV,
+                                true => DEFAULT_FOV + 10.0,
                             },
                             match player.physics_state.sprinting {
-                                false => GraphicsState::DEFAULT_FOV,
-                                true => GraphicsState::DEFAULT_FOV + 10.0,
+                                false => DEFAULT_FOV,
+                                true => DEFAULT_FOV + 10.0,
                             },
                             tick_percentage_f32,
                         ),

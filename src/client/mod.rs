@@ -13,7 +13,7 @@ use graphics::GraphicsState;
 use input::PlayControlState;
 use nalgebra::Point3;
 use std::collections::VecDeque;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 use threadpool::ThreadPool;
 use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
@@ -77,6 +77,41 @@ pub struct RawSubchunk {
         [Vec<graphics::chunk_rc::tinted_block_face::Instance>; 6],
     pub custom_block_groups: Vec<RawCustomBlockGroup>,
     pub connected_faces: graphics::chunk_rc::SubchunkConnectivity,
+    #[cfg(feature = "graphics_backend_vulkan")]
+    pub rt_info: RayTracingInfo,
+}
+
+#[cfg(feature = "graphics_backend_vulkan")]
+#[derive(Clone, Debug)]
+pub struct RayTracingInfo {
+    pub vertex_positions: Vec<[f32; 3]>,
+    pub block_face_triangle_quads: Vec<[[u32; 3]; 2]>,
+    pub tinted_block_face_triangle_quads: Vec<[[u32; 3]; 2]>,
+    pub custom_block_face_triangle_quads: Vec<[[u32; 3]; 2]>,
+    /// Combined quad info lists, with offsets specified in `quads_info_offsets`.
+    pub quads_info: Vec<RayTracedQuadInfo>,
+    /// Offsets of tinted and custom quad info lists.
+    /// Block quad info starts at 0, so isn't specified.
+    pub quads_info_offsets: [u32; 2],
+}
+
+#[cfg(feature = "graphics_backend_vulkan")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct RayTracedQuadInfo {
+    pub uvs: [[u16; 2]; 4],
+    pub packed_fields: RayTracedQuadPackedFields,
+}
+
+#[cfg(feature = "graphics_backend_vulkan")]
+bitfield::bitfield! {
+    // 0-7: Unused
+    // 8-31: Tint colour
+    #[repr(transparent)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct RayTracedQuadPackedFields(u32);
+    impl Debug;
+    pub tint_colour, set_tint_colour: 31, 8;
 }
 
 #[derive(Debug)]
@@ -97,6 +132,7 @@ pub(crate) async fn window_run(
     clientbound_tx: std::sync::mpsc::Sender<ClientboundPacket>,
 ) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
+    // TODO: Change this to an `Arc`
     let window = Box::leak(Box::new(WindowBuilder::new().build(&event_loop)?));
     window.set_title("Rust Minecraft Client");
     let window_id = window.id();
@@ -147,10 +183,12 @@ pub(crate) async fn window_run(
     let mut last_tick_time_s: f64 = 0.0;
     let mut next_tick_time_s: f64 = 1.0 / 20.0;
     let window = &window;
+    let mut debug_frame_i: usize = 0;
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
         match event {
             Event::NewEvents(StartCause::Poll) => {
+                debug_frame_i += 1;
                 let new_time = Instant::now();
                 let delta_time_f64 =
                     (new_time - std::mem::replace(&mut last_frame_time, new_time)).as_secs_f64();
@@ -161,7 +199,13 @@ pub(crate) async fn window_run(
                 current_time_s += delta_time_f64;
                 let delta_time = delta_time_f64 as f32;
                 // Debug GUI
-                let egui_full_output = debug::render_debug_ui(
+                let debug::DebugRenderOutput {
+                    egui_output,
+                    debug_points,
+                    debug_lines,
+                    debug_triangles,
+                } = debug::render_debug_ui(
+                    &thread_pool,
                     &server_connection,
                     &mut play_state,
                     &mut graphics_state,
@@ -189,25 +233,64 @@ pub(crate) async fn window_run(
                     ));
                 }
                 // Main rendering
-                match graphics_state.render(
-                    &play_state.subchunks,
-                    &play_state.visible_chunks,
-                    &egui_ctx,
-                    egui_full_output,
-                    &debug_state,
-                ) {
-                    Ok(new_debug_output) => debug_output = new_debug_output,
-                    Err(wgpu::SurfaceError::Timeout) => {}
-                    // Reconfigure the surface if lost
-                    Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
-                        let size = graphics_state.size;
-                        graphics_state.resize(size)
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "graphics_backend_vulkan")] {
+                        // if debug_frame_i > 144 * 2 {
+                        //     graphics_state.radiance_cascades_debug_render(&play_state.subchunks);
+                        // }
+                        if debug_frame_i == 288 {
+                            eprintln!("Updating subchunk lighting!");
+                            graphics_state.update_all_subchunks_radiance_lighting(
+                                &thread_pool,
+                                &play_state.subchunks,
+                                &play_state.raw_chunks,
+                            );
+                        }
+                        match graphics_state.render(
+                            &play_state.subchunks,
+                            &play_state.visible_chunks,
+                            &egui_ctx,
+                            egui_output,
+                            &debug_state,
+                            &debug_points,
+                            &debug_lines,
+                            &debug_triangles,
+                        ) {
+                            Ok(new_debug_output) => debug_output = new_debug_output,
+                            // FIXME: Call resize if there's a swapchain error
+                            Err(err) => panic!("Rendering error: {err}"),
+                        };
+                    } else if #[cfg(feature = "graphics_backend_wgpu")] {
+                        match graphics_state.render(
+                            &play_state.subchunks,
+                            &play_state.visible_chunks,
+                            &egui_ctx,
+                            egui_full_output,
+                            &debug_state,
+                        ) {
+                            Ok(new_debug_output) => debug_output = new_debug_output,
+                            Err(wgpu::SurfaceError::Timeout) => {}
+                            // Reconfigure the surface if lost
+                            Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
+                                let size = graphics_state.size;
+                                graphics_state.resize(size)
+                            }
+                            Err(wgpu::SurfaceError::OutOfMemory) => window_target.exit(),
+                        }
+                    } else if #[cfg(feature = "graphics_backend_software")] {
+                        debug_output = graphics_state.render(
+                            &play_state.subchunks,
+                            &play_state.visible_chunks,
+                            &egui_ctx,
+                            egui_full_output,
+                            &debug_state,
+                        )
+                        .unwrap();
                     }
-                    // The system is out of memory, we should probably quit
-                    Err(wgpu::SurfaceError::OutOfMemory) => window_target.exit(),
                 }
                 // Gameplay events and updates
-                game::process_game_events(
+                #[allow(unused)]
+                let process_output = game::process_game_events(
                     &thread_pool,
                     &mut play_state,
                     &mut graphics_state,
@@ -224,6 +307,7 @@ pub(crate) async fn window_run(
                     &mut next_tick_time_s,
                     delta_time,
                 );
+                #[cfg(feature = "tracy")]
                 tracing_tracy::client::frame_mark();
             }
             Event::WindowEvent {

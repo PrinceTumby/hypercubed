@@ -1,8 +1,8 @@
 mod internal_overlay;
 
-use anyhow::bail;
 use super::Identifier;
 use ahash::{AHashMap, AHashSet};
+use anyhow::bail;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -62,7 +62,8 @@ lazy_static! {
             internal_overlay::BLOCKSTATES.keys().cloned().collect();
         let internal_models: AHashSet<_> = internal_overlay::MODELS.keys().cloned().collect();
         let internal_textures: AHashSet<_> = internal_overlay::TEXTURES.keys().cloned().collect();
-        let internal_luma_textures: AHashSet<_> = internal_overlay::TEXTURE_LUMAS.keys().cloned().collect();
+        let internal_luma_textures: AHashSet<_> =
+            internal_overlay::TEXTURE_LUMAS.keys().cloned().collect();
         let internal_filesystem_overlay = FilesystemOverlay {
             filesystem: Box::new(internal_overlay::InternalOverlayFilesystem),
             blockstates: internal_blockstates,

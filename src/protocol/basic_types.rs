@@ -229,10 +229,9 @@ impl TryFrom<VarInt> for usize {
     }
 }
 
-// FIXME: All the tests need to be fixed to work with LocatedSpan, currently they assume &[u8].
 #[cfg(test)]
 mod var_int_tests {
-    use super::{Deserialize, Serialize, VarInt};
+    use super::{Deserialize, InputSpan, Serialize, VarInt};
     use std::io::Cursor;
 
     #[test]
@@ -266,16 +265,16 @@ mod var_int_tests {
                 );
             };
         }
-        test_case!(&[0x00], 0);
-        test_case!(&[0x01], 1);
-        test_case!(&[0x7F], 127);
-        test_case!(&[0x80, 0x01], 128);
-        test_case!(&[0xFF, 0x01], 255);
-        test_case!(&[0xDD, 0xC7, 0x01], 25565);
-        test_case!(&[0xFF, 0xFF, 0x7F], 2097151);
-        test_case!(&[0xFF, 0xFF, 0xFF, 0xFF, 0x07], 2147483647);
-        test_case!(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F], -1);
-        test_case!(&[0x80, 0x80, 0x80, 0x80, 0x08], -2147483648);
+        test_case!(InputSpan::new(&[0x00]), 0);
+        test_case!(InputSpan::new(&[0x01]), 1);
+        test_case!(InputSpan::new(&[0x7F]), 127);
+        test_case!(InputSpan::new(&[0x80, 0x01]), 128);
+        test_case!(InputSpan::new(&[0xFF, 0x01]), 255);
+        test_case!(InputSpan::new(&[0xDD, 0xC7, 0x01]), 25565);
+        test_case!(InputSpan::new(&[0xFF, 0xFF, 0x7F]), 2097151);
+        test_case!(InputSpan::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0x07]), 2147483647);
+        test_case!(InputSpan::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]), -1);
+        test_case!(InputSpan::new(&[0x80, 0x80, 0x80, 0x80, 0x08]), -2147483648);
     }
 }
 
@@ -359,7 +358,7 @@ impl TryFrom<VarLong> for usize {
 
 #[cfg(test)]
 mod var_long_tests {
-    use super::{Deserialize, Serialize, VarLong};
+    use super::{Deserialize, InputSpan, Serialize, VarLong};
     use std::io::Cursor;
 
     #[test]
@@ -407,28 +406,28 @@ mod var_long_tests {
                 );
             };
         }
-        test_case!(&[0x00], 0);
-        test_case!(&[0x01], 1);
-        test_case!(&[0x7F], 127);
-        test_case!(&[0x80, 0x01], 128);
-        test_case!(&[0xFF, 0x01], 255);
-        test_case!(&[0xDD, 0xC7, 0x01], 25565);
-        test_case!(&[0xFF, 0xFF, 0x7F], 2097151);
-        test_case!(&[0xFF, 0xFF, 0xFF, 0xFF, 0x07], 2147483647);
+        test_case!(InputSpan::new(&[0x00]), 0);
+        test_case!(InputSpan::new(&[0x01]), 1);
+        test_case!(InputSpan::new(&[0x7F]), 127);
+        test_case!(InputSpan::new(&[0x80, 0x01]), 128);
+        test_case!(InputSpan::new(&[0xFF, 0x01]), 255);
+        test_case!(InputSpan::new(&[0xDD, 0xC7, 0x01]), 25565);
+        test_case!(InputSpan::new(&[0xFF, 0xFF, 0x7F]), 2097151);
+        test_case!(InputSpan::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0x07]), 2147483647);
         test_case!(
-            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F],
+            InputSpan::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F]),
             9223372036854775807
         );
         test_case!(
-            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01],
+            InputSpan::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]),
             -1
         );
         test_case!(
-            &[0x80, 0x80, 0x80, 0x80, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0x01],
+            InputSpan::new(&[0x80, 0x80, 0x80, 0x80, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]),
             -2147483648
         );
         test_case!(
-            &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01],
+            InputSpan::new(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01]),
             -9223372036854775808
         );
     }
@@ -451,7 +450,7 @@ impl Serialize for &str {
 }
 
 impl Deserialize for String {
-    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<Self> {
+    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<'a, Self> {
         // TODO: The `Verify` error's fine, but there's probably a way of passing along a more
         // descriptive error for invalid UTF-8
         length_value(
@@ -477,7 +476,7 @@ impl Serialize for String {
 
 #[cfg(test)]
 mod string_tests {
-    use super::Deserialize;
+    use super::{Deserialize, InputSpan};
 
     #[test]
     fn deserialize() {
@@ -489,7 +488,7 @@ mod string_tests {
                 );
             };
         }
-        test_case!(&[4, b't', b'e', b's', b't'], "test");
+        test_case!(InputSpan::new(&[4, b't', b'e', b's', b't']), "test");
     }
 }
 
@@ -539,7 +538,7 @@ impl Serialize for Identifier {
 #[cfg(test)]
 mod identifier_tests {
     use super::super::ByteView;
-    use super::Serialize;
+    use super::{InputSpan, Serialize};
     use crate::identifier;
     use std::io::Cursor;
 
@@ -549,8 +548,8 @@ mod identifier_tests {
             ($value:expr, $expected_bytes:expr) => {{
                 let mut buffer = Cursor::new(Vec::new());
                 $value.serialize_into(&mut buffer).unwrap();
-                let left_byte_view = ByteView(buffer.get_ref());
-                let right_byte_view = ByteView($expected_bytes);
+                let left_byte_view = ByteView(InputSpan::new(buffer.get_ref()));
+                let right_byte_view = ByteView(InputSpan::new($expected_bytes));
                 assert_eq!(
                     left_byte_view, right_byte_view,
                     "\n  left: {left_byte_view}\n right: {right_byte_view}"
@@ -566,7 +565,7 @@ mod identifier_tests {
 pub use uuid::Uuid;
 
 impl Deserialize for Uuid {
-    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<Self> {
+    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<'a, Self> {
         take(16usize)
             .map(|slice: InputSpan<'a>| Uuid::from_slice(slice.as_ref()).unwrap())
             .context("Uuid")
@@ -824,14 +823,14 @@ impl Deserialize for Position {
 
 #[cfg(test)]
 mod position_tests {
-    use super::{Deserialize, Position};
+    use super::{Deserialize, InputSpan, Position};
 
     #[test]
     fn deserialize() {
         macro_rules! test_case {
             ($raw_value:expr, $expected_value:expr) => {
                 assert_eq!(
-                    Position::deserialize(&u64::to_be_bytes($raw_value)).unwrap(),
+                    Position::deserialize(InputSpan::new(&u64::to_be_bytes($raw_value))).unwrap(),
                     (InputSpan::new(&[]), $expected_value)
                 );
             };
@@ -1025,7 +1024,7 @@ pub enum TextComponent {
 }
 
 impl Deserialize for TextComponent {
-    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<Self> {
+    fn deserialize<'a>(input: InputSpan<'a>) -> IResult<'a, Self> {
         if input.len() < 1 {
             Err(nom::Err::Error(IErr::from_error_kind(
                 input,

@@ -1,7 +1,7 @@
 use super::prelude::*;
 use super::{
-    configuration, Aes128Cfb8Dec, Aes128Cfb8Enc, EncryptedTcpStreamReader,
-    EncryptedTcpStreamWriter, PlayConnection, OFFLINE_PLAYER_NAMESPACE,
+    Aes128Cfb8Dec, Aes128Cfb8Enc, EncryptedTcpStreamReader, EncryptedTcpStreamWriter,
+    OFFLINE_PLAYER_NAMESPACE, PlayConnection, configuration,
 };
 use crate::identifier;
 use bytebuffer::ByteBuffer;
@@ -132,7 +132,7 @@ pub fn login(
                 let mut thread_rng = rand::thread_rng();
                 let pub_key = rsa::RsaPublicKey::from_public_key_der(&request_info.public_key)
                     .map_err(std::io::Error::other)?;
-                let shared_secret: [u8; 16] = thread_rng.gen();
+                let shared_secret: [u8; 16] = thread_rng.r#gen();
                 // Send session information to session server
                 if request_info.should_authenticate {
                     let (access_token, player_uuid) = session_information
@@ -221,7 +221,7 @@ pub fn login(
         use configuration::{ClientDataPack, ClientDataPacks, Response, ServerboundPluginMessage};
         match configuration::Response::read_from(compression_threshold, &mut read_stream)? {
             Response::ErrorDisconnect { reason } => {
-                return Err(std::io::Error::other(format!("{reason:?}")))
+                return Err(std::io::Error::other(format!("{reason:?}")));
             }
             Response::Finish => {
                 client_information.write_packet_into(&mut write_stream, compression_threshold)?;

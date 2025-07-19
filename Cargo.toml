@@ -1,35 +1,52 @@
 [package]
 name = "minecraft_client"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
+default = [ "graphics_backend_vulkan" ]
+# default = [ "graphics_backend_software" ]
+graphics_backend_wgpu = [ "dep:wgpu" ]
+graphics_backend_vulkan = [
+    "dep:vulkano",
+    "dep:vulkan_prelude",
+    "dep:minecraft_client_vk_shaders",
+]
+graphics_backend_software = [ "dep:pixels", "dep:wide", "dep:fast-srgb8" ]
 protocol_verbose = []
-tracy = []
+tracy = [ "dep:tracing-tracy" ]
 
 [dependencies]
 aes = "0.8"
 ahash = { version = "0.8", features = [ "serde" ] }
 anyhow = "1"
 bimap = "0.6"
-bitfield = "0.14"
+bitfield = "0.19"
 bytebuffer = "2"
-bytemuck = { version = "1.14", features = [ "derive" ] }
+bytemuck = { version = "1.22", features = [ "derive" ] }
 cfb8 = { version = "0.8", features = [ "std" ] }
+cfg-if = "1.0"
+fast-srgb8 = { version = "1.0", optional = true }
+foldhash = "0.1"
+egui = { version = "0.31", features = [ "bytemuck" ] }
+egui_plot = "0.31"
 env_logger = "0.10"
 fixedbitset = "0.5"
 flate2 = "1"
-image = { version = "0.24", features = [ "png" ] }
+image = { version = "0.25", features = [ "png" ] }
 indexmap = { version = "2.1", features = [ "serde" ] }
 lazy_static = "1.4"
 log = "0.4"
 mimalloc = "0.1"
-nalgebra = { version = "0.32", features = ["serde-serialize"] }
-nom = "7"
-num-bigint = "0.4"
-nom_locate = "4.2"
+multiversion = "0.8"
+nalgebra = { version = "0.33", features = [ "serde-serialize" ] }
 nom-supreme = "0.8"
+nom = "7"
+nom_locate = "4.2"
+num-bigint = "0.4"
+ordered-float = "4.5"
 petgraph = "0.6"
+pixels = { version = "0.15", optional = true }
 pollster = "0.3"
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
 quartz_nbt = { version = "0.2", features = [ "serde" ] }
@@ -40,24 +57,46 @@ serde = { version = "1", features = [ "derive" ] }
 serde_json = "1"
 serde_repr = "0.1"
 sha1 = "0.10"
-string_cache = "0.8"
 smallvec = { version = "1.11", features = [ "union", "const_generics", "const_new" ] }
+string_cache = "0.8"
 thiserror = "1.0"
 threadpool = "1.8"
 tracing-subscriber = "0.3"
-tracing-tracy = "0.11"
+tracing-tracy = { version = "0.11", optional = true }
 tracing = "0.1"
 uuid = { version = "1.4", features = [ "serde", "v3", "v4" ] }
-wgpu = "22"
+vulkano = { path = "crates/vulkano/vulkano", optional = true }
+vulkan_prelude = { path = "crates/vulkan_prelude", optional = true }
+wgpu = { version = "24.0.3", optional = true }
+wide = { version = "0.7", optional = true }
 winit = { version = "0.29", features = [ "rwh_05" ] }
-egui = { version = "0.28", features = [ "bytemuck" ] }
-egui_plot = "0.28"
+
+[dependencies.minecraft_client_vk_shaders]
+path = "crates/minecraft_client_vk_shaders"
+features = [ "vulkano" ]
+optional = true
 
 [profile.dev]
 opt-level = 1
+panic = "abort"
+
+[profile.dev-no-opt]
+inherits = "dev"
+opt-level = 0
+panic = "unwind"
+debug = "full"
+strip = "none"
 
 [profile.release]
 debug = false
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[profile.release-profiling]
+inherits = "release"
+lto = true
+codegen-units = 8
+panic = "abort"
+debug = "full"
+strip = "none"

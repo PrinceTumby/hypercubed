@@ -74,8 +74,6 @@ struct SubchunkHashMapLookupResult {
 // Subchunk start positions are always integers, so this is valid to use as a sentinel.
 const subchunk_entry_empty_key: vec3<f32> = vec3(0.1);
 
-// Fraction of each texture atlas dimension that each square is.
-// Calculated as `square_length / texture_atlas_dims`
 @group(0) @binding(0)
 var<uniform> block_item_atlas_size: vec2<f32>;
 @group(0) @binding(1)

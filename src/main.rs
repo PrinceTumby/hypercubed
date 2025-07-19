@@ -62,14 +62,19 @@ fn main() -> anyhow::Result<()> {
     {
         let clientbound_tx = clientbound_tx.clone();
         let server_connection = server_connection.clone();
-        std::thread::spawn(move || loop {
-            let packet = match server_connection.read_packet() {
-                Ok(packet) => packet,
-                Err(err) => panic!("{err}"),
-            };
-            if clientbound_tx.send(packet).is_err() {
-                break;
-            };
+        std::thread::spawn(move || {
+            loop {
+                let packet = match server_connection.read_packet() {
+                    Ok(packet) => packet,
+                    Err(err) => {
+                        eprintln!("Closing connection thread - {err}");
+                        break;
+                    }
+                };
+                if clientbound_tx.send(packet).is_err() {
+                    break;
+                };
+            }
         });
     }
     pollster::block_on(client::window_run(

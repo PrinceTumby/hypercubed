@@ -1,9 +1,9 @@
 pub mod blockstate;
 pub mod model;
 
-use super::{texture, Identifier, RegistryData, RegistryIndex};
+use super::{Identifier, RegistryData, RegistryIndex, texture};
 use ahash::AHashSet;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use blockstate::{
     BlockOpacity, BlockstateInfo, BlockstateInfoModifier, CollisionInfo, CustomPropertyType,
 };
@@ -17,6 +17,7 @@ pub struct Registry {
     data: RegistryData<Info>,
     global_palette: Vec<blockstate::Blockstate>,
     air_blockstates: AHashSet<GlobalPaletteIndex>,
+    light_emitting_blockstates: AHashSet<GlobalPaletteIndex>,
 }
 
 #[repr(transparent)]
@@ -75,6 +76,7 @@ impl Registry {
             data: RegistryData::new(),
             global_palette: Vec::new(),
             air_blockstates: AHashSet::new(),
+            light_emitting_blockstates: AHashSet::new(),
         }
     }
 
@@ -94,6 +96,10 @@ impl Registry {
     /// In vanilla, this is just air, cave air, and void air.
     pub fn is_blockstate_air_like(&self, global_palette_index: GlobalPaletteIndex) -> bool {
         self.air_blockstates.contains(&global_palette_index)
+    }
+
+    pub fn light_emitting_blockstates(&self) -> &AHashSet<GlobalPaletteIndex> {
+        &self.light_emitting_blockstates
     }
 
     /// Panics if an entry is already registered with `identifier`.
@@ -158,6 +164,15 @@ impl Registry {
         }
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
+        // Add light-emitting blockstates to global set
+        for (i, blockstate) in blockstates.iter_mut().enumerate() {
+            if blockstate.extra_info.light_info.emission_level > 0 {
+                let palette_idx =
+                    GlobalPaletteIndex::try_from(blockstate_id_range.start() + i).unwrap();
+                self.light_emitting_blockstates.insert(palette_idx);
+            }
+        }
+        // Calculate default index
         let default_index = match default_override {
             Some(default_override) => {
                 let override_map = default_override
@@ -177,7 +192,7 @@ impl Registry {
         };
         self.global_palette.append(&mut blockstates);
         self.data[block_index] = Info {
-            default_blockstate: GlobalPaletteIndex(default_index.try_into().unwrap()),
+            default_blockstate: GlobalPaletteIndex::try_from(default_index).unwrap(),
             properties,
             #[cfg(debug_assertions)]
             blockstate_id_range: blockstate_id_range.clone(),
@@ -247,6 +262,15 @@ impl Registry {
         }
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
+        // Add light-emitting blockstates to global set
+        for (i, blockstate) in blockstates.iter_mut().enumerate() {
+            if blockstate.extra_info.light_info.emission_level > 0 {
+                let palette_idx =
+                    GlobalPaletteIndex::try_from(blockstate_id_range.start() + i).unwrap();
+                self.light_emitting_blockstates.insert(palette_idx);
+            }
+        }
+        // Calculate default index
         let default_index = match default_override {
             Some(default_override) => {
                 let override_map = default_override
@@ -315,6 +339,15 @@ impl Registry {
         }
         let blockstate_id_range =
             self.global_palette.len()..=self.global_palette.len() + blockstates.len() - 1;
+        // Add light-emitting blockstates to global set
+        for (i, blockstate) in blockstates.iter_mut().enumerate() {
+            if blockstate.extra_info.light_info.emission_level > 0 {
+                let palette_idx =
+                    GlobalPaletteIndex::try_from(blockstate_id_range.start() + i).unwrap();
+                self.light_emitting_blockstates.insert(palette_idx);
+            }
+        }
+        // Calculate default index
         let default_index = self.global_palette.len();
         self.global_palette.append(&mut blockstates);
         self.data[block_index] = Info {

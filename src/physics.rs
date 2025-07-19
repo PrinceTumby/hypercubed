@@ -1,4 +1,4 @@
-use crate::client::{Player, RawChunk, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::client::{MIN_HEIGHT_I32, Player, RawChunk, SUBCHUNK_AXIS_LEN_I32};
 use crate::protocol::chunk::ChunkSection;
 use crate::resource::block::blockstate::CollisionInfo;
 use crate::resource::block::{Registry as BlockRegistry, RightAngleRotation};
@@ -22,13 +22,93 @@ const AUTO_JUMP_COOLDOWN_TICKS: u32 = 10;
 // TODO: Check this is accurate to vanilla
 const MINOR_COLLISION_ANGLE_THRESHOLD: f32 = 8.0;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+// TODO: Move to a utility module, instead of being in physics
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
 pub struct AABB {
     pub corner_1: Point3<f32>,
     pub corner_2: Point3<f32>,
 }
 
 impl AABB {
+    /// Computes the smallest AABB that contains both `self` and `other`.
+    pub fn max(&self, other: &Self) -> Self {
+        Self {
+            corner_1: Point3::new(
+                f32::min(self.corner_1.x, other.corner_1.x),
+                f32::min(self.corner_1.y, other.corner_1.y),
+                f32::min(self.corner_1.z, other.corner_1.z),
+            ),
+            corner_2: Point3::new(
+                f32::max(self.corner_2.x, other.corner_2.x),
+                f32::max(self.corner_2.y, other.corner_2.y),
+                f32::max(self.corner_2.z, other.corner_2.z),
+            ),
+        }
+    }
+
+    pub fn extended_in_direction(&self, dir: Vector3<f32>) -> Self {
+        let mut out = *self;
+        if dir.x < 0.0 {
+            out.corner_1.x += dir.x;
+        } else {
+            out.corner_2.x += dir.x;
+        }
+        if dir.y < 0.0 {
+            out.corner_1.y += dir.y;
+        } else {
+            out.corner_2.y += dir.y;
+        }
+        if dir.z < 0.0 {
+            out.corner_1.z += dir.z;
+        } else {
+            out.corner_2.z += dir.z;
+        }
+        out
+    }
+
+    pub fn expanded_by(&self, dims: Vector3<f32>) -> Self {
+        Self {
+            corner_1: self.corner_1 - dims,
+            corner_2: self.corner_2 + dims,
+        }
+    }
+
+    pub fn contracted_by(&self, dims: Vector3<f32>) -> Self {
+        Self {
+            corner_1: self.corner_1 + dims,
+            corner_2: self.corner_2 - dims,
+        }
+    }
+
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.corner_1.x < other.corner_2.x
+            && self.corner_2.x > other.corner_1.x
+            && self.corner_1.y < other.corner_2.y
+            && self.corner_2.y > other.corner_1.y
+            && self.corner_1.z < other.corner_2.z
+            && self.corner_2.z > other.corner_1.z
+    }
+
+    pub fn intersects_sphere(&self, centre: Point3<f32>, radius: f32) -> bool {
+        let mut distance = 0.0;
+        if centre.x < self.corner_1.x {
+            distance += (centre.x - self.corner_1.x).powi(2);
+        } else if centre.x > self.corner_2.x {
+            distance += (centre.x - self.corner_2.x).powi(2);
+        }
+        if centre.y < self.corner_1.y {
+            distance += (centre.y - self.corner_1.y).powi(2);
+        } else if centre.y > self.corner_2.y {
+            distance += (centre.y - self.corner_2.y).powi(2);
+        }
+        if centre.z < self.corner_1.z {
+            distance += (centre.z - self.corner_1.z).powi(2);
+        } else if centre.z > self.corner_2.z {
+            distance += (centre.z - self.corner_2.z).powi(2);
+        }
+        distance <= radius.powi(2)
+    }
+
     pub fn apply_blockstate_rotations(
         &mut self,
         x_rotation: RightAngleRotation,
@@ -69,49 +149,6 @@ impl AABB {
             quantise_256(f32::max(p1.y, p2.y)),
             quantise_256(f32::max(p1.z, p2.z)),
         );
-    }
-
-    pub fn intersects(&self, other: &Self) -> bool {
-        self.corner_1.x < other.corner_2.x
-            && self.corner_2.x > other.corner_1.x
-            && self.corner_1.y < other.corner_2.y
-            && self.corner_2.y > other.corner_1.y
-            && self.corner_1.z < other.corner_2.z
-            && self.corner_2.z > other.corner_1.z
-    }
-
-    pub fn extended_in_direction(&self, dir: Vector3<f32>) -> Self {
-        let mut out = *self;
-        if dir.x < 0.0 {
-            out.corner_1.x += dir.x;
-        } else {
-            out.corner_2.x += dir.x;
-        }
-        if dir.y < 0.0 {
-            out.corner_1.y += dir.y;
-        } else {
-            out.corner_2.y += dir.y;
-        }
-        if dir.z < 0.0 {
-            out.corner_1.z += dir.z;
-        } else {
-            out.corner_2.z += dir.z;
-        }
-        out
-    }
-
-    pub fn expanded_by(&self, dims: Vector3<f32>) -> Self {
-        Self {
-            corner_1: self.corner_1 - dims,
-            corner_2: self.corner_2 + dims,
-        }
-    }
-
-    pub fn contracted_by(&self, dims: Vector3<f32>) -> Self {
-        Self {
-            corner_1: self.corner_1 + dims,
-            corner_2: self.corner_2 - dims,
-        }
     }
 
     /// Returns the penetration normal and entry time for `self` moving at a given velocity

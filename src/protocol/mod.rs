@@ -11,8 +11,8 @@ pub mod status;
 pub mod prelude {
     pub use super::basic_types::*;
     pub use super::{
-        request_status, Deserialize, PacketRead, PacketWrite, PlayConnection, Serialize,
-        PROTOCOL_VERSION,
+        Deserialize, PROTOCOL_VERSION, PacketRead, PacketWrite, PlayConnection, Serialize,
+        request_status,
     };
 
     pub use parsing::*;
@@ -53,9 +53,9 @@ pub const OFFLINE_PLAYER_NAMESPACE: Uuid = uuid!("071e6668-28ee-39de-8f51-f257ec
 
 use bytebuffer::ByteBuffer;
 use cfb8::cipher::{BlockDecryptMut, BlockEncryptMut};
+use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
-use flate2::Compression;
 use nom::{Compare, InputLength, InputTake};
 #[cfg(feature = "protocol_verbose")]
 use nom_supreme::final_parser::final_parser;
@@ -64,7 +64,7 @@ use std::collections::VecDeque;
 use std::io::prelude::*;
 use std::net::TcpStream;
 use std::sync::Mutex;
-use uuid::{uuid, Uuid};
+use uuid::{Uuid, uuid};
 
 pub trait Deserialize: Sized {
     fn deserialize(input: InputSpan) -> IResult<Self>;

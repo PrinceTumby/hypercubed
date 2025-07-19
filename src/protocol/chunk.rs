@@ -1,7 +1,8 @@
 use super::prelude::*;
 use crate::resource::block::GlobalPaletteIndex;
-use nom::sequence::pair;
+use ahash::HashSet;
 use nom::Parser;
+use nom::sequence::pair;
 use nom_supreme::tag::complete::tag;
 use protocol_derive::Deserialize;
 
@@ -79,7 +80,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                     current_palette_value
                 }
             },
-            Palette::Palette(ref mut palette) => match palette.iter().position(|&v| v == value) {
+            Palette::Palette(palette) => match palette.iter().position(|&v| v == value) {
                 Some(palette_index) => {
                     let bit_value: u64 = palette_index.try_into().unwrap();
                     let old_bit_value =
@@ -105,7 +106,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                     }
                     // Palette might have changed due to a data conversion
                     match &mut self.palette {
-                        Palette::Palette(ref palette) => {
+                        Palette::Palette(palette) => {
                             let bit_value: u64 = palette_index.try_into().unwrap();
                             let old_bit_value = Self::replace_raw(
                                 &mut self.data,
@@ -140,6 +141,40 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                 old_bit_value.try_into().unwrap()
             }
         }
+    }
+
+    pub fn get_all_of_types(
+        &self,
+        blockstate_types_set: &HashSet<GlobalPaletteIndex>,
+    ) -> Vec<([u8; 3], GlobalPaletteIndex)> {
+        let axis_len_u8: u8 = AXIS_LEN.try_into().unwrap();
+        let mut light_positions = Vec::new();
+        match &self.palette {
+            Palette::SingleValue(value) => {
+                if blockstate_types_set.contains(&value) {
+                    for x in 0..axis_len_u8 {
+                        for y in 0..axis_len_u8 {
+                            for z in 0..axis_len_u8 {
+                                light_positions.push(([x, y, z], *value));
+                            }
+                        }
+                    }
+                }
+            }
+            Palette::Palette(_) | Palette::Direct => {
+                for x in 0..axis_len_u8 {
+                    for y in 0..axis_len_u8 {
+                        for z in 0..axis_len_u8 {
+                            let blockstate = self.get(x as usize, y as usize, z as usize);
+                            if blockstate_types_set.contains(&blockstate) {
+                                light_positions.push(([x, y, z], blockstate));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        light_positions
     }
 
     #[inline]
@@ -241,7 +276,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
                 }
                 *old_palette = Palette::Palette(new_palette);
             }
-            (Palette::Palette(ref palette), false) => {
+            (Palette::Palette(palette), false) => {
                 for y in 0..AXIS_LEN {
                     for z in 0..AXIS_LEN {
                         for x in 0..AXIS_LEN {

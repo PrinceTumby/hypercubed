@@ -1,14 +1,14 @@
 use ahash::AHashMap;
-use anyhow::{anyhow, bail, ensure, Context};
+use anyhow::{Context, anyhow, bail, ensure};
 use bitfield::bitfield;
-use nalgebra::{point, Matrix4, Point3, Rotation3, Vector3};
+use nalgebra::{Matrix4, Point3, Rotation3, Vector3, point};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use super::{texture, Identifier, RightAngleRotation};
+use super::{Identifier, RightAngleRotation, texture};
 // use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
 use crate::client::graphics::chunk_rc::custom_block::Vertex as GraphicsCustomBlockVertex;
-use crate::resource::manager::{get_resource_file, ResourceType};
+use crate::resource::manager::{ResourceType, get_resource_file};
 
 #[derive(Debug, Default)]
 pub struct ModelCache {

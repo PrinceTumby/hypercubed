@@ -1,7 +1,7 @@
 use super::Texture;
 use wgpu::{
-    include_wgsl, vertex_attr_array, Device, PipelineLayout, RenderPipeline,
-    RenderPipelineDescriptor, SurfaceConfiguration, VertexAttribute,
+    Device, PipelineLayout, RenderPipeline, RenderPipelineDescriptor, SurfaceConfiguration,
+    VertexAttribute, include_wgsl, vertex_attr_array,
 };
 
 pub mod crosshair {

@@ -1,5 +1,5 @@
 use ahash::{AHashMap, AHashSet};
-use anyhow::{anyhow, bail, ensure, Context};
+use anyhow::{Context, anyhow, bail, ensure};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -7,12 +7,12 @@ use std::fmt::Write;
 use std::sync::Arc;
 use string_cache::DefaultAtom as Atom;
 
-use super::model::{CombinedModelPart, ModelCache, ModelRotationInfo, ModelType};
 use super::RightAngleRotation;
-use super::{texture, Identifier};
+use super::model::{CombinedModelPart, ModelCache, ModelRotationInfo, ModelType};
+use super::{Identifier, texture};
 use crate::physics::AABB;
-use crate::resource::manager::{get_resource_file, ResourceType};
 use crate::resource::RegistryIndex;
+use crate::resource::manager::{ResourceType, get_resource_file};
 
 pub fn load_blockstates(
     block_index: RegistryIndex,

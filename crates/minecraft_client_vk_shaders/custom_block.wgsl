@@ -4,11 +4,9 @@ var<uniform> view_matrix: mat4x4<f32>;
 // Fraction of each texture atlas dimension that each square is.
 // Calculated as `square_length / texture_atlas_dims`
 @group(1) @binding(0)
-var<uniform> atlas_size: vec2<f32>;
+var atlas_texture: texture_2d<f32>;
 @group(1) @binding(1)
-var t_diffuse: texture_2d<f32>;
-@group(1) @binding(2)
-var s_diffuse: sampler;
+var atlas_sampler: sampler;
 
 @group(2) @binding(0)
 var<uniform> face_matrices: array<mat3x3<f32>, 6>;
@@ -26,13 +24,13 @@ struct VertexInput {
 // - Pack in 7 light level pairs
 // - Vertex shader: find closest two cubes, interpolate between them
 struct InstanceInput {
-    @location(10) pos: vec3<f32>,
-    @location(11) tint_color: vec4<f32>,
-    @location(12) light_level_pairs_1: vec4<u32>,
+    @location(4) pos: vec3<f32>,
+    @location(5) tint_color: vec4<f32>,
+    @location(6) light_level_pairs_1: vec4<u32>,
     /// Packed fields:
     /// 0: Emits light?
-    /// 1-7: Unused
-    @location(13) light_level_pairs_2_and_packed_fields: vec4<u32>,
+    /// 1-31: Unused
+    @location(7) light_level_pairs_2_and_packed_fields: vec4<u32>,
 }
 
 struct VertexOutput {
@@ -57,7 +55,7 @@ fn calculate_light_rgb(sky_light_level: u32, block_light_level: u32) -> vec3<f32
 }
 
 @vertex
-fn vs_main(
+fn custom_block_vertex(
     vertex: VertexInput,
     instance: InstanceInput,
 ) -> VertexOutput {
@@ -66,7 +64,8 @@ fn vs_main(
     let global_pos = vertex.local_pos + instance.pos + vec3(0.5, 0.5, 0.5);
     out.clip_pos = view_matrix * vec4(global_pos, 1.0);
     // UVs
-    out.uvs = vec2<f32>(vertex.uvs) / atlas_size;
+    let atlas_size_f32s = vec2<f32>(textureDimensions(atlas_texture));
+    out.uvs = vec2<f32>(vertex.uvs) / atlas_size_f32s;
     // Normal
     out.normal = vertex.normal;
     // Tint
@@ -109,8 +108,8 @@ fn vs_main(
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var tex_sample = textureSample(t_diffuse, s_diffuse, in.uvs);
+fn custom_block_fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    var tex_sample = textureSample(atlas_texture, atlas_sampler, in.uvs);
     if tex_sample.a < 1.0 {
         discard;
     }

@@ -1,5 +1,5 @@
-use super::prelude::*;
 use super::PluginMessage;
+use super::prelude::*;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
 use uuid::Uuid;
 

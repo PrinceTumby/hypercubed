@@ -4,9 +4,9 @@ use nalgebra::{Matrix3, Rotation3};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use wgpu::{
-    include_wgsl, vertex_attr_array, Buffer, BufferSlice, ComputePipeline,
-    ComputePipelineDescriptor, Device, PipelineCompilationOptions, PipelineLayout, RenderPipeline,
-    RenderPipelineDescriptor, SurfaceConfiguration, VertexAttribute,
+    Buffer, BufferSlice, ComputePipeline, ComputePipelineDescriptor, Device,
+    PipelineCompilationOptions, PipelineLayout, RenderPipeline, RenderPipelineDescriptor,
+    SurfaceConfiguration, VertexAttribute, include_wgsl, vertex_attr_array,
 };
 
 pub use super::chunk::{
@@ -704,7 +704,7 @@ pub mod custom_block {
             1 => Uint16x2,
             // normal
             2 => Float32x3,
-            // packed_flags
+            // packed_fields
             3 => Uint32,
         ];
 

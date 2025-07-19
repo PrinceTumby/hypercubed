@@ -1,23 +1,41 @@
+// XXX: DEBUG
+#![cfg_attr(feature = "graphics_backend_software", allow(unused))]
+
 use crate::basic_types::AxisDirection;
 use crate::client::graphics::{self, GraphicsResources};
 use crate::client::{
-    ClientPlayStateUpdate, RawChunk, RawCustomBlockGroup, RawSubchunk, MAX_HEIGHT_I32,
-    MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32,
+    ClientPlayStateUpdate, MAX_HEIGHT_I32, MIN_HEIGHT_I32, RawChunk, RawCustomBlockGroup,
+    RawSubchunk, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32,
 };
+#[cfg(feature = "graphics_backend_vulkan")]
+use crate::client::{RayTracedQuadInfo, RayTracedQuadPackedFields};
 use crate::identifier;
 use crate::protocol::chunk::{
     self as protocol_chunk, ChunkSection, ChunkSectionLightChannelInfoMut, LightType,
 };
+use crate::resource::block::{GlobalPaletteIndex, RightAngleRotation};
 use crate::resource::block::blockstate::{self, BlockOpacity, SkyLightOpacity};
 use crate::resource::block::model::{ModelType, Tint};
-use crate::resource::block::GlobalPaletteIndex;
 use ahash::{AHashMap, AHashSet, AHasher};
 use fixedbitset::FixedBitSet;
+use ordered_float::NotNan;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 use std::hash::Hasher;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
+#[cfg(feature = "graphics_backend_software")]
+pub fn process_subchunks(
+    _graphics_resources: &GraphicsResources,
+    _raw_chunks: &AHashMap<[i32; 2], Arc<RawChunk>>,
+    _play_state_update_tx: mpsc::Sender<ClientPlayStateUpdate>,
+    _subchunks: &[[i32; 3]],
+    _update_id: usize,
+) {
+    // TODO:
+}
+
+#[cfg(not(feature = "graphics_backend_software"))]
 pub fn process_subchunks(
     graphics_resources: &GraphicsResources,
     raw_chunks: &AHashMap<[i32; 2], Arc<RawChunk>>,
@@ -35,7 +53,7 @@ pub fn process_subchunks(
         let Some(chunk) = &raw_chunks.get(&[subchunk_x, subchunk_z]) else {
             continue;
         };
-        let chunk_section = &chunk.sections[<i32 as TryInto<usize>>::try_into(subchunk_y).unwrap()];
+        let chunk_section = &chunk.sections[usize::try_from(subchunk_y).unwrap()];
         if chunk_section.block_count == 0 {
             continue;
         }
@@ -58,6 +76,102 @@ pub fn process_subchunks(
         let mut block_faces: [Vec<_>; 6] = Default::default();
         let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
         let mut custom_block_instance_groups = AHashMap::new();
+        // NOTE: RADIANCE CASCADES
+        #[cfg(feature = "graphics_backend_vulkan")]
+        let (
+            mut vertex_positions,
+            mut vertex_position_index_map,
+            mut block_face_triangle_quads,
+            mut block_face_quad_info,
+            mut tinted_block_face_triangle_quads,
+            mut tinted_block_face_quad_info,
+            mut custom_block_face_triangle_quads,
+            mut custom_block_face_quad_info,
+        ) = (
+            <Vec<[f32; 3]>>::new(),
+            <AHashMap<[NotNan<f32>; 3], u32>>::new(),
+            <Vec<[[u32; 3]; 2]>>::new(),
+            <Vec<RayTracedQuadInfo>>::new(),
+            <Vec<[[u32; 3]; 2]>>::new(),
+            <Vec<RayTracedQuadInfo>>::new(),
+            <Vec<[[u32; 3]; 2]>>::new(),
+            <Vec<RayTracedQuadInfo>>::new(),
+        );
+        #[cfg(feature = "graphics_backend_vulkan")]
+        fn add_block_quad(
+            triangle_quads_list: &mut Vec<[[u32; 3]; 2]>,
+            quad_info_list: &mut Vec<RayTracedQuadInfo>,
+            vertex_positions: &mut Vec<[f32; 3]>,
+            vertex_position_index_map: &mut AHashMap<[NotNan<f32>; 3], u32>,
+            global_pos: [f32; 3],
+            dir_i: usize,
+            atlas_uvs: [u16; 4],
+            uv_rotation: crate::resource::block::RightAngleRotation,
+            tint_colour: Option<[u8; 4]>,
+        ) {
+            use crate::resource::block::RightAngleRotation;
+            use nalgebra::Vector3;
+            assert!(dir_i < 6);
+            let global_pos_vec = Vector3::from(global_pos) + Vector3::repeat(0.5);
+            let base_positions: [Vector3<f32>; 4] = [
+                Vector3::new(0.5, 0.5, 0.5),
+                Vector3::new(-0.5, 0.5, 0.5),
+                Vector3::new(0.5, 0.5, -0.5),
+                Vector3::new(-0.5, 0.5, -0.5),
+            ];
+            let face_matrix =
+                crate::client::graphics::chunk_rc::block_face::face_matrices::rotations()[dir_i];
+            let global_positions = base_positions
+                .map(|pos| face_matrix.transform_vector(&pos))
+                .map(|pos| pos + global_pos_vec)
+                .map(<[f32; 3]>::from)
+                .map(|pos| pos.map(|n| NotNan::new(n).unwrap()));
+            let pos_indices = global_positions.map(|pos_not_nan| {
+                *vertex_position_index_map
+                    .entry(pos_not_nan)
+                    .or_insert_with(|| {
+                        let new_index: u32 = vertex_positions.len().try_into().unwrap();
+                        vertex_positions.push(pos_not_nan.map(Into::into));
+                        new_index
+                    })
+            });
+            triangle_quads_list.push([
+                [pos_indices[1], pos_indices[0], pos_indices[2]],
+                [pos_indices[3], pos_indices[1], pos_indices[2]],
+            ]);
+            let base_uvs = [
+                [atlas_uvs[2], atlas_uvs[3]],
+                [atlas_uvs[0], atlas_uvs[3]],
+                [atlas_uvs[2], atlas_uvs[1]],
+                [atlas_uvs[0], atlas_uvs[1]],
+            ];
+            let uv_rotation_arr = match uv_rotation {
+                RightAngleRotation::Zero => [0, 1, 2, 3],
+                // RightAngleRotation::Ninety => [1, 3, 0, 2],
+                RightAngleRotation::Ninety => [2, 0, 3, 1],
+                RightAngleRotation::OneEighty => [3, 2, 1, 0],
+                // RightAngleRotation::TwoSeventy => [2, 0, 3, 1],
+                RightAngleRotation::TwoSeventy => [1, 3, 0, 2],
+            };
+            let vertex_uvs = [
+                base_uvs[uv_rotation_arr[0]],
+                base_uvs[uv_rotation_arr[1]],
+                base_uvs[uv_rotation_arr[2]],
+                base_uvs[uv_rotation_arr[3]],
+            ];
+            let mut quad_fields = RayTracedQuadPackedFields(0);
+            if let Some(tint) = tint_colour {
+                quad_fields.set_tint_colour(
+                    tint[0] as u32 | ((tint[1] as u32) << 8) | ((tint[2] as u32) << 16),
+                );
+            } else {
+                quad_fields.set_tint_colour(0xFFFFFF);
+            }
+            quad_info_list.push(RayTracedQuadInfo {
+                uvs: vertex_uvs,
+                packed_fields: quad_fields,
+            });
+        }
         for y in 0..SUBCHUNK_AXIS_LEN {
             let global_y_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y) + y as i32 + MIN_HEIGHT_I32;
             let global_y = global_y_i32 as f32;
@@ -173,7 +287,12 @@ pub fn process_subchunks(
                                             graphics::chunk_rc::block_face::Instance::new(
                                                 [x as u8, y as u8, z as u8],
                                                 info.per_face_atlas_uvs[i],
-                                                info.per_face_uv_rotations[i],
+                                                match info.per_face_uv_rotations[i] {
+                                                    RightAngleRotation::Zero => 0,
+                                                    RightAngleRotation::Ninety => 1,
+                                                    RightAngleRotation::OneEighty => 2,
+                                                    RightAngleRotation::TwoSeventy => 3,
+                                                },
                                                 face_light_map[i],
                                                 blockstate_info
                                                     .extra_info
@@ -181,6 +300,18 @@ pub fn process_subchunks(
                                                     .emission_level
                                                     > 0,
                                             ),
+                                        );
+                                        #[cfg(feature = "graphics_backend_vulkan")]
+                                        add_block_quad(
+                                            &mut block_face_triangle_quads,
+                                            &mut block_face_quad_info,
+                                            &mut vertex_positions,
+                                            &mut vertex_position_index_map,
+                                            [global_x, global_y, global_z],
+                                            i,
+                                            info.per_face_atlas_uvs[i],
+                                            info.per_face_uv_rotations[i],
+                                            None,
                                         );
                                     }
                                 }
@@ -193,7 +324,12 @@ pub fn process_subchunks(
                                             graphics::chunk_rc::tinted_block_face::Instance::new(
                                                 [x as u8, y as u8, z as u8],
                                                 info.per_face_atlas_uvs[i],
-                                                info.per_face_uv_rotations[i],
+                                                match info.per_face_uv_rotations[i] {
+                                                    RightAngleRotation::Zero => 0,
+                                                    RightAngleRotation::Ninety => 1,
+                                                    RightAngleRotation::OneEighty => 2,
+                                                    RightAngleRotation::TwoSeventy => 3,
+                                                },
                                                 face_light_map[i],
                                                 // Block doesn't have any tint, so just use
                                                 // transparent white as a null value.
@@ -204,6 +340,18 @@ pub fn process_subchunks(
                                                     .emission_level
                                                     > 0,
                                             ),
+                                        );
+                                        #[cfg(feature = "graphics_backend_vulkan")]
+                                        add_block_quad(
+                                            &mut tinted_block_face_triangle_quads,
+                                            &mut tinted_block_face_quad_info,
+                                            &mut vertex_positions,
+                                            &mut vertex_position_index_map,
+                                            [global_x, global_y, global_z],
+                                            i,
+                                            info.per_face_atlas_uvs[i],
+                                            info.per_face_uv_rotations[i],
+                                            None,
                                         );
                                     }
                                 }
@@ -218,11 +366,28 @@ pub fn process_subchunks(
                                     graphics::chunk_rc::tinted_block_face::Instance::new(
                                         [x as u8, y as u8, z as u8],
                                         info.per_face_atlas_uvs[i],
-                                        info.per_face_uv_rotations[i],
+                                        match info.per_face_uv_rotations[i] {
+                                            RightAngleRotation::Zero => 0,
+                                            RightAngleRotation::Ninety => 1,
+                                            RightAngleRotation::OneEighty => 2,
+                                            RightAngleRotation::TwoSeventy => 3,
+                                        },
                                         face_light_map[i],
                                         tint_color,
                                         blockstate_info.extra_info.light_info.emission_level > 0,
                                     ),
+                                );
+                                #[cfg(feature = "graphics_backend_vulkan")]
+                                add_block_quad(
+                                    &mut tinted_block_face_triangle_quads,
+                                    &mut tinted_block_face_quad_info,
+                                    &mut vertex_positions,
+                                    &mut vertex_position_index_map,
+                                    [global_x, global_y, global_z],
+                                    i,
+                                    info.per_face_atlas_uvs[i],
+                                    info.per_face_uv_rotations[i],
+                                    Some(tint_color),
                                 );
                             }
                         }
@@ -237,23 +402,57 @@ pub fn process_subchunks(
                                         graphics::chunk_rc::tinted_block_face::Instance::new(
                                             [x as u8, y as u8, z as u8],
                                             face.atlas_uvs,
-                                            face.uv_rotation,
+                                            match face.uv_rotation {
+                                                RightAngleRotation::Zero => 0,
+                                                RightAngleRotation::Ninety => 1,
+                                                RightAngleRotation::OneEighty => 2,
+                                                RightAngleRotation::TwoSeventy => 3,
+                                            },
                                             face_light_map[face.face_i as usize],
                                             tint_color,
                                             blockstate_info.extra_info.light_info.emission_level
                                                 > 0,
                                         ),
                                     );
+                                    #[cfg(feature = "graphics_backend_vulkan")]
+                                    add_block_quad(
+                                        &mut tinted_block_face_triangle_quads,
+                                        &mut tinted_block_face_quad_info,
+                                        &mut vertex_positions,
+                                        &mut vertex_position_index_map,
+                                        [global_x, global_y, global_z],
+                                        face.face_i as usize,
+                                        face.atlas_uvs,
+                                        face.uv_rotation,
+                                        Some(tint_color),
+                                    );
                                 } else {
                                     block_faces[face.face_i as usize].push(
                                         graphics::chunk_rc::block_face::Instance::new(
                                             [x as u8, y as u8, z as u8],
                                             face.atlas_uvs,
-                                            face.uv_rotation,
+                                            match face.uv_rotation {
+                                                RightAngleRotation::Zero => 0,
+                                                RightAngleRotation::Ninety => 1,
+                                                RightAngleRotation::OneEighty => 2,
+                                                RightAngleRotation::TwoSeventy => 3,
+                                            },
                                             face_light_map[face.face_i as usize],
                                             blockstate_info.extra_info.light_info.emission_level
                                                 > 0,
                                         ),
+                                    );
+                                    #[cfg(feature = "graphics_backend_vulkan")]
+                                    add_block_quad(
+                                        &mut block_face_triangle_quads,
+                                        &mut block_face_quad_info,
+                                        &mut vertex_positions,
+                                        &mut vertex_position_index_map,
+                                        [global_x, global_y, global_z],
+                                        face.face_i as usize,
+                                        face.atlas_uvs,
+                                        face.uv_rotation,
+                                        None,
                                     );
                                 }
                             }
@@ -277,6 +476,57 @@ pub fn process_subchunks(
                                 face_light_map,
                                 blockstate_info.extra_info.light_info.emission_level > 0,
                             ));
+                            #[cfg(feature = "graphics_backend_vulkan")]
+                            {
+                                use nalgebra::Vector3;
+                                let block_global_pos_vec =
+                                    Vector3::new(global_x, global_y, global_z)
+                                        + Vector3::repeat(0.5);
+                                for local_index_i in (0..info.indices.len()).step_by(6) {
+                                    // Refer to FACE_INDICES in
+                                    // crate::resource::model::finalise_model.
+                                    // Should give indices [0, 1, 2, 3] + base.
+                                    let quad_model_vertices = [
+                                        &info.vertices[info.indices[local_index_i + 1] as usize],
+                                        &info.vertices[info.indices[local_index_i + 3] as usize],
+                                        &info.vertices[info.indices[local_index_i + 4] as usize],
+                                        &info.vertices[info.indices[local_index_i + 5] as usize],
+                                    ];
+                                    let quad_indices = quad_model_vertices.map(|v| {
+                                        let global_pos = v.local_pos + block_global_pos_vec;
+                                        let global_pos_f32s = <[f32; 3]>::from(global_pos);
+                                        let global_pos_not_nan =
+                                            global_pos_f32s.map(|n| NotNan::new(n).unwrap());
+                                        *vertex_position_index_map
+                                            .entry(global_pos_not_nan)
+                                            .or_insert_with(|| {
+                                                let new_index: u32 =
+                                                    vertex_positions.len().try_into().unwrap();
+                                                vertex_positions.push(global_pos_f32s);
+                                                new_index
+                                            })
+                                    });
+                                    custom_block_face_triangle_quads.push([
+                                        [quad_indices[1], quad_indices[0], quad_indices[2]],
+                                        [quad_indices[3], quad_indices[1], quad_indices[2]],
+                                    ]);
+                                    let quad_uvs = quad_model_vertices.map(|v| v.uvs);
+                                    let mut quad_fields = RayTracedQuadPackedFields(0);
+                                    if quad_model_vertices[0].tint.is_some() {
+                                        quad_fields.set_tint_colour(
+                                            tint_color[0] as u32
+                                                | ((tint_color[1] as u32) << 8)
+                                                | ((tint_color[2] as u32) << 16),
+                                        );
+                                    } else {
+                                        quad_fields.set_tint_colour(0xFFFFFF);
+                                    }
+                                    custom_block_face_quad_info.push(RayTracedQuadInfo {
+                                        uvs: quad_uvs,
+                                        packed_fields: quad_fields,
+                                    });
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -475,6 +725,14 @@ pub fn process_subchunks(
                 instances,
             })
             .collect();
+        #[cfg(feature = "graphics_backend_vulkan")]
+        let (quads_info, quads_info_offsets) = {
+            let tinted_offset: u32 = block_face_quad_info.len().try_into().unwrap();
+            block_face_quad_info.extend(tinted_block_face_quad_info);
+            let custom_offset: u32 = block_face_quad_info.len().try_into().unwrap();
+            block_face_quad_info.extend(custom_block_face_quad_info);
+            (block_face_quad_info, [tinted_offset, custom_offset])
+        };
         new_raw_subchunks.push((
             subchunk_coords,
             RawSubchunk {
@@ -485,6 +743,15 @@ pub fn process_subchunks(
                 tinted_block_face_instance_groups,
                 custom_block_groups,
                 connected_faces,
+                #[cfg(feature = "graphics_backend_vulkan")]
+                rt_info: crate::client::RayTracingInfo {
+                    vertex_positions,
+                    block_face_triangle_quads,
+                    tinted_block_face_triangle_quads,
+                    custom_block_face_triangle_quads,
+                    quads_info,
+                    quads_info_offsets,
+                },
             },
         ));
     }
