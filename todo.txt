@@ -1,9 +1,6 @@
 Last updated - 19/07/2025:
 
 Code Ideas:
-- Move the Vulkan shader crate out to the main `crates` folder, and include it as a dependency
-  instead of including it using an `exports` module, as is the current solution.
-  Should make for a much nicer development experience, especially when modifying shader files.
 - Make the asset manager into a stateful struct, and make it so we can load assets straight from a
   packaged jar file.
 - Consider swapping out the current Dhall + JSON method for Nickel instead. If load performance is

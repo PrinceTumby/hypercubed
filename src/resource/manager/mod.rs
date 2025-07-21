@@ -2,11 +2,13 @@ mod internal_overlay;
 
 use super::Identifier;
 use ahash::{AHashMap, AHashSet};
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use lazy_static::lazy_static;
+use zip::ZipArchive;
 use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+use std::io::{Cursor, Read};
 
 pub fn get_resource_file(
     resource_type: &ResourceType,
@@ -23,8 +25,10 @@ pub fn get_resource_file(
         let filesystem = &overlay_set.filesystems[filesystem_index];
         filesystem.get(resource_type, identifier)
     } else {
-        let mut path = PathBuf::new();
-        path.push("assets");
+        let mut path = match &*MAIN_FILESYSTEM {
+            MainFilesystem::JarFile(_zip_archive) => PathBuf::from("assets"),
+            MainFilesystem::AssetsFolder(path_prefix) => path_prefix.clone(),
+        };
         path.push(identifier.namespace.as_ref());
         path.push(match resource_type {
             &ResourceType::Blockstate => "blockstates",
@@ -42,7 +46,22 @@ pub fn get_resource_file(
             &ResourceType::TextureMeta => "png.mcmeta",
             &ResourceType::TextureLuma => unimplemented!(),
         });
-        Ok(Cow::Owned(std::fs::read(&path)?))
+        match &*MAIN_FILESYSTEM {
+            MainFilesystem::JarFile(zip_archive) => {
+                // `ZipArchive` is currently cheap to clone.
+                let mut zip_archive = zip_archive.clone();
+                let index = zip_archive
+                    .index_for_path(&path)
+                    .ok_or_else(|| anyhow!("Unknown path {path:?}"))?;
+                let mut file_in_zip = zip_archive.by_index(index)?;
+                let mut buffer = Vec::new();
+                file_in_zip.read_to_end(&mut buffer)?;
+                Ok(buffer.into())
+            }
+            MainFilesystem::AssetsFolder(_path_prefix) => {
+                Ok(Cow::Owned(std::fs::read(&path)?))
+            }
+        }
     }
 }
 
@@ -57,6 +76,23 @@ pub enum ResourceType {
 }
 
 lazy_static! {
+    static ref MAIN_FILESYSTEM: MainFilesystem = {
+        // TODO: Make this configurable.
+        if let Ok(jar_bytes) = std::fs::read("minecraft.jar")
+            && let jar_cursor = Cursor::new(jar_bytes.into())
+            && let Ok(zip_archive) = ZipArchive::new(jar_cursor)
+        {
+            MainFilesystem::JarFile(zip_archive)
+        } else if std::fs::read_dir("assets").is_ok() {
+            MainFilesystem::AssetsFolder(PathBuf::from("assets"))
+        } else {
+            panic!(concat!(
+                "Cannot find assets source! ",
+                "Expected to find `minecraft.jar` or an `assets` directory",
+            ));
+        }
+    };
+
     static ref GLOBAL_OVERLAY_SET: RwLock<GlobalOverlays> = {
         let internal_blockstates: AHashSet<_> =
             internal_overlay::BLOCKSTATES.keys().cloned().collect();
@@ -75,6 +111,19 @@ lazy_static! {
             [internal_filesystem_overlay].into_iter(),
         ))
     };
+}
+
+trait Filesystem: Send + Sync {
+    fn get(
+        &self,
+        resource_type: &ResourceType,
+        identifier: &Identifier,
+    ) -> anyhow::Result<Cow<'static, [u8]>>;
+}
+
+enum MainFilesystem {
+    JarFile(ZipArchive<Cursor<Arc<[u8]>>>),
+    AssetsFolder(PathBuf),
 }
 
 struct GlobalOverlays {
@@ -132,12 +181,4 @@ struct FilesystemOverlay {
     pub models: AHashSet<Identifier>,
     pub textures: AHashSet<Identifier>,
     pub luma_textures: AHashSet<Identifier>,
-}
-
-trait Filesystem: Send + Sync {
-    fn get(
-        &self,
-        resource_type: &ResourceType,
-        identifier: &Identifier,
-    ) -> anyhow::Result<Cow<'static, [u8]>>;
 }
