@@ -724,7 +724,7 @@ pub fn register_vanilla_blocks(
         registry,
         model_cache,
         texture_atlas_builder,
-        include_str!("vanilla_blocks_generated.json"),
+        include_str!(concat!(env!("OUT_DIR"), "/vanilla_blocks_generated.json")),
     )?;
 
     println!("Block load time: {:?}", std::time::Instant::now() - start_time);
