@@ -834,8 +834,16 @@ pub fn process_game_events(
                                 .collect::<Vec<_>>()),
                             )
                             .unwrap();
-                        let blas_scratch_buffer: VulkanSubbuffer<[u8]> = VulkanBuffer::new_slice(
-                            &graphics_state.resources.memory_allocator,
+                        let min_scratch_alignment: u64 = graphics_state
+                            .resources
+                            .device
+                            .physical_device()
+                            .properties()
+                            .min_acceleration_structure_scratch_offset_alignment
+                            .unwrap_or(1)
+                            .into();
+                        let blas_scratch_buffer: VulkanSubbuffer<[u8]> = vulkan_new_buffer_slice_aligned(
+                            &(graphics_state.resources.memory_allocator.clone() as Arc<_>),
                             &VulkanBufferCreateInfo {
                                 usage: VulkanBufferUsage::STORAGE_BUFFER
                                     | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
@@ -845,7 +853,8 @@ pub fn process_game_events(
                                 memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
                                 ..Default::default()
                             },
-                            blas_build_sizes.build_scratch_size,
+                            blas_build_sizes.build_scratch_size + min_scratch_alignment,
+                            min_scratch_alignment.try_into().unwrap()
                         )
                         .context("Error while creating subchunk BLAS scratch buffer")
                         .unwrap();
@@ -1052,8 +1061,8 @@ pub fn process_game_events(
             break 'tlas_blk;
         }
         let num_blas_instances: u32 = blas_instances.len().try_into().unwrap();
-        let blas_instances_buffer = VulkanBuffer::from_iter(
-            &graphics_state.resources.memory_allocator,
+        let blas_instances_buffer = vulkan_buffer_from_iter_aligned(
+            &(graphics_state.resources.memory_allocator.clone() as Arc<_>),
             &VulkanBufferCreateInfo {
                 usage: VulkanBufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
                     | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
@@ -1065,6 +1074,7 @@ pub fn process_game_events(
                 ..Default::default()
             },
             blas_instances,
+            VulkanDeviceAlignment::new(16).unwrap(),
         )
         .context("Error while creating BLAS instances buffer for TLAS")
         .unwrap();
@@ -1091,17 +1101,27 @@ pub fn process_game_events(
                 &[num_blas_instances] as &[u32],
             )
             .unwrap();
-        let tlas_scratch_buffer: VulkanSubbuffer<[u8]> = VulkanBuffer::new_slice(
-            &graphics_state.resources.memory_allocator.clone(),
+        let min_scratch_alignment: u64 = graphics_state
+            .resources
+            .device
+            .physical_device()
+            .properties()
+            .min_acceleration_structure_scratch_offset_alignment
+            .unwrap_or(1)
+            .into();
+        let tlas_scratch_buffer: VulkanSubbuffer<[u8]> = vulkan_new_buffer_slice_aligned(
+            &(graphics_state.resources.memory_allocator.clone() as Arc<_>),
             &VulkanBufferCreateInfo {
-                usage: VulkanBufferUsage::STORAGE_BUFFER | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                usage: VulkanBufferUsage::STORAGE_BUFFER
+                    | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
                 ..Default::default()
             },
             &VulkanAllocationCreateInfo {
                 memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
-            tlas_build_sizes.build_scratch_size,
+            tlas_build_sizes.build_scratch_size + min_scratch_alignment,
+            min_scratch_alignment.try_into().unwrap()
         )
         .context("Error while creating subchunk TLAS scratch buffer")
         .unwrap();

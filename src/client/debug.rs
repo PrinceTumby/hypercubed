@@ -262,6 +262,7 @@ pub fn render_debug_ui(
                     &mut debug_state.radiance_cascades_light_tree_visualiser,
                     "Light tree visualiser",
                 );
+                ui.add(Slider::new(&mut debug_state.radiance_cascades_light_tree_level, 0..=12).text("Light tree level"));
                 ui.checkbox(
                     &mut debug_state.radiance_cascades_areaquad_visualiser,
                     "Areaquad visualiser",
@@ -524,52 +525,135 @@ pub fn render_debug_ui(
             }
         }
         if debug_state.radiance_cascades_light_tree_visualiser {
+            // use nalgebra::{Point3, Vector3};
+            // static ICOSPHERE_BASE_VERTICES: [Vector3<f32>; 12] = [
+            //     Vector3::new(0.8506508, 0.5257311, 0.0),
+            //     Vector3::new(0.000000101405476, 0.8506507, -0.525731),
+            //     Vector3::new(0.000000101405476, 0.8506506, 0.525731),
+            //     Vector3::new(0.5257309, -0.00000006267203, -0.85065067),
+            //     Vector3::new(0.52573115, -0.00000006267203, 0.85065067),
+            //     Vector3::new(0.8506508, -0.5257311, 0.0),
+            //     Vector3::new(-0.52573115, 0.00000006267203, -0.85065067),
+            //     Vector3::new(-0.8506508, 0.5257311, 0.0),
+            //     Vector3::new(-0.5257309, 0.00000006267203, 0.85065067),
+            //     Vector3::new(-0.000000101405476, -0.8506506, -0.525731),
+            //     Vector3::new(-0.000000101405476, -0.8506507, 0.525731),
+            //     Vector3::new(-0.8506508, -0.5257311, 0.0),
+            // ];
+            // static ICOSPHERE_INDICES: [[usize; 3]; 20] = [
+            //     [0, 1, 2],
+            //     [0, 3, 1],
+            //     [0, 2, 4],
+            //     [3, 0, 5],
+            //     [0, 4, 5],
+            //     [1, 3, 6],
+            //     [1, 7, 2],
+            //     [7, 1, 6],
+            //     [4, 2, 8],
+            //     [7, 8, 2],
+            //     [9, 3, 5],
+            //     [6, 3, 9],
+            //     [5, 4, 10],
+            //     [4, 8, 10],
+            //     [9, 5, 10],
+            //     [7, 6, 11],
+            //     [7, 11, 8],
+            //     [11, 6, 9],
+            //     [8, 11, 10],
+            //     [10, 11, 9],
+            // ];
+            // let mut tris: Vec<DebugTriangle> = Vec::new();
+            // if let Some(tree) = &graphics_state.radiance_cascades.debug_light_tree {
+            //     for (i, node) in tree.iter().enumerate() {
+            //         if node.children[0] != u32::MAX {
+            //             break;
+            //         }
+            //         let centre: Point3<f32> = node.sphere_centre.into();
+            //         let radius = node.sphere_radius;
+            //         let vertices = ICOSPHERE_BASE_VERTICES.map(|v| centre + (v * radius));
+            //         fn colour_hash(i: usize) -> Color32 {
+            //             let mut x = i as u32;
+            //             x ^= x >> 16;
+            //             x = x.wrapping_mul(0x7FEB352D);
+            //             x ^= x >> 15;
+            //             x = x.wrapping_mul(0x846CA68B);
+            //             x ^= x >> 16;
+            //             x %= 1 << 24;
+            //             Color32::from_rgba_unmultiplied(
+            //                 x as u8,
+            //                 (x >> 8) as u8,
+            //                 (x >> 16) as u8,
+            //                 0xFF
+            //             )
+            //         }
+            //         tris.extend(ICOSPHERE_INDICES.map(|tri_indices| {
+            //             let [p1, p2, p3] = tri_indices.map(|idx| vertices[idx]);
+            //             DebugTriangle {
+            //                 p1: p1.into(),
+            //                 p2: p2.into(),
+            //                 p3: p3.into(),
+            //                 color: colour_hash(i).gamma_multiply(0.25).to_array(),
+            //                 packed_fields: DebugPackedFlags::NONE,
+            //             }
+            //         }));
+            //     }
+            // }
             use nalgebra::{Point3, Vector3};
-            static ICOSPHERE_BASE_VERTICES: [Vector3<f32>; 12] = [
-                Vector3::new(0.8506508, 0.5257311, 0.0),
-                Vector3::new(0.000000101405476, 0.8506507, -0.525731),
-                Vector3::new(0.000000101405476, 0.8506506, 0.525731),
-                Vector3::new(0.5257309, -0.00000006267203, -0.85065067),
-                Vector3::new(0.52573115, -0.00000006267203, 0.85065067),
-                Vector3::new(0.8506508, -0.5257311, 0.0),
-                Vector3::new(-0.52573115, 0.00000006267203, -0.85065067),
-                Vector3::new(-0.8506508, 0.5257311, 0.0),
-                Vector3::new(-0.5257309, 0.00000006267203, 0.85065067),
-                Vector3::new(-0.000000101405476, -0.8506506, -0.525731),
-                Vector3::new(-0.000000101405476, -0.8506507, 0.525731),
-                Vector3::new(-0.8506508, -0.5257311, 0.0),
-            ];
-            static ICOSPHERE_INDICES: [[usize; 3]; 20] = [
-                [0, 1, 2],
-                [0, 3, 1],
-                [0, 2, 4],
-                [3, 0, 5],
-                [0, 4, 5],
-                [1, 3, 6],
-                [1, 7, 2],
-                [7, 1, 6],
-                [4, 2, 8],
-                [7, 8, 2],
-                [9, 3, 5],
-                [6, 3, 9],
-                [5, 4, 10],
-                [4, 8, 10],
-                [9, 5, 10],
-                [7, 6, 11],
-                [7, 11, 8],
-                [11, 6, 9],
-                [8, 11, 10],
-                [10, 11, 9],
-            ];
             let mut tris: Vec<DebugTriangle> = Vec::new();
             if let Some(tree) = &graphics_state.radiance_cascades.debug_light_tree {
-                for (i, node) in tree.iter().enumerate() {
-                    if node.children[0] != u32::MAX {
-                        break;
+                let current_level = debug_state.radiance_cascades_light_tree_level;
+                struct TreeNode {
+                    pub i: usize,
+                    pub level: usize,
+                }
+                let mut node_queue = VecDeque::from([TreeNode {
+                    i: tree.len() - 1,
+                    level: 0,
+                }]);
+                let mut out_nodes = Vec::new();
+                while let Some(tree_node) = node_queue.pop_front() {
+                    let node = &tree[tree_node.i];
+                    if tree_node.level >= current_level {
+                        out_nodes.push((tree_node.i, node));
+                    } else {
+                        for child_i in node.children {
+                            if child_i != u32::MAX {
+                                node_queue.push_back(TreeNode {
+                                    i: child_i as usize,
+                                    level: tree_node.level + 1,
+                                });
+                            }
+                        }
                     }
-                    let centre: Point3<f32> = node.sphere_centre.into();
-                    let radius = node.sphere_radius;
-                    let vertices = ICOSPHERE_BASE_VERTICES.map(|v| centre + (v * radius));
+                }
+                for (i, node) in out_nodes {
+                    // if node.children != [u32::MAX; 2] {
+                    //     break;
+                    // }
+                    let margin = Vector3::repeat(0.01);
+                    let corner_1 = Point3::from(node.aabb_corner_1) - margin;
+                    let corner_2 = Point3::from(node.aabb_corner_2) + margin;
+                    let vertices = [
+                        [corner_1.x, corner_1.y, corner_1.z],
+                        [corner_2.x, corner_1.y, corner_1.z],
+                        [corner_1.x, corner_1.y, corner_2.z],
+                        [corner_2.x, corner_1.y, corner_2.z],
+                        [corner_1.x, corner_2.y, corner_1.z],
+                        [corner_2.x, corner_2.y, corner_1.z],
+                        [corner_1.x, corner_2.y, corner_2.z],
+                        [corner_2.x, corner_2.y, corner_2.z],
+                    ];
+                    const BOX_QUAD_INDICES: [[usize; 4]; 6] = [
+                        // Bottom/Top
+                        [0, 1, 3, 2],
+                        [4, 5, 7, 6],
+                        // Front/Back
+                        [0, 1, 5, 4],
+                        [2, 3, 7, 6],
+                        // Left/Right
+                        [0, 2, 6, 4],
+                        [1, 3, 7, 5],
+                    ];
                     fn colour_hash(i: usize) -> Color32 {
                         let mut x = i as u32;
                         x ^= x >> 16;
@@ -585,94 +669,34 @@ pub fn render_debug_ui(
                             0xFF
                         )
                     }
-                    tris.extend(ICOSPHERE_INDICES.map(|tri_indices| {
-                        let [p1, p2, p3] = tri_indices.map(|idx| vertices[idx]);
-                        DebugTriangle {
-                            p1: p1.into(),
-                            p2: p2.into(),
-                            p3: p3.into(),
-                            color: colour_hash(i).gamma_multiply(0.25).to_array(),
-                            packed_fields: DebugPackedFlags::NONE,
-                        }
-                    }));
+                    tris.extend(BOX_QUAD_INDICES
+                        .into_iter()
+                        .map(|tri_indices| {
+                            let points = tri_indices.map(|idx| vertices[idx]);
+                            [
+                                DebugTriangle {
+                                    p1: points[0],
+                                    p2: points[1],
+                                    p3: points[2],
+                                    color: colour_hash(i).gamma_multiply(0.25).to_array(),
+                                    packed_fields: DebugPackedFlags::NONE,
+                                },
+                                DebugTriangle {
+                                    p1: points[0],
+                                    p2: points[3],
+                                    p3: points[2],
+                                    color: colour_hash(i).gamma_multiply(0.25).to_array(),
+                                    packed_fields: DebugPackedFlags::NONE,
+                                },
+                            ]
+                        })
+                        .flatten());
                 }
             }
-            // let sphere_centre = Point3::new(18.5, 156.0, -15.5);
-            // let vertices = ICOSPHERE_BASE_VERTICES.map(|v| sphere_centre + v);
-            // let icosphere_tris = ICOSPHERE_INDICES.map(|tri_indices| {
-            //     let [p1, p2, p3] = tri_indices.map(|idx| vertices[idx]);
-            //     DebugTriangle {
-            //         p1: p1.into(),
-            //         p2: p2.into(),
-            //         p3: p3.into(),
-            //         color: Color32::GREEN.gamma_multiply(0.25).to_array(),
-            //         packed_fields: DebugPackedFlags::NONE,
-            //     }
-            // });
-            match debug_state.visualisation_draw_method {
-                DebugVisualisationDrawMethod::Egui => {
-                    // TODO:
-                }
-                DebugVisualisationDrawMethod::Gpu => {
-                    debug_triangles.extend(tris);
-                }
-            }
-            // let graphics_camera = &graphics_state.camera;
-            // // let num_points = {
-            // //     let camera_dist = (graphics_camera.pos - start_pos).magnitude() / 256.0;
-            // //     f32::clamp(128.0 * (1.0 / camera_dist), 0.0, 16384.0) as i32
-            // // };
-            // let num_points = 512;
-            // let sphere_points = {
-            //     let mut points = Vec::new();
-            //     let phi = std::f32::consts::PI * ((5.0_f32).sqrt() - 1.0);
-            //     for ray_i in 0..num_points {
-            //         let y = 1.0 - (ray_i as f32 / (num_points - 1) as f32) * 2.0;
-            //         let radius = (1.0 - y.powi(2)).sqrt();
-            //         let theta = phi * ray_i as f32;
-            //         let x = theta.cos() * radius;
-            //         let z = theta.sin() * radius;
-            //         points.push(sphere_centre + Vector3::new(x, y, z));
-            //     }
-            //     points
-            // };
-            // for points in sphere_points.windows(2) {
-            //     let [p1, p2] = [points[0], points[1]];
-            //     let max_dist: f32 = 25.0;
-            //     let start_dist = (graphics_camera.pos - p1).magnitude();
-            //     let end_dist = (graphics_camera.pos - p2).magnitude();
-            //     let average_dist = f32::min(start_dist, end_dist);
-            //     let alpha = (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
-            //     match debug_state.visualisation_draw_method {
-            //         DebugVisualisationDrawMethod::Egui => {
-            //             let Some(line) =
-            //                 debug_clip_and_project_line([p1, p2], graphics_camera)
-            //             else {
-            //                 continue;
-            //             };
-            //             painter.add(Shape::line_segment(
-            //                 line.map(|p| {
-            //                     Pos2::new(
-            //                         (p.x + 1.0) / 2.0 * width_f32,
-            //                         (-p.y + 1.0) / 2.0 * height_f32,
-            //                     )
-            //                 }),
-            //                 (5.0 * alpha, Color32::GREEN.gamma_multiply(alpha)),
-            //             ));
-            //         }
-            //         DebugVisualisationDrawMethod::Gpu => debug_lines.push(DebugLine {
-            //             p1: p1.into(),
-            //             p2: p2.into(),
-            //             color: Color32::GREEN.to_array(),
-            //             packed_fields: DebugPackedFlags::NONE,
-            //         }),
-            //     }
-            // }
+            debug_triangles.extend(tris);
         }
         if debug_state.radiance_cascades_areaquad_visualiser {
-            use nalgebra::{Point3, Vector3};
-            use std::f32::consts::{PI, FRAC_PI_2};
-            use rand::{Rng, SeedableRng};
+            use nalgebra::Point3;
             // let probe_pos = Point3::new(16.28125, 155.0, -16.21875);
             let probe_pos = Point3::new(15.4, 155.0, -14.4);
             let corner_1 = Point3::new(15.0, 155.0, -17.0);

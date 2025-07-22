@@ -96,13 +96,17 @@ pub use vulkano::instance::{
 };
 pub use vulkano::memory::allocator::{
     AllocationCreateInfo as VulkanAllocationCreateInfo,
+    DeviceLayout as VulkanDeviceLayout,
     MemoryAllocatePreference as VulkanMemoryAllocatePreference,
     MemoryAllocator as VulkanMemoryAllocator, MemoryTypeFilter as VulkanMemoryTypeFilter,
     StandardMemoryAllocator as VulkanStandardMemoryAllocator,
 };
 pub use vulkano::memory::{
-    DedicatedAllocation as VulkanDedicatedAllocation, DeviceMemory as VulkanDeviceMemory,
-    MemoryAllocateInfo as VulkanMemoryAllocateInfo, ResourceMemory as VulkanResourceMemory,
+    DedicatedAllocation as VulkanDedicatedAllocation,
+    DeviceAlignment as VulkanDeviceAlignment,
+    DeviceMemory as VulkanDeviceMemory,
+    MemoryAllocateInfo as VulkanMemoryAllocateInfo,
+    ResourceMemory as VulkanResourceMemory,
 };
 pub use vulkano::pipeline::compute::ComputePipelineCreateInfo as VulkanComputePipelineCreateInfo;
 pub use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo as VulkanGraphicsPipelineCreateInfo;
@@ -248,22 +252,84 @@ macro_rules! vulkan_vertex_attributes {
 // TODO: Send a pull request to vulkano about Buffer::new_slice. I think it's pretty confusing that
 // it creates a buffer with `len` bytes, rather than `size_of::<T> * len` bytes.
 
+// FIXME: Delete me! If this works!
+
 /// Creates a new uninitialized buffer for a slice.
 /// Contains enough space to store `len` items of `T`.
 pub fn vulkan_new_buffer_slice<T: vulkano::buffer::BufferContents>(
     allocator: &std::sync::Arc<dyn VulkanMemoryAllocator>,
     create_info: &VulkanBufferCreateInfo,
     allocation_info: &VulkanAllocationCreateInfo,
-    num_items: usize,
+    num_items: VulkanDeviceSize,
 ) -> Result<VulkanSubbuffer<[T]>, VulkanValidated<vulkano::buffer::AllocateBufferError>> {
-    let num_items_device_size: VulkanDeviceSize = num_items.try_into().unwrap();
-    let t_device_size: VulkanDeviceSize = std::mem::size_of::<T>().try_into().unwrap();
     VulkanBuffer::new_slice(
         allocator,
         create_info,
         allocation_info,
-        t_device_size * num_items_device_size,
+        num_items,
     )
+}
+
+/// Creates a new uninitialized buffer for a slice, with a specified alignment for the device
+/// address.
+/// Contains enough space to store `len` items of `T`.
+pub fn vulkan_new_buffer_slice_aligned<T: vulkano::buffer::BufferContents>(
+    allocator: &std::sync::Arc<dyn VulkanMemoryAllocator>,
+    create_info: &VulkanBufferCreateInfo,
+    allocation_info: &VulkanAllocationCreateInfo,
+    num_items: VulkanDeviceSize,
+    alignment: VulkanDeviceAlignment,
+) -> Result<VulkanSubbuffer<[T]>, VulkanValidated<vulkano::buffer::AllocateBufferError>> {
+    let t_device_size: VulkanDeviceSize = std::mem::size_of::<T>().try_into().unwrap();
+    let unaligned_byte_buffer = VulkanBuffer::new(
+        allocator,
+        create_info,
+        allocation_info,
+        VulkanDeviceLayout::from_size_alignment(
+            t_device_size * num_items,
+            VulkanDeviceSize::max(T::LAYOUT.alignment().as_devicesize(), alignment.as_devicesize()),
+        )
+        .unwrap(),
+    )?;
+    Ok(VulkanSubbuffer::new(unaligned_byte_buffer).cast_aligned())
+}
+
+/// Creates a buffer with a specified device address alignment, and writes all elements of `iter`
+/// in it.
+pub fn vulkan_buffer_from_iter_aligned<T, I>(
+    allocator: &std::sync::Arc<dyn VulkanMemoryAllocator>,
+    create_info: &VulkanBufferCreateInfo,
+    allocation_info: &VulkanAllocationCreateInfo,
+    iter: I,
+    alignment: VulkanDeviceAlignment,
+) -> Result<VulkanSubbuffer<[T]>, VulkanValidated<vulkano::buffer::AllocateBufferError>>
+where
+    T: vulkano::buffer::BufferContents,
+    I: IntoIterator<Item = T>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let iter = iter.into_iter();
+    let t_device_size: VulkanDeviceSize = std::mem::size_of::<T>().try_into().unwrap();
+    let iter_len: VulkanDeviceSize = iter.len().try_into().unwrap();
+    let unaligned_byte_buffer = VulkanBuffer::new(
+        allocator,
+        create_info,
+        allocation_info,
+        VulkanDeviceLayout::from_size_alignment(
+            t_device_size * iter_len,
+            VulkanDeviceSize::max(T::LAYOUT.alignment().as_devicesize(), alignment.as_devicesize()),
+        )
+        .unwrap(),
+    )?;
+    let aligned_buffer: VulkanSubbuffer<[T]> = VulkanSubbuffer::new(unaligned_byte_buffer).cast_aligned();
+    // Write elements
+    {
+        let mut write_guard = aligned_buffer.write().unwrap();
+        for (out_item, iter_item) in write_guard.iter_mut().zip(iter) {
+            *out_item = iter_item;
+        }
+    }
+    Ok(aligned_buffer)
 }
 
 /// Creates a new uninitialized buffer for a slice.

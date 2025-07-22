@@ -14,6 +14,7 @@ pub type RawAtlasImage = spirv_std::image::Image!(
 
 cfg_if::cfg_if! {
     if #[cfg(not(target_arch = "spirv"))] {
+        #[macro_export]
         #[allow(unused)]
         macro_rules! cpu_dbg {
             ($($exprs:expr),* $(,)?) => {
@@ -21,6 +22,7 @@ cfg_if::cfg_if! {
             };
         }
     } else {
+        #[macro_export]
         #[allow(unused)]
         macro_rules! cpu_dbg {
             ($expr:expr $(,)?) => {
@@ -31,6 +33,26 @@ cfg_if::cfg_if! {
             };
         }
     }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+pub fn cpu_dummy_ray_query() -> spirv_std::ray_tracing::RayQuery {
+    unsafe {
+        std::mem::transmute(0u32)
+    }
+}
+
+#[macro_export]
+macro_rules! make_ray_query_or_cpu_dummy {
+    (let mut $name:ident) => {
+        ::cfg_if::cfg_if! {
+            if #[cfg(target_arch = "spirv")] {
+                ::spirv_std::ray_query!(let mut $name);
+            } else {
+                let mut $name = &mut $crate::cpu_dummy_ray_query();
+            }
+        }
+    };
 }
 
 #[cfg(feature = "vulkano")]

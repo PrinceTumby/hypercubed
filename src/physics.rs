@@ -30,6 +30,13 @@ pub struct AABB {
 }
 
 impl AABB {
+    pub const fn empty_at_origin() -> Self {
+        Self {
+            corner_1: Point3::new(0.0, 0.0, 0.0),
+            corner_2: Point3::new(0.0, 0.0, 0.0),
+        }
+    }
+
     /// Computes the smallest AABB that contains both `self` and `other`.
     pub fn max(&self, other: &Self) -> Self {
         Self {

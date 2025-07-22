@@ -325,23 +325,17 @@ impl<T: bytemuck::Pod + Send + Sync, const ITEMS_PER_CHUNK: usize, const NUM_CHU
     BufferManager<T, ITEMS_PER_CHUNK, NUM_CHUNKS>
 {
     pub fn new(
-        memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
+        device: &Arc<VulkanDevice>,
         usage: VulkanBufferUsage,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            buffer: vulkan_new_buffer_slice(
-                memory_allocator,
-                &VulkanBufferCreateInfo {
-                    usage: usage
-                        | VulkanBufferUsage::TRANSFER_DST
-                        // NOTE: RADIANCE CASCADES
-                        | VulkanBufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &VulkanAllocationCreateInfo {
-                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
+            buffer: vulkan_new_buffer_slice_large(
+                &device,
+                usage
+                    | VulkanBufferUsage::TRANSFER_DST
+                    // NOTE: RADIANCE CASCADES
+                    | VulkanBufferUsage::STORAGE_BUFFER,
+                VulkanSharing::Exclusive,
                 ITEMS_PER_CHUNK * NUM_CHUNKS,
             )?,
             usage_map: vec![BufferArea {
@@ -457,8 +451,8 @@ pub struct VertexBufferManager<V: bytemuck::Pod + Send + Sync, const NUM_CHUNKS:
 );
 
 impl<V: bytemuck::Pod + Send + Sync, const NUM_CHUNKS: usize> VertexBufferManager<V, NUM_CHUNKS> {
-    pub fn new(memory_allocator: &Arc<dyn VulkanMemoryAllocator>) -> anyhow::Result<Self> {
-        BufferManager::new(memory_allocator, VulkanBufferUsage::VERTEX_BUFFER).map(Self)
+    pub fn new(device: &Arc<VulkanDevice>) -> anyhow::Result<Self> {
+        BufferManager::new(device, VulkanBufferUsage::VERTEX_BUFFER).map(Self)
     }
 
     /// Returns the `first_vertex` indirect draw argument.
@@ -500,8 +494,8 @@ pub struct InstanceBufferManager<
 impl<I: bytemuck::Pod + Send + Sync, const ITEMS_PER_CHUNK: usize, const NUM_CHUNKS: usize>
     InstanceBufferManager<I, ITEMS_PER_CHUNK, NUM_CHUNKS>
 {
-    pub fn new(memory_allocator: &Arc<dyn VulkanMemoryAllocator>) -> anyhow::Result<Self> {
-        BufferManager::new(memory_allocator, VulkanBufferUsage::VERTEX_BUFFER).map(Self)
+    pub fn new(device: &Arc<VulkanDevice>) -> anyhow::Result<Self> {
+        BufferManager::new(device, VulkanBufferUsage::VERTEX_BUFFER).map(Self)
     }
 
     /// Returns the `first_instance` indirect draw argument.

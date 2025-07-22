@@ -238,14 +238,15 @@ pub(crate) async fn window_run(
                         // if debug_frame_i > 144 * 2 {
                         //     graphics_state.radiance_cascades_debug_render(&play_state.subchunks);
                         // }
-                        if debug_frame_i == 288 {
-                            eprintln!("Updating subchunk lighting!");
-                            graphics_state.update_all_subchunks_radiance_lighting(
-                                &thread_pool,
-                                &play_state.subchunks,
-                                &play_state.raw_chunks,
-                            );
-                        }
+                        // XXX: DEBUG
+                        // if debug_frame_i == 288 {
+                        //     eprintln!("Updating subchunk lighting!");
+                        //     graphics_state.update_all_subchunks_radiance_lighting(
+                        //         &thread_pool,
+                        //         &play_state.subchunks,
+                        //         &play_state.raw_chunks,
+                        //     );
+                        // }
                         match graphics_state.render(
                             &play_state.subchunks,
                             &play_state.visible_chunks,
@@ -396,6 +397,22 @@ pub(crate) async fn window_run(
                                 .set_cursor_grab(CursorGrabMode::Locked)
                                 .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Confined));
                             window.set_cursor_visible(false);
+                            // Report to egui that we've released all mouse buttons
+                            let mouse_buttons = [
+                                egui::PointerButton::Primary,
+                                egui::PointerButton::Secondary,
+                                egui::PointerButton::Middle,
+                                egui::PointerButton::Extra1,
+                                egui::PointerButton::Extra2,
+                            ];
+                            for mouse_button in mouse_buttons {
+                                events.push(egui::Event::PointerButton {
+                                    pos: last_mouse_pos,
+                                    button: mouse_button,
+                                    pressed: false,
+                                    modifiers: egui::Modifiers::NONE,
+                                });
+                            }
                             events.push(egui::Event::PointerGone);
                         } else {
                             // Releasing the cursor never fails.

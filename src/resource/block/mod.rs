@@ -576,7 +576,10 @@ pub fn register_blocks_from_json(
     texture_atlas_builder: &mut texture::AtlasBuilder,
     json_data: &str,
 ) -> anyhow::Result<()> {
+    // XXX: DEBUG
+    let start_time = std::time::Instant::now();
     let registrations: Vec<Registration> = serde_json::from_str(json_data)?;
+    println!("Block JSON load time: {:?}", std::time::Instant::now() - start_time);
     for registration in registrations {
         fn convert_custom_property_list<'a>(
             properties: &'a [CustomProperty<'a>],
@@ -724,7 +727,7 @@ pub fn register_vanilla_blocks(
         include_str!("vanilla_blocks_generated.json"),
     )?;
 
-    println!("Time taken: {:?}", std::time::Instant::now() - start_time);
+    println!("Block load time: {:?}", std::time::Instant::now() - start_time);
     // TODO: Move this to a startup flag
     // Write out registry IDs to "entries.json", helpful for adding new blocks
     #[cfg(debug_assertions)]

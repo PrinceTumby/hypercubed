@@ -8,7 +8,6 @@ use crate::basic_types::AxisDirection;
 use crate::client::{MIN_HEIGHT_I32, RawChunk, RayTracedQuadInfo, SUBCHUNK_AXIS_LEN_I32};
 use crate::physics::AABB;
 use crate::resource;
-use crate::resource::block::GlobalPaletteIndex;
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, anyhow};
 use chunk_rc::{
@@ -45,6 +44,7 @@ pub struct DebugState {
     pub max_render_chunks: usize,
     pub radiance_cascades_ray_visualiser: bool,
     pub radiance_cascades_light_tree_visualiser: bool,
+    pub radiance_cascades_light_tree_level: usize,
     pub radiance_cascades_areaquad_visualiser: bool,
     pub max_radiance_cascade: u32,
     pub debug_texture_zoom: f32,
@@ -67,6 +67,7 @@ impl Default for DebugState {
             max_render_chunks: 3000,
             radiance_cascades_ray_visualiser: false,
             radiance_cascades_light_tree_visualiser: false,
+            radiance_cascades_light_tree_level: 0,
             radiance_cascades_areaquad_visualiser: false,
             max_radiance_cascade: 0,
             debug_texture_zoom: 1.0,
@@ -308,6 +309,8 @@ impl GraphicsState {
             })
             .min_by_key(|(device, _, _)| match device.properties().device_type {
                 VulkanPhysicalDeviceType::DiscreteGpu => 0,
+                // XXX: DEBUG
+                // VulkanPhysicalDeviceType::IntegratedGpu => -1,
                 VulkanPhysicalDeviceType::IntegratedGpu => 1,
                 VulkanPhysicalDeviceType::VirtualGpu => 2,
                 VulkanPhysicalDeviceType::Cpu => 3,
@@ -704,7 +707,7 @@ impl GraphicsState {
         let render_queue_family_index = render_queue.queue_family_index();
         let compute_queue_family_index = compute_queue.queue_family_index();
         let block_face_vertex_buffer_manager =
-            BlockFaceVertexBufferManager::new(&(memory_allocator.clone() as Arc<_>))
+            BlockFaceVertexBufferManager::new(&device)
                 .context("Error while creating block face vertex buffer manager")?;
         let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(
             &device,
@@ -713,7 +716,7 @@ impl GraphicsState {
         )
         .context("Error while creating block face instance buffer manager")?;
         let tinted_block_face_vertex_buffer_manager =
-            TintedBlockFaceVertexBufferManager::new(&(memory_allocator.clone() as Arc<_>))
+            TintedBlockFaceVertexBufferManager::new(&device)
                 .context("Error while creating tinted block face vertex buffer manager")?;
         let tinted_block_face_instance_buffer_manager = TintedBlockFaceInstanceBufferManager::new(
             &device,
@@ -722,7 +725,7 @@ impl GraphicsState {
         )
         .context("Error while creating tinted block face instance buffer manager")?;
         let custom_block_instance_buffer_manager =
-            CustomBlockInstanceBufferManager::new(&(memory_allocator.clone() as Arc<_>))
+            CustomBlockInstanceBufferManager::new(&device)
                 .context("Error while creating custom block instance buffer manager")?;
         // XXX: DEBUG
         let radiance_cascade_debug_egui_image = VulkanImage::new(
@@ -980,6 +983,14 @@ impl GraphicsState {
                     &radiance_probe_info_descriptor_set_layout,
                     &radiance_probe_lightmaps_descriptor_set_layout,
                     &matrices_descriptor_set_layout,
+                ],
+                push_constant_ranges: &[
+                    // `update_info_idx`
+                    VulkanPushConstantRange {
+                        stages: VulkanShaderStages::COMPUTE,
+                        offset: 0,
+                        size: 4,
+                    },
                 ],
                 ..Default::default()
             },
@@ -1895,7 +1906,7 @@ impl GraphicsState {
         )
         .context("Error while creating radiance probe update command buffer builder")
         .unwrap();
-        let (update_info_buffer, num_updates, max_dispatch_width, _buffer_copy_regions) = {
+        let (update_info_buffer, num_updates, update_lengths, _buffer_copy_regions) = {
             #[repr(C)]
             #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
             struct UpdateInfo {
@@ -1953,6 +1964,10 @@ impl GraphicsState {
                 }
             }
             let num_updates: u32 = updates.len().try_into().unwrap();
+            let update_lengths: Vec<u32> = updates
+                .iter()
+                .map(|update_info| update_info.faces_len)
+                .collect();
             // let update_info_buffer = VulkanBuffer::from_iter(
             //     self.resources.memory_allocator.clone(),
             //     VulkanBufferCreateInfo {
@@ -1978,7 +1993,7 @@ impl GraphicsState {
                     memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
                     ..Default::default()
                 },
-                updates.len(),
+                updates.len().try_into().unwrap(),
             )
             .context("Error while creating update info buffer")
             .unwrap();
@@ -1988,7 +2003,7 @@ impl GraphicsState {
             (
                 update_info_buffer,
                 num_updates,
-                max_dispatch_width,
+                update_lengths,
                 buffer_copy_regions,
             )
         };
@@ -2025,11 +2040,19 @@ impl GraphicsState {
                         .block_states
                         .get_all_of_types(block_registry.light_emitting_blockstates())
                         .into_iter()
-                        .map(|([x_u8, y_u8, z_u8], blockstate)| {
+                        .map(|([x_u8, y_u8, z_u8], blockstate_idx)| {
+                            use resource::block::blockstate::ModelData;
+                            use resource::block::model::ModelType;
                             let global_x_f32 = (subchunk_start_x + i32::from(x_u8)) as f32;
                             let global_y_f32 = (subchunk_start_y + i32::from(y_u8)) as f32;
                             let global_z_f32 = (subchunk_start_z + i32::from(z_u8)) as f32;
-                            let emission_level = block_registry[blockstate]
+                            let global_pos = Point3::new(
+                                global_x_f32,
+                                global_y_f32,
+                                global_z_f32,
+                            );
+                            let blockstate = &block_registry[blockstate_idx];
+                            let emission_level = blockstate
                                 .extra_info
                                 .light_info
                                 .emission_level;
@@ -2037,22 +2060,43 @@ impl GraphicsState {
                             let brightness =
                                 (emission_level as f32).powi(2) * EMISSION_TO_BRIGHTNESS_COEF;
                             let sphere_radius = brightness.sqrt() * BRIGHTNESS_TO_MAX_RADIUS_COEF;
+                            // TODO: Add custom AABBs for some blocks
+                            fn model_to_aabb(model: &ModelType) -> AABB {
+                                match model {
+                                    ModelType::Other(other_model) => {
+                                        let vertices = &other_model.vertices;
+                                        let mut corner_1 = vertices[0].local_pos.coords;
+                                        let mut corner_2 = vertices[0].local_pos.coords;
+                                        for vertex in vertices {
+                                            corner_1 = corner_1.inf(&vertex.local_pos.coords);
+                                            corner_2 = corner_2.sup(&vertex.local_pos.coords);
+                                        }
+                                        let offset = Vector3::repeat(0.5);
+                                        AABB {
+                                            corner_1: Point3::from(corner_1) + offset,
+                                            corner_2: Point3::from(corner_2) + offset,
+                                        }
+                                    }
+                                    _ => AABB {
+                                        corner_1: Point3::origin(),
+                                        corner_2: Point3::new(1.0, 1.0, 1.0),
+                                    },
+                                }
+                            }
+                            let local_aabb = match &blockstate.model_data {
+                                ModelData::Single(model) => model_to_aabb(model.as_ref()),
+                                ModelData::RandomChoice(models) => models
+                                    .iter()
+                                    .map(|model| model_to_aabb(model.model.as_ref()))
+                                    .reduce(|acc, aabb| acc.max(&aabb))
+                                    .unwrap(),
+                            };
+                            let aabb = local_aabb + global_pos.coords;
                             RawLightNode {
-                                sphere_centre: Point3::new(
-                                    global_x_f32 + 0.5,
-                                    global_y_f32 + 0.5,
-                                    global_z_f32 + 0.5,
-                                ),
+                                sphere_centre: global_pos + Vector3::repeat(0.5),
                                 sphere_radius,
                                 brightness,
-                                aabb: AABB {
-                                    corner_1: Point3::new(global_x_f32, global_y_f32, global_z_f32),
-                                    corner_2: Point3::new(
-                                        global_x_f32 + 1.0,
-                                        global_y_f32 + 1.0,
-                                        global_z_f32 + 1.0,
-                                    ),
-                                },
+                                aabb,
                                 children: None,
                             }
                         });
@@ -2370,51 +2414,28 @@ impl GraphicsState {
         //         .unwrap();
         //     command_buffer.end().unwrap()
         // };
-        unsafe {
-            command_buffer
-                // .bind_pipeline_compute(self.radiance_cascades.update_pipelines[1].clone())
-                // .unwrap()
-                // .bind_descriptor_sets(
-                //     VulkanPipelineBindPoint::Compute,
-                //     self.radiance_cascades.update_pipeline_layout.clone(),
-                //     0,
-                //     (
-                //         radiance_probe_info_descriptor_set,
-                //         cascade_1_lightmaps_descriptor_set,
-                //         self.matrices_descriptor_set.clone(),
-                //     ),
-                // )
-                // .unwrap()
-                // .dispatch([max_dispatch_width, num_updates, 1])
-                // .unwrap()
-                // .bind_pipeline_compute(self.radiance_cascades.update_pipelines[0].clone())
-                // .unwrap()
-                // .bind_descriptor_sets(
-                //     VulkanPipelineBindPoint::Compute,
-                //     self.radiance_cascades.update_pipeline_layout.clone(),
-                //     1,
-                //     vec![cascade_0_lightmaps_descriptor_set],
-                // )
-                // .unwrap()
-                // .dispatch([max_dispatch_width, num_updates, 1])
-                // .unwrap();
-                .bind_pipeline_compute(self.radiance_cascades.update_pipelines[0].clone())
-                .unwrap()
-                .bind_descriptor_sets(
-                    VulkanPipelineBindPoint::Compute,
-                    self.radiance_cascades.update_pipeline_layout.clone(),
-                    0,
-                    (
-                        radiance_probe_info_descriptor_set.clone(),
-                        cascade_0_lightmaps_descriptor_set.clone(),
-                        self.matrices_descriptor_set.clone(),
-                    ),
-                )
-                .unwrap()
-                .dispatch([max_dispatch_width, num_updates, 1])
-                .unwrap();
+        // XXX: DEBUG
+        // - Dispatch initial copy commands, before we do individual updates.
+        // - Doing this for testing, because currently updates can take so long we trigger TDR.
+        {
+            let built_command_buffer = command_buffer.build().unwrap();
+            let device = &self.resources.device;
+            let fence = Arc::new(VulkanFence::from_pool(device).unwrap());
+            queue.with(|mut queue_guard| unsafe {
+                queue_guard
+                    .submit(
+                        &[VulkanSubmitInfo {
+                            command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
+                                built_command_buffer.clone(),
+                            )],
+                            ..Default::default()
+                        }],
+                        Some(&fence),
+                    )
+                    .unwrap();
+                });
+            fence.wait(None).unwrap();
         }
-        let built_command_buffer = command_buffer.build().unwrap();
         let mut copy_command_buffer = VulkanAutoCommandBufferBuilder::primary(
             self.resources.command_buffer_allocator.clone(),
             queue.queue_family_index(),
@@ -2439,57 +2460,59 @@ impl GraphicsState {
             .unwrap();
         let built_copy_command_buffer = copy_command_buffer.build().unwrap();
         {
-            let device = &self.resources.device;
-            let fence = Arc::new(VulkanFence::from_pool(device).unwrap());
-            // vulkano::sync::now(device.clone())
-            //     .then_execute(queue.clone(), built_command_buffer)
-            //     .unwrap()
-            //     .then_execute_same_queue(built_copy_command_buffer)
-            //     .unwrap()
-            //     .flush()
-            //     .unwrap();
-            // queue.with(|mut queue_guard| unsafe {
-            //     queue_guard.submit(
-            //         &[VulkanSubmitInfo {
-            //             command_buffers: vec![VulkanCommandBufferSubmitInfo::new(built_command_buffer)],
-            //             ..Default::default()
-            //         }],
-            //         None,
-            //     )
-            //     .unwrap();
-            // });
+            let device = self.resources.device.clone();
+            let command_buffer_allocator = self.resources.command_buffer_allocator.clone();
+            let update_pipeline = self.radiance_cascades.update_pipelines[0].clone();
+            let update_pipeline_layout = self.radiance_cascades.update_pipeline_layout.clone();
+            let matrices_descriptor_set = self.matrices_descriptor_set.clone();
             thread_pool.execute(move || {
-                // vulkano::sync::now(device.clone())
-                //     .then_execute(queue.clone(), built_command_buffer)
-                //     .unwrap()
-                //     .then_execute_same_queue(built_copy_command_buffer)
-                //     .unwrap()
-                //     .flush()
-                //     .unwrap();
-                // vulkano::sync::now(device)
-                //     .then_execute(queue, built_copy_command_buffer)
-                //     .unwrap()
-                //     .flush()
-                //     .unwrap();
-                queue.with(|mut queue_guard| unsafe {
-                    queue_guard
-                        .submit(
-                            &[VulkanSubmitInfo {
-                                command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
-                                    built_command_buffer.clone(),
-                                )],
-                                ..Default::default()
-                            }],
-                            Some(&fence),
-                        )
-                        .unwrap();
-                });
-                fence.wait(None).unwrap();
-                // vulkano::sync::now(device)
-                //     .then_execute(queue, built_copy_command_buffer)
-                //     .unwrap()
-                //     .flush()
-                //     .unwrap();
+                for update_i in 0..num_updates {
+                    let fence = Arc::new(VulkanFence::from_pool(&device).unwrap());
+                    let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
+                        command_buffer_allocator.clone(),
+                        queue.queue_family_index(),
+                        VulkanCommandBufferUsage::OneTimeSubmit,
+                    )
+                    .context("Error while creating radiance probe update command buffer builder")
+                    .unwrap();
+                    unsafe {
+                        command_buffer
+                            .bind_pipeline_compute(update_pipeline.clone())
+                            .unwrap()
+                            .bind_descriptor_sets(
+                                VulkanPipelineBindPoint::Compute,
+                                update_pipeline_layout.clone(),
+                                0,
+                                (
+                                    radiance_probe_info_descriptor_set.clone(),
+                                    cascade_0_lightmaps_descriptor_set.clone(),
+                                    matrices_descriptor_set.clone(),
+                                ),
+                            )
+                            .unwrap()
+                            .push_constants(update_pipeline_layout.clone(), 0, update_i)
+                            .unwrap()
+                            .dispatch([update_lengths[update_i as usize], 1, 1])
+                            .unwrap();
+                    }
+                    let built_command_buffer = command_buffer.build().unwrap();
+                    queue.with(|mut queue_guard| unsafe {
+                        queue_guard
+                            .submit(
+                                &[VulkanSubmitInfo {
+                                    command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
+                                        built_command_buffer.clone(),
+                                    )],
+                                    ..Default::default()
+                                }],
+                                Some(&fence),
+                            )
+                            .unwrap();
+                    });
+                    fence.wait(None).unwrap();
+                    drop(built_command_buffer);
+                }
+                let fence = Arc::new(VulkanFence::from_pool(&device).unwrap());
                 queue.with(|mut queue_guard| unsafe {
                     queue_guard
                         .submit(
@@ -2503,7 +2526,6 @@ impl GraphicsState {
                         )
                         .unwrap();
                 });
-                drop(built_command_buffer);
                 drop(radiance_probe_info_descriptor_set);
                 drop(cascade_0_lightmaps_descriptor_set);
                 drop(update_info_buffer);
