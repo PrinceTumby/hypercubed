@@ -1,8 +1,6 @@
 Last updated - 19/07/2025:
 
 Code Ideas:
-- Consider swapping out the current Dhall + JSON method for Nickel instead. If load performance is
-  an issue, we can cache the evaluated version into a compressed binary format (bincode?).
 
 Last updated - ??/??/2024?:
 

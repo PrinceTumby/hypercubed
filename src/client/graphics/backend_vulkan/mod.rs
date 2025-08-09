@@ -2021,10 +2021,6 @@ impl GraphicsState {
                 pub children: Option<[u32; 2]>,
             }
             let mut nodes: Vec<RawLightNode> = Vec::new();
-            // TODO
-            // - Iterate through subchunks in chunk.
-            // - Get all light sources in chunks, calculate world positions, make as light node,
-            //   add to list.
             // Find all light emitting blocks in the world, add as base nodes.
             for (chunk_xz, raw_chunk) in raw_chunks {
                 for (subchunk_yi_usize, raw_subchunk) in raw_chunk.sections.iter().enumerate() {

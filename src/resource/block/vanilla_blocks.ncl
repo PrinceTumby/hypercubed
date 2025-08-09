@@ -1378,7 +1378,7 @@ let register_bulb
     } | StandardRegistration
 in
 
-let items | Array Registration = [
+let blocks | Array Registration = [
   {
     identifier = "air",
     properties = { air_like = true },
@@ -4444,4 +4444,4 @@ let items | Array Registration = [
 ]
 in
 
-items
+blocks
