@@ -1,18 +1,18 @@
 [package]
-name = "minecraft_client_vk_shaders"
+name = "minecraft_client_vk_shaders_redirect"
 version = "0.1.0"
 edition = "2024"
 
 [features]
 default = [ "shader_code" ]
 shader_code = []
-# `vulkano` dependency crates are in the main `Cargo.toml`
+# `vulkano` dependency crates are in the main "minecraft_client_vk_shaders/Cargo.toml"
 vulkano = []
 
 [lib]
 crate-type = [ "dylib" ]
 
 [dependencies]
-cfg-if = "1.0"
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
-bitfield = "0.19"
+cfg-if = { workspace = true }
+spirv-std = { workspace = true }
+bitfield = { workspace = true }

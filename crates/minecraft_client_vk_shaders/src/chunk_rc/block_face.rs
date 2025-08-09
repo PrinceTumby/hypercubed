@@ -1,4 +1,4 @@
-#[allow(unused)]
+#[expect(unused)]
 use super::rc_compute::{rgba_10_10_10_2_to_vec4, hsv448_to_rgb};
 use super::types::BlockFaceInstanceFields;
 use spirv_std::glam::*;

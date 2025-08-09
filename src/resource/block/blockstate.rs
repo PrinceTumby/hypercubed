@@ -927,7 +927,7 @@ pub enum CustomPropertyIteratorType<'a, 'b> {
 
 impl<'b> CustomPropertyIterator<'_, 'b> {
     /// Returns the next value, along with whether the value has just reset
-    #[allow(clippy::should_implement_trait)]
+    #[expect(clippy::should_implement_trait)]
     pub fn next(&mut self) -> (Cow<'b, str>, bool) {
         let (state, is_last_state) = match &mut self.type_state {
             CustomPropertyIteratorType::Bool {

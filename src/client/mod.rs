@@ -183,6 +183,7 @@ pub(crate) async fn window_run(
     let mut last_tick_time_s: f64 = 0.0;
     let mut next_tick_time_s: f64 = 1.0 / 20.0;
     let window = &window;
+    #[allow(unused)]
     let mut debug_frame_i: usize = 0;
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
@@ -239,7 +240,7 @@ pub(crate) async fn window_run(
                         //     graphics_state.radiance_cascades_debug_render(&play_state.subchunks);
                         // }
                         // XXX: DEBUG
-                        // if debug_frame_i == 288 {
+                        // if debug_frame_i == 144 * 2 {
                         //     eprintln!("Updating subchunk lighting!");
                         //     graphics_state.update_all_subchunks_radiance_lighting(
                         //         &thread_pool,
@@ -290,7 +291,7 @@ pub(crate) async fn window_run(
                     }
                 }
                 // Gameplay events and updates
-                #[allow(unused)]
+                #[expect(unused)]
                 let process_output = game::process_game_events(
                     &thread_pool,
                     &mut play_state,

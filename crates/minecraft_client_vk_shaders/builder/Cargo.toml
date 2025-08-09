@@ -4,11 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [build-dependencies]
-spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
-
-[profile.dev.build-override]
-opt-level = 3
-
-[profile.release.build-override]
-opt-level = 3
-codegen-units = 16
+spirv-builder = { workspace = true }

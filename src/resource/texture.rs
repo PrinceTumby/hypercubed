@@ -83,12 +83,12 @@ impl AtlasBuilder {
             let texture_info = self.stitch_in(&texture, luma_texture.ok().as_ref())?;
             let animation_bytes = get_resource_file(&ResourceType::TextureMeta, location);
             if let Ok(animation_bytes) = animation_bytes {
-                #[allow(unused)]
+                #[expect(unused)]
                 #[derive(Clone, serde::Deserialize)]
                 struct TextureMeta {
                     pub animation: AnimationInfo,
                 }
-                #[allow(unused)]
+                #[expect(unused)]
                 #[derive(Clone, serde::Deserialize)]
                 struct AnimationInfo {
                     #[serde(default = "default_frametime")]

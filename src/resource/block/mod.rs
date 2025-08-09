@@ -103,7 +103,7 @@ impl Registry {
     }
 
     /// Panics if an entry is already registered with `identifier`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn register<'a, I, II>(
         &mut self,
         model_cache: &mut ModelCache,
@@ -210,7 +210,7 @@ impl Registry {
     /// `custom_properties` is each property that defines the blockstates, in order.
     /// `skip_properties` is a list of property names from `properties` that do not appear in the
     /// blockstates file.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn register_full_custom<'a, I, II>(
         &mut self,
         model_cache: &mut ModelCache,
@@ -418,7 +418,7 @@ pub struct Properties {
     pub air_like: bool,
 }
 
-#[allow(clippy::derivable_impls)]
+#[expect(clippy::derivable_impls)]
 impl Default for Properties {
     fn default() -> Self {
         Self { air_like: false }

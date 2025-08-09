@@ -1,3 +1,25 @@
+[workspace]
+members = [ "crates/protocol_derive", "crates/vulkan_prelude" ]
+exclude = [
+    "crates/minecraft_client_vk_shaders",
+    "crates/minecraft_client_vk_shaders/builder",
+]
+
+[workspace.dependencies]
+ahash = { version = "0", features = [ "serde" ] }
+anyhow = "1"
+bitfield = "0"
+bytemuck = { version = "1", features = [ "derive" ] }
+cfg-if = "1"
+foldhash = "0"
+lazy_static = "1"
+smallvec = { version = "1.11", features = [ "union", "const_generics", "const_new" ] }
+# If updating, also update in "crates/minecraft_client_vk_shaders/Cargo.toml"
+vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "99ccf3c" }
+vulkan_prelude = { path = "crates/vulkan_prelude" }
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
+
 [package]
 name = "minecraft_client"
 version = "0.1.0"
@@ -21,16 +43,16 @@ nickel-lang-core = { version = "0.13", default-features = false }
 
 [dependencies]
 aes = "0.8"
-ahash = { version = "0.8", features = [ "serde" ] }
-anyhow = "1"
+ahash = { workspace = true }
+anyhow = { workspace = true }
 bimap = "0.6"
-bitfield = "0.19"
+bitfield = { workspace = true }
 bytebuffer = "2"
-bytemuck = { version = "1.22", features = [ "derive" ] }
-cfb8 = { version = "0.8", features = [ "std" ] }
-cfg-if = "1.0"
+bytemuck = { workspace = true }
+cfb8 = { version = "0.8" }
+cfg-if = { workspace = true }
 fast-srgb8 = { version = "1.0", optional = true }
-foldhash = "0.1"
+foldhash = { workspace = true }
 egui = { version = "0.31", features = [ "bytemuck" ] }
 egui_plot = "0.31"
 env_logger = "0.10"
@@ -38,7 +60,7 @@ fixedbitset = "0.5"
 flate2 = "1"
 image = { version = "0.25", features = [ "png" ] }
 indexmap = { version = "2.1", features = [ "serde" ] }
-lazy_static = "1.4"
+lazy_static = { workspace = true }
 log = "0.4"
 mimalloc = "0.1"
 multiversion = "0.8"
@@ -60,7 +82,7 @@ serde = { version = "1", features = [ "derive" ] }
 serde_json = "1"
 serde_repr = "0.1"
 sha1 = "0.10"
-smallvec = { version = "1.11", features = [ "union", "const_generics", "const_new" ] }
+smallvec = { workspace = true }
 string_cache = "0.8"
 thiserror = "1.0"
 threadpool = "1.8"
@@ -68,8 +90,8 @@ tracing-subscriber = "0.3"
 tracing-tracy = { version = "0.11", optional = true }
 tracing = "0.1"
 uuid = { version = "1.4", features = [ "serde", "v3", "v4" ] }
-vulkano = { path = "crates/vulkano/vulkano", optional = true }
-vulkan_prelude = { path = "crates/vulkan_prelude", optional = true }
+vulkano = { workspace = true, optional = true }
+vulkan_prelude = { workspace = true, optional = true }
 wgpu = { version = "24.0.3", optional = true }
 wide = { version = "0.7", optional = true }
 winit = { version = "0.29", features = [ "rwh_05" ] }

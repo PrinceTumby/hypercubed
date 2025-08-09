@@ -4,12 +4,11 @@ pub use super::chunk::{
 };
 use super::shader_exports::chunk_rc::consts::CASCADE_0_NUM_RAYS;
 use super::shader_exports::chunk_rc::types::{
-    self as shader_chunk_rc_types, BlockFaceInstanceFields, CustomBlockInstanceFields,
-    CustomBlockVertexFields, vertex_input_state,
+    self as shader_chunk_rc_types,
+    vertex_input_state,
 };
 use super::shader_exports::shader_stage_from_entry_point;
 use crate::client::RayTracedQuadInfo;
-use crate::resource::block::RightAngleRotation;
 use vulkan_prelude::*;
 use anyhow::Context;
 use nalgebra::{Matrix3, Rotation3};

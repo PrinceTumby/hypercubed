@@ -1,5 +1,5 @@
 // XXX: DEBUG
-#![cfg_attr(feature = "graphics_backend_software", allow(unused))]
+#![cfg_attr(feature = "graphics_backend_software", expect(unused))]
 
 use crate::basic_types::AxisDirection;
 use crate::client::graphics::{self, GraphicsResources};

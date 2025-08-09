@@ -405,7 +405,7 @@ pub fn simulate_player(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn move_player_with_heading(
     global_palette: &BlockRegistry,
     raw_chunks: &AHashMap<[i32; 2], Arc<RawChunk>>,

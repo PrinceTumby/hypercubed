@@ -1,5 +1,10 @@
 #![warn(clippy::all)]
 #![deny(clippy::correctness)]
+#![deny(clippy::std_instead_of_core)]
+#![deny(clippy::std_instead_of_alloc)]
+#![deny(clippy::alloc_instead_of_core)]
+
+extern crate alloc;
 
 pub mod basic_types;
 pub mod client;

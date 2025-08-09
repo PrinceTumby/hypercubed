@@ -1,5 +1,12 @@
-# This is only used when this crate is included as a dependency for another crate.
-# See `Cargo-RustGPU.toml`, which is used when building the actual shader.
+[workspace]
+members = [ "builder", "builder/crate_redirect" ]
+
+[workspace.dependencies]
+cfg-if = "1"
+bitfield = "0"
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
+vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "99ccf3c" }
 
 [package]
 name = "minecraft_client_vk_shaders"
@@ -9,16 +16,23 @@ edition = "2024"
 [features]
 default = [ "vulkano" ]
 shader_code = []
-vulkano = []
+vulkano = [ "dep:vulkano" ]
 
 [dependencies]
-cfg-if = "1.0"
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
-bitfield = "0.19"
-vulkano = { path = "../vulkano/vulkano" }
+cfg-if = { workspace = true }
+spirv-std = { workspace = true }
+bitfield = { workspace = true }
+vulkano = { workspace = true, optional = true }
 vulkan_prelude = { path = "../vulkan_prelude" }
 ahash = { version = "0", features = [ "serde" ] }
 anyhow = "1"
 bytemuck = { version = "1", features = [ "derive" ] }
 foldhash = "0"
 lazy_static = "1"
+
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.release.build-override]
+opt-level = 3
+codegen-units = 16

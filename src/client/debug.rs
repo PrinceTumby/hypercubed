@@ -7,7 +7,7 @@ use crate::client::graphics::{self, Camera, DebugVisualisationDrawMethod, Graphi
 use crate::client::{ClientPlayState, MIN_HEIGHT_I32};
 use crate::protocol::play::GameMode;
 use nalgebra::Point3;
-use std::collections::VecDeque;
+use alloc::collections::VecDeque;
 use threadpool::ThreadPool;
 
 pub struct DebugRenderOutput {
@@ -17,7 +17,7 @@ pub struct DebugRenderOutput {
     pub debug_triangles: Vec<DebugTriangle>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn render_debug_ui(
     thread_pool: &ThreadPool,
     server_connection: &PlayConnection,

@@ -50,7 +50,7 @@ fn main() {
     )
     .unwrap();
     std::fs::write(
-        &format!("{}/vanilla_blocks_generated.json", std::env::var("OUT_DIR").unwrap()),
+        format!("{}/vanilla_blocks_generated.json", std::env::var("OUT_DIR").unwrap()),
         &exported_json
     )
     .unwrap();

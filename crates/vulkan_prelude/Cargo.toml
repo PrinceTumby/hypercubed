@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-smallvec = { version = "1", features = [ "union", "const_generics", "const_new" ] }
-vulkano = { path = "../vulkano/vulkano" }
+smallvec = { workspace = true }
+vulkano = { workspace = true }

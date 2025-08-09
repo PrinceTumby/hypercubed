@@ -22,7 +22,7 @@ use nalgebra::Vector3;
 use std::sync::Arc;
 use threadpool::ThreadPool;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn process_game_events(
     thread_pool: &ThreadPool,
     play_state: &mut ClientPlayState,
