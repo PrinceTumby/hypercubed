@@ -6,7 +6,7 @@ pub mod egui_renderer;
 pub use super::Camera;
 
 use crate::basic_types::AxisDirection;
-use crate::resource;
+use resources;
 use ahash::{AHashMap, AHashSet};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use std::collections::VecDeque;
@@ -154,7 +154,7 @@ impl GraphicsState {
     where
         F: FnOnce(
             &mut resource::block::Registry,
-            &mut resource::block::model::ModelCache,
+            &mut resource::block::model::ModelRegistryBuilder,
             &mut resource::texture::AtlasBuilder,
         ) -> anyhow::Result<()>,
     {
@@ -297,12 +297,12 @@ impl GraphicsState {
             custom_block_vertices_buffer,
             custom_block_indices_buffer,
         ) = {
-            use crate::resource;
+            use resources;
             let size = [1024; 2];
             let square_length = 16;
             let mut atlas_builder =
                 resource::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_cache = resource::block::model::ModelCache::new();
+            let mut model_cache = resource::block::model::ModelRegistryBuilder::new();
             let mut block_registry = resource::block::Registry::new();
             register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
             let atlas = atlas_builder.build(&device, &queue, Some("Block and Item Atlas"));
@@ -1842,7 +1842,7 @@ pub struct TextureAtlas {
 
 impl TextureAtlas {
     pub fn from_builder(
-        builder: crate::resource::texture::AtlasBuilder,
+        builder: resources::texture::AtlasBuilder,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: Option<&str>,

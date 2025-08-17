@@ -3,37 +3,38 @@ use crate::client::input::PlayControlState;
 use crate::client::{
     ClientPlayState, ClientPlayStateUpdate, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32, world,
 };
-use crate::identifier;
+use resources::identifier;
 use crate::physics;
+use crate::portable_prelude::*;
+use portable_std::{Arc, FastHashMap, FastHashSet, IndexMap, sync};
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{
     self as protocol_play, Clientbound as ClientboundPacket, GameEventType, GameMode,
     serverbound as serverbound_packets,
 };
 use crate::protocol::prelude::*;
-use crate::resource::block::GlobalPaletteIndex;
-#[cfg(feature = "graphics_backend_vulkan")]
-use vulkan_prelude::*;
+use resources::block::GlobalPaletteIndex;
 #[cfg(feature = "graphics_backend_vulkan")]
 use anyhow::Context;
-use ahash::{AHashMap, AHashSet};
-use indexmap::IndexMap;
 use nalgebra::Vector3;
-use std::sync::Arc;
+#[cfg(feature = "std")]
 use threadpool::ThreadPool;
+#[cfg(feature = "graphics_backend_vulkan")]
+use vulkan_prelude::*;
 
 #[expect(clippy::too_many_arguments)]
 pub fn process_game_events(
+    #[cfg(feature = "std")]
     thread_pool: &ThreadPool,
     play_state: &mut ClientPlayState,
     graphics_state: &mut GraphicsState,
     debug_state: &mut graphics::DebugState,
     input_state: &mut PlayControlState,
     server_connection: &PlayConnection,
-    clientbound_tx: &std::sync::mpsc::Sender<ClientboundPacket>,
-    clientbound_rx: &std::sync::mpsc::Receiver<ClientboundPacket>,
-    play_state_update_tx: &std::sync::mpsc::Sender<ClientPlayStateUpdate>,
-    play_state_update_rx: &std::sync::mpsc::Receiver<ClientPlayStateUpdate>,
+    clientbound_tx: &sync::mpsc::Sender<ClientboundPacket>,
+    clientbound_rx: &sync::mpsc::Receiver<ClientboundPacket>,
+    play_state_update_tx: &sync::mpsc::Sender<ClientPlayStateUpdate>,
+    play_state_update_rx: &sync::mpsc::Receiver<ClientPlayStateUpdate>,
     current_update_id: &mut usize,
     current_time_s: f64,
     last_tick_time_s: &mut f64,
@@ -44,11 +45,11 @@ pub fn process_game_events(
     let _enter = span.enter();
     let visible_chunks = &play_state.visible_chunks;
     let mut raw_chunks;
-    let mut subchunks_to_dispatch: AHashMap<[i32; 3], usize> = AHashMap::new();
+    let mut subchunks_to_dispatch: FastHashMap<[i32; 3], usize> = FastHashMap::new();
     loop {
         let packet = match clientbound_rx.try_recv() {
             Ok(packet) => packet,
-            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(sync::mpsc::TryRecvError::Empty) => break,
             Err(other_err) => panic!("{other_err:?}"),
         };
         let span = tracing::trace_span!("dispatch_packet");
@@ -120,13 +121,13 @@ pub fn process_game_events(
                     .unwrap();
             }
             ClientboundPacket::ChunkDataAndUpdateLight(data) => {
+                use nom::Parser;
                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
                 let [chunk_x, chunk_z] = data.chunk_xz;
-                let (rest, chunk_sections) = nom::multi::count(
-                    protocol_chunk::ChunkSection::deserialize,
-                    24,
-                )(InputSpan::new(&data.chunk_data))
-                .unwrap();
+                let (rest, chunk_sections) =
+                    nom::multi::count(protocol_chunk::ChunkSection::deserialize, 24)
+                        .parse(InputSpan::new(&data.chunk_data))
+                        .unwrap();
                 assert_eq!(rest.len(), 0);
                 // eprintln!("Sky light mask:          {:b}", &data.light_info.sky_light_mask);
                 // eprintln!("Empty sky light mask:    {:b}", &data.light_info.empty_sky_light_mask);
@@ -208,7 +209,7 @@ pub fn process_game_events(
                 let z_usize: usize = z.try_into().unwrap();
                 // Update block section and lighting, increment or decrement block
                 // count
-                let mut subchunks_to_relight = AHashSet::new();
+                let mut subchunks_to_relight = FastHashSet::new();
                 {
                     let new_block_id: GlobalPaletteIndex = update.block_id.0.try_into().unwrap();
                     let old_block_id =
@@ -341,7 +342,7 @@ pub fn process_game_events(
                 let new_block_ids_iter = update.blocks.into_iter();
                 let old_block_ids_iter = old_block_ids.into_iter();
                 let iter = Iterator::zip(old_block_ids_iter, new_block_ids_iter);
-                let mut subchunks_to_relight = AHashSet::new();
+                let mut subchunks_to_relight = FastHashSet::new();
                 for (old_block_id, ([x, y, z], new_block_id)) in iter {
                     let global_x = chunk_x * SUBCHUNK_AXIS_LEN_I32 + x as i32;
                     let global_y =
@@ -440,8 +441,8 @@ pub fn process_game_events(
                     .unwrap()
                     .default_blockstate;
                 let [base_x, base_y, base_z] = base_coords.map(|n| n as i32);
-                let mut subchunk_updates: AHashMap<[i32; 3], Vec<[u8; 3]>> =
-                    AHashMap::with_capacity(1);
+                let mut subchunk_updates: FastHashMap<[i32; 3], Vec<[u8; 3]>> =
+                    FastHashMap::with_capacity(1);
                 for [x, y, z] in affected_block_offsets {
                     let global_x = base_x + x as i32;
                     let global_y = base_y + y as i32;
@@ -477,6 +478,7 @@ pub fn process_game_events(
             _ => {}
         }
     }
+    #[cfg(feature = "std")]
     if thread_pool.panic_count() > 0 {
         panic!("Thread pool panic");
     }
@@ -487,25 +489,42 @@ pub fn process_game_events(
         // We're using an IndexMap here to dispatch the updates in order of update
         // ID. Shouldn't have any effect on correctness, but might make updates
         // appear in a more intuitive order.
-        let mut subchunk_update_groups: IndexMap<usize, Vec<[i32; 3]>> = IndexMap::new();
+        let mut subchunk_update_groups: IndexMap<usize, Vec<[i32; 3]>> = IndexMap::default();
         for (subchunk_coords, update_id) in subchunks_to_dispatch {
             let update_group = subchunk_update_groups.entry(update_id).or_default();
             update_group.push(subchunk_coords);
         }
         subchunk_update_groups.sort_unstable_keys();
-        for (update_id, subchunks) in subchunk_update_groups {
-            let graphics_resources = graphics_state.resources.clone();
-            let raw_chunks = play_state.raw_chunks.clone();
-            let play_state_update_tx = play_state_update_tx.clone();
-            thread_pool.execute(move || {
-                world::process_subchunks(
-                    &graphics_resources,
-                    &raw_chunks,
-                    play_state_update_tx,
-                    &subchunks,
-                    update_id,
-                )
-            });
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "std")] {
+                for (update_id, subchunks) in subchunk_update_groups {
+                    let graphics_resources = graphics_state.resources.clone();
+                    let raw_chunks = play_state.raw_chunks.clone();
+                    let play_state_update_tx = play_state_update_tx.clone();
+                    thread_pool.execute(move || {
+                        world::process_subchunks(
+                            &graphics_resources,
+                            &raw_chunks,
+                            play_state_update_tx,
+                            &subchunks,
+                            update_id,
+                        )
+                    });
+                }
+            } else {
+                for (update_id, subchunks) in subchunk_update_groups {
+                    let graphics_resources = graphics_state.resources.clone();
+                    let raw_chunks = play_state.raw_chunks.clone();
+                    let play_state_update_tx = play_state_update_tx.clone();
+                    world::process_subchunks(
+                        &graphics_state.resources,
+                        &play_state.raw_chunks,
+                        play_state_update_tx,
+                        &subchunks,
+                        update_id,
+                    );
+                }
+            }
         }
     }
     // Receive play state updates
@@ -525,7 +544,7 @@ pub fn process_game_events(
         }
         let update = match play_state_update_rx.try_recv() {
             Ok(update) => update,
-            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(sync::mpsc::TryRecvError::Empty) => break,
             Err(other_err) => {
                 panic!("Error while trying to receive play state update: {other_err:?}")
             }
@@ -540,11 +559,12 @@ pub fn process_game_events(
                     let span = tracing::trace_span!("remove_subchunks", ?chunk_coords);
                     let _enter = span.enter();
                     for subchunk_y in 0..24 {
-                        use std::collections::hash_map::Entry;
+                        use portable_std::FastHashMapEntry;
                         let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
                         let span = tracing::trace_span!("remove_subchunk", ?subchunk_coords);
                         let _enter = span.enter();
-                        if let Entry::Occupied(entry) = play_state.subchunks.entry(subchunk_coords)
+                        if let FastHashMapEntry::Occupied(entry) =
+                            play_state.subchunks.entry(subchunk_coords)
                         {
                             entry.remove();
                             play_state
@@ -800,7 +820,7 @@ pub fn process_game_events(
                                         }),
                                     ]
                                     .into_iter()
-                                    .filter_map(std::convert::identity)
+                                    .flatten()
                                     .collect(),
                                 ),
                                 scratch_data: None,
@@ -830,7 +850,7 @@ pub fn process_game_events(
                                     },
                                 ]
                                 .into_iter()
-                                .filter_map(std::convert::identity)
+                                .flatten()
                                 .collect::<Vec<_>>()),
                             )
                             .unwrap();
@@ -842,22 +862,23 @@ pub fn process_game_events(
                             .min_acceleration_structure_scratch_offset_alignment
                             .unwrap_or(1)
                             .into();
-                        let blas_scratch_buffer: VulkanSubbuffer<[u8]> = vulkan_new_buffer_slice_aligned(
-                            &(graphics_state.resources.memory_allocator.clone() as Arc<_>),
-                            &VulkanBufferCreateInfo {
-                                usage: VulkanBufferUsage::STORAGE_BUFFER
-                                    | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
-                                ..Default::default()
-                            },
-                            &VulkanAllocationCreateInfo {
-                                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
-                                ..Default::default()
-                            },
-                            blas_build_sizes.build_scratch_size + min_scratch_alignment,
-                            min_scratch_alignment.try_into().unwrap()
-                        )
-                        .context("Error while creating subchunk BLAS scratch buffer")
-                        .unwrap();
+                        let blas_scratch_buffer: VulkanSubbuffer<[u8]> =
+                            vulkan_new_buffer_slice_aligned(
+                                &(graphics_state.resources.memory_allocator.clone() as Arc<_>),
+                                &VulkanBufferCreateInfo {
+                                    usage: VulkanBufferUsage::STORAGE_BUFFER
+                                        | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                                    ..Default::default()
+                                },
+                                &VulkanAllocationCreateInfo {
+                                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
+                                    ..Default::default()
+                                },
+                                blas_build_sizes.build_scratch_size + min_scratch_alignment,
+                                min_scratch_alignment.try_into().unwrap(),
+                            )
+                            .context("Error while creating subchunk BLAS scratch buffer")
+                            .unwrap();
                         let blas_buffer: VulkanSubbuffer<[u8]> = VulkanBuffer::new_slice(
                             &graphics_state.resources.memory_allocator,
                             &VulkanBufferCreateInfo {
@@ -891,10 +912,6 @@ pub fn process_game_events(
                         blas_build_geometry_info.dst_acceleration_structure = Some(blas.clone());
                         blas_build_geometry_info.scratch_data = Some(blas_scratch_buffer);
                         unsafe {
-                            // TODO:
-                            // "vulkano/src/command_buffer/commands/acceleration_structure.rs:1103"
-                            // is wrong, should be `index_data.size()` as far as I can tell.
-                            // So we need to vendor our own version of vulkano, and fix the bug.
                             command_buffer
                                 .build_acceleration_structure(
                                     blas_build_geometry_info,
@@ -928,7 +945,7 @@ pub fn process_game_events(
                                         },
                                     ]
                                     .into_iter()
-                                    .filter_map(std::convert::identity)
+                                    .flatten()
                                     .collect(),
                                 )
                                 .unwrap();
@@ -1037,9 +1054,7 @@ pub fn process_game_events(
             .subchunks
             .values()
             .filter_map(|subchunk| {
-                let Some(rc_info) = subchunk.rc_info.as_ref() else {
-                    return None;
-                };
+                let rc_info = subchunk.rc_info.as_ref()?;
                 Some(VulkanAccelerationStructureInstance {
                     // Subchunk geometries are already in global space, so just use an identity matrix
                     // here.
@@ -1112,8 +1127,7 @@ pub fn process_game_events(
         let tlas_scratch_buffer: VulkanSubbuffer<[u8]> = vulkan_new_buffer_slice_aligned(
             &(graphics_state.resources.memory_allocator.clone() as Arc<_>),
             &VulkanBufferCreateInfo {
-                usage: VulkanBufferUsage::STORAGE_BUFFER
-                    | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                usage: VulkanBufferUsage::STORAGE_BUFFER | VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
                 ..Default::default()
             },
             &VulkanAllocationCreateInfo {
@@ -1121,7 +1135,7 @@ pub fn process_game_events(
                 ..Default::default()
             },
             tlas_build_sizes.build_scratch_size + min_scratch_alignment,
-            min_scratch_alignment.try_into().unwrap()
+            min_scratch_alignment.try_into().unwrap(),
         )
         .context("Error while creating subchunk TLAS scratch buffer")
         .unwrap();
@@ -1345,8 +1359,8 @@ pub fn process_game_events(
                 let (interpolated_camera_pos, interpolated_camera_fov) = {
                     fn mix<T, U>(last_tick: T, next_tick: T, tick_percentage: f32) -> T
                     where
-                        T: std::ops::Add<U, Output = T> + std::ops::Sub<T, Output = U> + Clone,
-                        U: std::ops::Mul<f32, Output = U>,
+                        T: core::ops::Add<U, Output = T> + core::ops::Sub<T, Output = U> + Clone,
+                        U: core::ops::Mul<f32, Output = U>,
                     {
                         let diff = next_tick - last_tick.clone();
                         last_tick + (diff * tick_percentage)

@@ -1,39 +1,101 @@
-use ahash::AHashMap;
+use portable_std::prelude::*;
+use portable_std::{Arc, FastHashMap};
 use anyhow::{Context, anyhow, bail, ensure};
 use bitfield::bitfield;
 use nalgebra::{Matrix4, Point3, Rotation3, Vector3, point};
-use serde::Deserialize;
-use std::sync::Arc;
 
-use super::{Identifier, RightAngleRotation, texture};
-// use crate::client::graphics::chunk::custom_block::Vertex as GraphicsCustomBlockVertex;
-use crate::client::graphics::chunk_rc::custom_block::Vertex as GraphicsCustomBlockVertex;
-use crate::resource::manager::{ResourceType, get_resource_file};
+use super::{Identifier, RightAngleRotation};
 
-#[derive(Debug, Default)]
-pub struct ModelCache {
-    pub completed_models: AHashMap<(Identifier, ModelRotationInfo), Arc<ModelType>>,
-    pub templates: AHashMap<Identifier, Arc<Template>>,
+#[cfg(feature = "std")]
+use std_imports::*;
+#[cfg(feature = "std")]
+mod std_imports {
+    pub use super::super::super::texture;
+    pub use crate::manager::{ResourceType, get_resource_file};
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
+#[serde(transparent)]
+pub struct ModelIndex(u32);
+
+const EMPTY_MODEL_IDX: ModelIndex = ModelIndex(0);
+
+#[derive(Debug, Default, bincode::Encode, bincode::Decode)]
+pub struct ModelRegistry {
+    /// Index 0 (`EMPTY_MODEL_IDX`) always contains an empty model.
+    pub model_list: Vec<ModelType>,
     // Once all custom blocks have been loaded, these two lists are converted into GPU buffers for
     // rendering.
-    pub custom_block_vertices: Vec<GraphicsCustomBlockVertex>,
+    pub custom_block_faces: Vec<[ModelVertex; 4]>,
+    /// Each index is a vertex index in a flattened version of `custom_block_faces`.
     pub custom_block_indices: Vec<u32>,
 }
 
+impl core::ops::Index<ModelIndex> for ModelRegistry {
+    type Output = ModelType;
+    
+    fn index<'a>(&'a self, index: ModelIndex) -> &'a ModelType {
+        &self.model_list[usize::try_from(index.0).unwrap()]
+    }
+}
+
+#[cfg(feature = "std")]
+pub struct ModelRegistryBuilder {
+    pub model_list: Vec<ModelType>,
+    pub model_identifiers: Vec<Identifier>,
+    pub completed_models: FastHashMap<(Identifier, ModelRotationInfo), ModelIndex>,
+    pub completed_model_combinations: FastHashMap<Box<[CombinedModelPart]>, ModelIndex>,
+    pub templates: FastHashMap<Identifier, Arc<Template>>,
+    // Once all custom blocks have been loaded, these two lists are converted into GPU buffers for
+    // rendering.
+    pub custom_block_faces: Vec<[ModelVertex; 4]>,
+    /// Each index is a vertex index in a flattened version of `custom_block_faces`.
+    pub custom_block_indices: Vec<u32>,
+}
+
+#[cfg(feature = "std")]
+impl core::ops::Index<ModelIndex> for ModelRegistryBuilder {
+    type Output = ModelType;
+    
+    fn index<'a>(&'a self, index: ModelIndex) -> &'a ModelType {
+        &self.model_list[usize::try_from(index.0).unwrap()]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct ModelRotationInfo {
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
     pub uv_lock: bool,
 }
 
-impl ModelCache {
+#[cfg(feature = "std")]
+impl ModelRegistryBuilder {
     pub fn new() -> Self {
         Self {
-            completed_models: AHashMap::new(),
-            templates: AHashMap::new(),
-            custom_block_vertices: Vec::new(),
+            model_list: Vec::from([ModelType::None]),
+            model_identifiers: Vec::from([crate::identifier!("debug:debug")]),
+            completed_models: FastHashMap::new(),
+            completed_model_combinations: FastHashMap::new(),
+            templates: FastHashMap::new(),
+            custom_block_faces: Vec::new(),
             custom_block_indices: Vec::new(),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl ModelRegistryBuilder {
+    pub fn finish(self) -> ModelRegistry {
+        ModelRegistry {
+            model_list: self.model_list,
+            custom_block_faces: self.custom_block_faces,
+            custom_block_indices: self.custom_block_indices,
         }
     }
 
@@ -43,7 +105,7 @@ impl ModelCache {
         location: &Identifier,
         rotation: &ModelRotationInfo,
         texture_atlas: &mut texture::AtlasBuilder,
-    ) -> anyhow::Result<Arc<ModelType>> {
+    ) -> anyhow::Result<ModelIndex> {
         match self.get_or_load_model(location, rotation, texture_atlas, false)? {
             ModelState::Complete(model) => Ok(model),
             ModelState::Template(_) => Err(anyhow!("Model is a template, not a complete model")),
@@ -56,21 +118,22 @@ impl ModelCache {
         &mut self,
         location: &Identifier,
         texture_atlas: &mut texture::AtlasBuilder,
-    ) -> anyhow::Result<Arc<ModelType>> {
-        // Unfortunately we don't have the `Equivalent` trait from indexmap for normal hashmaps,
+    ) -> anyhow::Result<ModelIndex> {
+        // Unfortunately we don't have the `Equivalent` trait from hashbrown for normal hashmaps,
         // and we don't have a good way of transposing `(&Identifier, &ModelRotationInfo)` to
         // `&(Identifier, ModelRotationInfo)` for getting the completed model, so we have to do
         // this instead.
         // Most liquids are only loaded once though, so this clone would have to happen anyway to
         // store the liquid model.
         let location_and_rotation = (location.clone(), ModelRotationInfo::default());
-        if let Some(model_type) = self.completed_models.get(&location_and_rotation) {
+        if let Some(&model_idx) = self.completed_models.get(&location_and_rotation) {
+            let model_type = &self[model_idx];
             ensure!(
-                matches!(model_type.as_ref(), &ModelType::Liquid(_)),
+                matches!(model_type, &ModelType::Liquid(_)),
                 "model previously loaded for {:?} is not a liquid",
                 location_and_rotation.0,
             );
-            Ok(model_type.clone())
+            Ok(model_idx)
         } else {
             let json_bytes = get_resource_file(&ResourceType::Model, location)
                 .with_context(|| format!("Failed to read raw model JSON data for {location:?}"))?;
@@ -99,21 +162,31 @@ impl ModelCache {
                 .get_or_load_texture(&particle_identifier)
                 .context("Failed to load \"particle\" texture")?
                 .uvs;
-            let model_info = Arc::new(ModelType::Liquid(LiquidInfo { uvs }));
+            let completed_model_idx = self.register_model(ModelType::Liquid(LiquidInfo { uvs }), &location);
             self.completed_models
-                .insert(location_and_rotation, model_info.clone());
-            Ok(model_info)
+                .insert(location_and_rotation, completed_model_idx);
+            Ok(completed_model_idx)
         }
     }
 
     // #[tracing::instrument(skip(self, texture_atlas))]
     pub fn load_combined_model(
         &mut self,
+        location: &Identifier,
         parts: &[CombinedModelPart],
         texture_atlas: &mut texture::AtlasBuilder,
-    ) -> anyhow::Result<Arc<ModelType>> {
+    ) -> anyhow::Result<ModelIndex> {
+        if parts.len() == 0 {
+            return Ok(EMPTY_MODEL_IDX);
+        }
+        // Ditto here, we don't have the `Equivalent` trait, so we have to do allocate a box just
+        // to find if the combination's already been cached.
+        let owned_parts = Box::from(parts);
+        if let Some(&model_idx) = self.completed_model_combinations.get(&owned_parts) {
+            return Ok(model_idx);
+        }
         if parts.is_empty() {
-            return Ok(Arc::new(ModelType::None));
+            return Ok(EMPTY_MODEL_IDX);
         }
         let mut current_template: Option<Template> = None;
         for CombinedModelPart {
@@ -155,13 +228,15 @@ impl ModelCache {
         if !complete {
             bail!("combined template {final_template:?} cannot be finalised");
         }
-        self.finalise_model(
+        let completed_model = self.finalise_model(
             final_template,
             &ModelRotationInfo::default(),
             texture_atlas,
             None,
-        )
-        .map(Arc::new)
+        )?;
+        let completed_model_idx = self.register_model(completed_model, location);
+        self.completed_model_combinations.insert(owned_parts, completed_model_idx);
+        Ok(completed_model_idx)
     }
 
     /// If `skip_finalising_model` is specified, this will return the model's template instead of
@@ -175,11 +250,11 @@ impl ModelCache {
         skip_finalising_model: bool,
     ) -> anyhow::Result<ModelState> {
         let location_and_rotation = (location.clone(), *rotation);
-        if let (false, Some(model)) = (
+        if let (false, Some(&model_idx)) = (
             skip_finalising_model,
             self.completed_models.get(&location_and_rotation),
         ) {
-            return Ok(ModelState::Complete(model.clone()));
+            return Ok(ModelState::Complete(model_idx));
         }
         let (mut model_template, cached_template) = if let Some(template) =
             self.templates.get(location)
@@ -218,16 +293,15 @@ impl ModelCache {
                         model_template.ambient_occlusion = parent_template.ambient_occlusion;
                         // Merge texture variables, child variables override parent variables.
                         // Mostly just required for the #particle texture variable.
-                        let mut parent_texture_variables: AHashMap<_, _> = parent_template
+                        let mut parent_texture_variables: FastHashMap<_, _> = parent_template
                             .texture_variables
                             .iter()
                             .map(|(key, value)| {
-                                if let Some(variable_name) = value.strip_prefix('#') {
-                                    if let Some(replacement) =
+                                if let Some(variable_name) = value.strip_prefix('#')
+                                    && let Some(replacement) =
                                         model_template.texture_variables.get(variable_name)
-                                    {
-                                        return (key.clone(), replacement.clone());
-                                    }
+                                {
+                                    return (key.clone(), replacement.clone());
                                 }
                                 (key.clone(), value.clone())
                             })
@@ -272,22 +346,30 @@ impl ModelCache {
         };
         // If template is complete, then we convert it to a finished model
         if !skip_finalising_model && complete {
-            let completed_model = Arc::new(self.finalise_model(
+            let completed_model = self.finalise_model(
                 model_template,
                 rotation,
                 texture_atlas,
                 Some(location),
-            )?);
+            )?;
+            let completed_model_idx = self.register_model(completed_model, &location);
             assert!(
                 self.completed_models
-                    .insert((location.clone(), *rotation), completed_model.clone())
+                    .insert((location.clone(), *rotation), completed_model_idx)
                     .is_none(),
                 "completed model already exists at {location:?}"
             );
-            Ok(ModelState::Complete(completed_model))
+            Ok(ModelState::Complete(completed_model_idx))
         } else {
             Ok(ModelState::Template(stored_template))
         }
+    }
+
+    fn register_model(&mut self, model: ModelType, location: &Identifier) -> ModelIndex {
+        let index = self.model_list.len();
+        self.model_list.push(model);
+        self.model_identifiers.push(location.clone());
+        ModelIndex(index.try_into().unwrap())
     }
 
     // #[tracing::instrument(skip(texture_atlas))]
@@ -757,7 +839,7 @@ impl ModelCache {
             }));
         }
         // Fall back to more expensive model rendering if we can't specialise
-        let mut converted_vertices: Vec<ModelVertex> = Vec::new();
+        let mut converted_faces: Vec<[ModelVertex; 4]> = Vec::new();
         let mut converted_indices: Vec<u32> = Vec::new();
         for template_element in model_template.elements.unwrap() {
             const FACE_NORMALS: [Vector3<f32>; 6] = [
@@ -855,8 +937,8 @@ impl ModelCache {
                     _ => unreachable!(),
                 };
                 let face_normal = FACE_NORMALS[face_i];
-                let num_converted_vertices = u32::try_from(converted_vertices.len()).unwrap();
-                let face_indices = FACE_INDICES.map(|index| index + num_converted_vertices);
+                let base_index = u32::try_from(converted_faces.len() * 4).unwrap();
+                let face_indices = FACE_INDICES.map(|index| base_index + index);
                 let basic_rotation = match template_element.rotation {
                     None => Matrix4::identity(),
                     Some(template_rotation) => {
@@ -921,15 +1003,15 @@ impl ModelCache {
                             x_y_axis_angles.map(|(axis, angle)| match angle {
                                 RightAngleRotation::Zero => Matrix4::identity(),
                                 RightAngleRotation::Ninety => {
-                                    Rotation3::from_axis_angle(&axis, -std::f32::consts::FRAC_PI_2)
+                                    Rotation3::from_axis_angle(&axis, -core::f32::consts::FRAC_PI_2)
                                         .to_homogeneous()
                                 }
                                 RightAngleRotation::OneEighty => {
-                                    Rotation3::from_axis_angle(&axis, std::f32::consts::PI)
+                                    Rotation3::from_axis_angle(&axis, core::f32::consts::PI)
                                         .to_homogeneous()
                                 }
                                 RightAngleRotation::TwoSeventy => {
-                                    Rotation3::from_axis_angle(&axis, std::f32::consts::FRAC_PI_2)
+                                    Rotation3::from_axis_angle(&axis, core::f32::consts::FRAC_PI_2)
                                         .to_homogeneous()
                                 }
                             });
@@ -944,50 +1026,28 @@ impl ModelCache {
                     template_element.start_pos.into(),
                     template_element.end_pos.into(),
                 )?;
-                let mut transformed_vertices = face_vertices.map(|vertex| ModelVertex {
+                let mut transformed_face = face_vertices.map(|vertex| ModelVertex {
                     local_pos: complete_matrix.transform_point(&vertex),
                     uvs: [0; 2],
                     normal: complete_matrix.transform_vector(&face_normal),
                     tint: converted_face.tint,
                 });
-                for (i, transformed_vertex) in transformed_vertices.iter_mut().enumerate() {
+                for (i, transformed_vertex) in transformed_face.iter_mut().enumerate() {
                     transformed_vertex.uvs = converted_face.uvs[i];
                 }
-                converted_vertices.extend(transformed_vertices.into_iter());
+                converted_faces.push(transformed_face);
                 converted_indices.extend(face_indices.into_iter());
             }
         }
         // Add converted model for later rendering
-        let start_vertex: u32 = self.custom_block_vertices.len().try_into().unwrap();
+        let start_vertex: u32 = u32::try_from(self.custom_block_faces.len() * 4).unwrap();
         let start_index: u32 = self.custom_block_indices.len().try_into().unwrap();
         let num_indices: u32 = converted_indices.len().try_into().unwrap();
-        self.custom_block_vertices.extend(
-            converted_vertices
-                .iter()
-                // NOTE: RADIANCE CASCADES
-                .map(|v| {
-                    GraphicsCustomBlockVertex::new(
-                        *v.local_pos.coords.as_ref(),
-                        v.uvs,
-                        *v.normal.as_ref(),
-                        matches!(v.tint, Some(Tint::Biome)),
-                    )
-                }),
-            // .map(|v| GraphicsCustomBlockVertex {
-            //     pos: *v.local_pos.coords.as_ref(),
-            //     uvs: v.uvs,
-            //     normal: *v.normal.as_ref(),
-            //     tint_percentage: match v.tint {
-            //         None => 0.0,
-            //         Some(Tint::Biome) => 1.0,
-            //     },
-            // }),
-        );
+        self.custom_block_faces
+            .extend(converted_faces.iter().copied());
         self.custom_block_indices
             .extend(converted_indices.iter().copied());
         Ok(ModelType::Other(OtherInfo {
-            vertices: converted_vertices,
-            indices: converted_indices,
             start_vertex,
             start_index_and_len: [start_index, num_indices],
         }))
@@ -1141,7 +1201,8 @@ impl ModelCache {
     }
 }
 
-#[derive(Clone, Debug)]
+#[cfg(feature = "std")]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CombinedModelPart {
     pub location: Identifier,
     pub x_rotation: RightAngleRotation,
@@ -1149,15 +1210,18 @@ pub struct CombinedModelPart {
     pub uv_lock: bool,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 pub enum ModelState {
-    Complete(Arc<ModelType>),
+    Complete(ModelIndex),
     Template(Arc<Template>),
     /// Model is currently being loaded
     Pending,
 }
 
 #[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub enum ModelType {
     /// Model with no elements. Example: Air
     None,
@@ -1178,6 +1242,8 @@ pub enum ModelType {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct BlockInfo {
     pub flags: BlockFlags,
     /// In order of top, bottom, north, south, east and west.
@@ -1187,18 +1253,24 @@ pub struct BlockInfo {
 
 bitfield! {
     #[derive(Clone, Copy)]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(bincode::Encode, bincode::Decode)]
     pub struct BlockFlags(u8);
     impl Debug;
     pub ambient_occlusion, set_ambient_occlusion: 0;
 }
 
 #[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct OverlayedBlockInfo {
     pub flags: BlockFlags,
     pub faces: Vec<OverlayedBlockFace>,
 }
 
 #[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct OverlayedBlockFace {
     pub face_i: u8,
     pub tint: Option<Tint>,
@@ -1208,27 +1280,35 @@ pub struct OverlayedBlockFace {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct CrossInfo {
     pub cross_atlas_start_uvs: [u16; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct LiquidInfo {
     pub uvs: [u16; 4],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct OtherInfo {
-    pub vertices: Vec<ModelVertex>,
-    pub indices: Vec<u32>,
     pub start_vertex: u32,
     pub start_index_and_len: [u32; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct ModelVertex {
+    #[bincode(with_serde)]
     pub local_pos: Point3<f32>,
     pub uvs: [u16; 2],
+    #[bincode(with_serde)]
     pub normal: Vector3<f32>,
     pub tint: Option<Tint>,
 }
@@ -1240,8 +1320,7 @@ impl PartialEq for ModelVertex {
         }
         fn vec3_eq(left: &Vector3<f32>, right: &Vector3<f32>) -> bool {
             Iterator::zip(left.as_slice().iter(), right.as_slice().iter())
-                .map(|(l, r)| f32_eq(l, r))
-                .all(std::convert::identity)
+                .all(|(l, r)| f32_eq(l, r))
         }
         self.uvs == other.uvs
             && self.tint == other.tint
@@ -1252,12 +1331,12 @@ impl PartialEq for ModelVertex {
 
 impl Eq for ModelVertex {}
 
-impl std::hash::Hash for ModelVertex {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        fn f32_hash<H: std::hash::Hasher>(x: &f32, state: &mut H) {
+impl core::hash::Hash for ModelVertex {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        fn f32_hash<H: core::hash::Hasher>(x: &f32, state: &mut H) {
             x.to_bits().hash(state);
         }
-        fn vec3_hash<H: std::hash::Hasher>(vec: &Vector3<f32>, state: &mut H) {
+        fn vec3_hash<H: core::hash::Hasher>(vec: &Vector3<f32>, state: &mut H) {
             f32_hash(&vec.x, state);
             f32_hash(&vec.y, state);
             f32_hash(&vec.z, state);
@@ -1269,7 +1348,7 @@ impl std::hash::Hash for ModelVertex {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bincode::Encode, bincode::Decode)]
 struct ModelElementFace {
     pub uvs: [[u16; 2]; 4],
     /// Model rendering currently uses entire model instancing, and so doesn't use cullfaces.
@@ -1302,21 +1381,27 @@ struct ModelElementFace {
 // }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub enum Tint {
     Biome,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct Template {
     pub parent: Option<String>,
     #[serde(default = "bool_true", rename = "ambientocclusion")]
     pub ambient_occlusion: bool,
     pub display: Option<ModelDisplay>,
+    #[bincode(with_serde)]
     #[serde(default, rename = "textures")]
-    pub texture_variables: AHashMap<String, String>,
+    pub texture_variables: FastHashMap<String, String>,
     pub elements: Option<Vec<TemplateElement>>,
 }
 
+#[cfg(feature = "std")]
 impl Template {
     // NOTE This is copied further up for CombinedTemplate
     /// Substitutes references to texture variables in elements repeatedly using its texture
@@ -1326,16 +1411,13 @@ impl Template {
     /// replaced by paths).
     pub fn fill_texture_variables(&mut self) -> bool {
         let mut all_replaced = true;
-        match &mut self.elements {
-            Some(elements) => {
-                for element in elements {
-                    let replaced = element
-                        .faces
-                        .fill_texture_variables(&mut self.texture_variables);
-                    all_replaced = all_replaced && replaced;
-                }
+        if let Some(elements) = &mut self.elements {
+            for element in elements {
+                let replaced = element
+                    .faces
+                    .fill_texture_variables(&mut self.texture_variables);
+                all_replaced = all_replaced && replaced;
             }
-            None => {}
         }
         all_replaced
     }
@@ -1362,7 +1444,9 @@ impl Template {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct ModelDisplay {
     pub thirdperson_righthand: Option<ModelDisplayPosition>,
     pub thirdperson_lefthand: Option<ModelDisplayPosition>,
@@ -1374,20 +1458,29 @@ pub struct ModelDisplay {
     pub fixed: Option<ModelDisplayPosition>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct ModelDisplayPosition {
+    #[bincode(with_serde)]
     #[serde(default)]
     pub rotation: Vector3<f32>,
+    #[bincode(with_serde)]
     #[serde(default)]
     pub translation: Vector3<f32>,
+    #[bincode(with_serde)]
     #[serde(default)]
     pub scale: Vector3<f32>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct TemplateElement {
+    #[bincode(with_serde)]
     #[serde(rename = "from")]
     pub start_pos: Point3<f32>,
+    #[bincode(with_serde)]
     #[serde(rename = "to")]
     pub end_pos: Point3<f32>,
     pub rotation: Option<ModelElementRotation>,
@@ -1399,15 +1492,20 @@ pub struct TemplateElement {
 
 /// Variant information taken from parent blockstate.
 /// Passed through template elements as templates may be multiple models combined.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct TemplateElementBlockstateRotation {
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
     pub uv_lock: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct ModelElementRotation {
+    #[bincode(with_serde)]
     pub origin: Point3<f32>,
     pub angle: f32,
     pub axis: RotationAxis,
@@ -1415,7 +1513,9 @@ pub struct ModelElementRotation {
     pub rescale: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 #[serde(rename_all = "lowercase")]
 pub enum RotationAxis {
     X,
@@ -1423,7 +1523,9 @@ pub enum RotationAxis {
     Z,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct TemplateElementFaces {
     #[serde(rename = "up")]
     pub top: Option<TemplateElementFace>,
@@ -1460,7 +1562,10 @@ impl TemplateElementFaces {
     /// Substitutes references to texture variables repeatedly using the provided map.
     /// Does not check for cycles in the map.
     /// Returns whether all remaining references to texture variables are now replaced.
-    pub fn fill_texture_variables(&mut self, variable_map: &mut AHashMap<String, String>) -> bool {
+    pub fn fill_texture_variables(
+        &mut self,
+        variable_map: &mut FastHashMap<String, String>,
+    ) -> bool {
         let mut all_replaced = true;
         for (_, face) in self.iter_mut().filter_map(|(i, f)| f.map(|f| (i, f))) {
             let replaced = face.fill_texture_variable(variable_map);
@@ -1520,7 +1625,9 @@ impl<T> Iterator for TemplateElementFacesIterator<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct TemplateElementFace {
     #[serde(rename = "uv")]
     pub uvs: Option<[f32; 4]>,
@@ -1536,7 +1643,10 @@ impl TemplateElementFace {
     /// Substitutes references to texture variables repeatedly using the provided map.
     /// Does not check for cycles in the map.
     /// Returns whether this doesn't refer to a texture variable (now or already).
-    pub fn fill_texture_variable(&mut self, variable_map: &mut AHashMap<String, String>) -> bool {
+    pub fn fill_texture_variable(
+        &mut self,
+        variable_map: &mut FastHashMap<String, String>,
+    ) -> bool {
         loop {
             if !self.texture.starts_with('#') {
                 return true;
@@ -1552,7 +1662,9 @@ impl TemplateElementFace {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 #[repr(u8)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockFace {

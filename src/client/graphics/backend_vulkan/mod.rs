@@ -1,16 +1,25 @@
-pub mod chunk;
+#![allow(clippy::std_instead_of_alloc)]
+#![allow(clippy::std_instead_of_core)]
+
+#[cfg(not(feature = "std"))]
+compile_error!("The Vulkan backend requires use of `std`");
+
+pub mod chunk_no_rc;
 pub mod chunk_rc;
 pub mod debug;
 pub mod egui_renderer;
 pub mod shader_exports;
 
+// TODO: Add a feature gate for "graphics_radiance_cascades"
+pub use chunk_rc as chunk;
+
 use crate::basic_types::AxisDirection;
 use crate::client::{MIN_HEIGHT_I32, RawChunk, RayTracedQuadInfo, SUBCHUNK_AXIS_LEN_I32};
-use crate::physics::AABB;
-use crate::resource;
+use resources::aabb::AABB;
+use resources::block::model::{ModelRegistry, Tint};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, anyhow};
-use chunk_rc::{
+use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
@@ -106,7 +115,8 @@ pub struct GraphicsResources {
     pub command_buffer_allocator: Arc<VulkanStandardCommandBufferAllocator>,
     pub descriptor_set_allocator: Arc<VulkanStandardDescriptorSetAllocator>,
     pub render_pass: Arc<VulkanRenderPass>,
-    pub block_registry: Arc<resource::block::Registry>,
+    pub block_registry: Arc<resources::block::Registry>,
+    pub model_registry: Arc<ModelRegistry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,9 +236,9 @@ impl GraphicsState {
     pub async fn new<F>(window: &'static Window, register_blocks: F) -> anyhow::Result<Self>
     where
         F: FnOnce(
-            &mut resource::block::Registry,
-            &mut resource::block::model::ModelCache,
-            &mut resource::texture::AtlasBuilder,
+            &mut resources::block::Registry,
+            &mut resources::block::model::ModelRegistryBuilder,
+            &mut resources::texture::AtlasBuilder,
         ) -> anyhow::Result<()>,
     {
         let graphics_options = GraphicsOptions::default();
@@ -281,7 +291,7 @@ impl GraphicsState {
                     && device.supported_features().contains(&required_features)
             })
             .filter_map(|device| {
-                let Some(render_queue_family_usize) = device
+                let render_queue_family_usize = device
                     .queue_family_properties()
                     .iter()
                     .enumerate()
@@ -290,10 +300,7 @@ impl GraphicsState {
                             .queue_flags
                             .contains(VulkanQueueFlags::GRAPHICS | VulkanQueueFlags::COMPUTE)
                             && device.surface_support(i as u32, &surface).unwrap_or(false)
-                    })
-                else {
-                    return None;
-                };
+                    })?;
                 let render_queue_family = render_queue_family_usize as u32;
                 let compute_queue_family = device
                     .queue_family_properties()
@@ -448,22 +455,21 @@ impl GraphicsState {
             custom_block_vertices_buffer,
             custom_block_indices_buffer,
         ) = {
-            use crate::resource;
             let size = [1024; 2];
             let square_length = 16;
             let mut atlas_builder =
-                resource::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_cache = resource::block::model::ModelCache::new();
-            let mut block_registry = resource::block::Registry::new();
+                resources::texture::AtlasBuilder::new(size[0], size[1], square_length);
+            let mut model_cache = resources::block::model::ModelRegistryBuilder::new();
+            let mut block_registry = resources::block::Registry::new();
             register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
-            let atlas = atlas_builder
-                .build(
-                    &device,
-                    &render_queue,
-                    &(memory_allocator.clone() as Arc<_>),
-                    command_buffer_allocator.clone(),
-                )
-                .context("Failed while building block and item atlas")?;
+            let atlas = TextureAtlas::from_builder(
+                atlas_builder.finish(),
+                &device,
+                &render_queue,
+                &(memory_allocator.clone() as Arc<_>),
+                command_buffer_allocator.clone(),
+            )
+            .context("Failed while building block and item atlas")?;
             let custom_block_vertices_buffer = VulkanBuffer::from_iter(
                 &memory_allocator,
                 &VulkanBufferCreateInfo {
@@ -476,9 +482,27 @@ impl GraphicsState {
                     allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
                     ..Default::default()
                 },
-                model_cache.custom_block_vertices,
+                model_cache.custom_block_faces
+                    .iter()
+                    // NOTE: RADIANCE CASCADES
+                    .map(|face| face.map(|v| chunk::custom_block::Vertex::new(
+                            *v.local_pos.coords.as_ref(),
+                            v.uvs,
+                            *v.normal.as_ref(),
+                            matches!(v.tint, Some(Tint::Biome)),
+                    ))),
+                // .map(|face| face.map(|v| GraphicsCustomBlockVertex {
+                //     pos: *v.local_pos.coords.as_ref(),
+                //     uvs: v.uvs,
+                //     normal: *v.normal.as_ref(),
+                //     tint_percentage: match v.tint {
+                //         None => 0.0,
+                //         Some(Tint::Biome) => 1.0,
+                //     },
+                // })),
             )
-            .context("Error while creating custom block vertices buffer")?;
+            .context("Error while creating custom block vertices buffer")?
+            .reinterpret::<[chunk::custom_block::Vertex]>();
             let custom_block_indices_buffer = VulkanBuffer::from_iter(
                 &memory_allocator,
                 &VulkanBufferCreateInfo {
@@ -706,9 +730,8 @@ impl GraphicsState {
         // Buffer managers
         let render_queue_family_index = render_queue.queue_family_index();
         let compute_queue_family_index = compute_queue.queue_family_index();
-        let block_face_vertex_buffer_manager =
-            BlockFaceVertexBufferManager::new(&device)
-                .context("Error while creating block face vertex buffer manager")?;
+        let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device)
+            .context("Error while creating block face vertex buffer manager")?;
         let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(
             &device,
             render_queue_family_index,
@@ -1145,6 +1168,7 @@ impl GraphicsState {
             .free_subchunk_areas(subchunk_coords);
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
@@ -1346,12 +1370,11 @@ impl GraphicsState {
                         if let Some(from_dir) = from_dir {
                             // Check we can go to the neighbour from the last subchunk through this
                             // subchunk
-                            if debug_state.cave_cull_check_connectivity {
-                                if let Some(subchunk) = subchunk_maybe {
-                                    if !subchunk.connected_faces.connects(&from_dir, &to_dir) {
-                                        continue;
-                                    }
-                                }
+                            if debug_state.cave_cull_check_connectivity
+                                && let Some(subchunk) = subchunk_maybe
+                                && !subchunk.connected_faces.connects(&from_dir, &to_dir)
+                            {
+                                continue;
                             }
                         }
                         // Check neighbour lies in camera frustum
@@ -2037,21 +2060,14 @@ impl GraphicsState {
                         .get_all_of_types(block_registry.light_emitting_blockstates())
                         .into_iter()
                         .map(|([x_u8, y_u8, z_u8], blockstate_idx)| {
-                            use resource::block::blockstate::ModelData;
-                            use resource::block::model::ModelType;
+                            use resources::block::blockstate::ModelData;
+                            use resources::block::model::ModelType;
                             let global_x_f32 = (subchunk_start_x + i32::from(x_u8)) as f32;
                             let global_y_f32 = (subchunk_start_y + i32::from(y_u8)) as f32;
                             let global_z_f32 = (subchunk_start_z + i32::from(z_u8)) as f32;
-                            let global_pos = Point3::new(
-                                global_x_f32,
-                                global_y_f32,
-                                global_z_f32,
-                            );
+                            let global_pos = Point3::new(global_x_f32, global_y_f32, global_z_f32);
                             let blockstate = &block_registry[blockstate_idx];
-                            let emission_level = blockstate
-                                .extra_info
-                                .light_info
-                                .emission_level;
+                            let emission_level = blockstate.extra_info.light_info.emission_level;
                             debug_assert_ne!(emission_level, 0);
                             let brightness =
                                 (emission_level as f32).powi(2) * EMISSION_TO_BRIGHTNESS_COEF;
@@ -2060,10 +2076,10 @@ impl GraphicsState {
                             fn model_to_aabb(model: &ModelType) -> AABB {
                                 match model {
                                     ModelType::Other(other_model) => {
-                                        let vertices = &other_model.vertices;
-                                        let mut corner_1 = vertices[0].local_pos.coords;
-                                        let mut corner_2 = vertices[0].local_pos.coords;
-                                        for vertex in vertices {
+                                        let faces = &other_model.faces;
+                                        let mut corner_1 = faces[0][0].local_pos.coords;
+                                        let mut corner_2 = corner_1;
+                                        for vertex in faces.iter().flatten() {
                                             corner_1 = corner_1.inf(&vertex.local_pos.coords);
                                             corner_2 = corner_2.sup(&vertex.local_pos.coords);
                                         }
@@ -2115,6 +2131,7 @@ impl GraphicsState {
             dbg!(nodes.len());
             let start_time = std::time::Instant::now();
             if !nodes.is_empty() {
+                #[expect(clippy::too_many_arguments)]
                 fn process_sublist(
                     current_depth: usize,
                     current_sublist_start_i: usize,
@@ -2429,7 +2446,7 @@ impl GraphicsState {
                         Some(&fence),
                     )
                     .unwrap();
-                });
+            });
             fence.wait(None).unwrap();
         }
         let mut copy_command_buffer = VulkanAutoCommandBufferBuilder::primary(
@@ -2541,17 +2558,17 @@ pub struct TextureAtlas {
 
 impl TextureAtlas {
     pub fn from_builder(
-        builder: crate::resource::texture::AtlasBuilder,
+        atlas: resources::texture::Atlas,
         device: &Arc<VulkanDevice>,
         queue: &Arc<VulkanQueue>,
         memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
         command_buffer_allocator: Arc<dyn VulkanCommandBufferAllocator>,
     ) -> anyhow::Result<Self> {
-        let (width, height) = (builder.texture.width(), builder.texture.height());
-        let bytes = builder.texture.into_vec();
-        let luma_bytes = builder.luma_texture.into_vec();
+        let (width, height) = (atlas.texture.width(), atlas.texture.height());
+        let bytes = atlas.texture.into_vec();
+        let luma_bytes = atlas.luma_texture.into_vec();
         let image = VulkanImage::new(
-            &memory_allocator,
+            memory_allocator,
             &VulkanImageCreateInfo {
                 image_type: VulkanImageType::Dim2d,
                 format: VulkanFormat::R8G8B8A8_SRGB,
@@ -2567,7 +2584,7 @@ impl TextureAtlas {
         )
         .context("Failed while creating atlas image")?;
         let luma_image = VulkanImage::new(
-            &memory_allocator,
+            memory_allocator,
             &VulkanImageCreateInfo {
                 image_type: VulkanImageType::Dim2d,
                 format: VulkanFormat::R8_UNORM,
@@ -2583,7 +2600,7 @@ impl TextureAtlas {
         )
         .context("Failed while creating atlas luma image")?;
         let staging_buffer = VulkanBuffer::from_iter(
-            &memory_allocator,
+            memory_allocator,
             &VulkanBufferCreateInfo {
                 usage: VulkanBufferUsage::TRANSFER_SRC,
                 ..Default::default()
@@ -2597,7 +2614,7 @@ impl TextureAtlas {
         )
         .context("Error while creating atlas pixel staging buffer")?;
         let luma_staging_buffer = VulkanBuffer::from_iter(
-            &memory_allocator,
+            memory_allocator,
             &VulkanBufferCreateInfo {
                 usage: VulkanBufferUsage::TRANSFER_SRC,
                 ..Default::default()

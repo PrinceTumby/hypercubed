@@ -1,5 +1,6 @@
 use super::PluginMessage;
 use super::prelude::*;
+use crate::portable_prelude::*;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
 use uuid::Uuid;
 
@@ -29,7 +30,7 @@ pub struct RegistryData {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct RegistryEntry {
     pub id: Identifier,
-    pub data: Option<NetworkNbtCompound>,
+    pub data: Option<NetworkNbt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

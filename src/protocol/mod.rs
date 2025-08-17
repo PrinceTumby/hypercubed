@@ -6,6 +6,8 @@ pub mod handshaking;
 pub mod login;
 pub mod play;
 pub mod status;
+#[cfg(feature = "protocol_verbose")]
+pub mod verbose;
 
 #[macro_use]
 pub mod prelude {
@@ -18,6 +20,8 @@ pub mod prelude {
     pub use parsing::*;
     pub type IResult<'a, O> = Result<(InputSpan<'a>, O), nom::Err<IErr<'a>>>;
 
+    pub use nom::error::context as nom_context;
+
     #[cfg(not(feature = "protocol_verbose"))]
     mod parsing {
         // pub type InputSpan<'a> = &'a [u8];
@@ -27,6 +31,7 @@ pub mod prelude {
 
     #[cfg(feature = "protocol_verbose")]
     mod parsing {
+        use portable_std::Vec;
         use nom_supreme::error::GenericErrorTree;
         use std::error::Error;
 
@@ -51,19 +56,17 @@ pub mod prelude {
 pub const PROTOCOL_VERSION: i32 = 767;
 pub const OFFLINE_PLAYER_NAMESPACE: Uuid = uuid!("071e6668-28ee-39de-8f51-f257ec5f77a9");
 
-use bytebuffer::ByteBuffer;
+use portable_std::VecDeque;
+use portable_std::io::{self, prelude::*};
+use crate::portable_prelude::*;
+use crate::platform::net::TcpStream;
+use portable_std::sync::Mutex;
 use cfb8::cipher::{BlockDecryptMut, BlockEncryptMut};
-use flate2::Compression;
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use nom::{Compare, InputLength, InputTake};
+use miniz_oxide::deflate::{CompressionLevel, compress_to_vec_zlib};
+use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 #[cfg(feature = "protocol_verbose")]
 use nom_supreme::final_parser::final_parser;
 use prelude::*;
-use std::collections::VecDeque;
-use std::io::prelude::*;
-use std::net::TcpStream;
-use std::sync::Mutex;
 use uuid::{Uuid, uuid};
 
 pub trait Deserialize: Sized {
@@ -72,68 +75,50 @@ pub trait Deserialize: Sized {
 
 pub trait Serialize: Sized {
     // TODO: Come up with better names for these
-    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()>;
+    fn serialize_to<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
 
-    fn serialize_into<O: std::io::Write>(self, output: &mut O) -> std::io::Result<()> {
+    fn serialize_into<O: io::Write>(self, output: &mut O) -> io::Result<()> {
         self.serialize_to(output)
     }
 }
 
-pub fn write_uncompressed_buffer<W: std::io::Write>(
-    buffer: &mut ByteBuffer,
-    writer: &mut W,
-) -> std::io::Result<()> {
+pub fn write_uncompressed_buffer<W: io::Write>(buffer: &[u8], writer: &mut W) -> io::Result<()> {
     // Uncompressed packet format, write packet length followed by packet
-    VarInt(
-        buffer
-            .len()
-            .try_into()
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
-    )
-    .serialize_into(writer)?;
-    std::io::copy(buffer, writer)?;
-    Ok(())
+    VarInt(buffer.len().try_into().map_err(io::Error::other)?).serialize_into(writer)?;
+    writer.write_all(buffer)
 }
 
-pub fn write_compressed_buffer<W: std::io::Write>(
-    buffer: &mut ByteBuffer,
+pub fn write_compressed_buffer<W: io::Write>(
+    buffer: &[u8],
     writer: &mut W,
     compression_threshold: usize,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     if buffer.len() >= compression_threshold {
         // Compressed packet format, write compressed packet length + length of
         // uncompressed packet length varint, then uncompressed packet length, then the
         // compressed packet
-        let mut compressed_buffer = ByteBuffer::new();
-        VarInt(
-            buffer
-                .len()
-                .try_into()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
-        )
-        .serialize_into(&mut compressed_buffer)?;
-        let mut compressor = ZlibEncoder::new(buffer, Compression::fast());
-        std::io::copy(&mut compressor, &mut compressed_buffer)?;
+        let mut compressed_buffer = Vec::new();
+        VarInt(buffer.len().try_into().map_err(io::Error::other)?)
+            .serialize_into(&mut compressed_buffer)?;
+        compressed_buffer.extend(compress_to_vec_zlib(
+            buffer,
+            CompressionLevel::BestSpeed as u8,
+        ));
         VarInt(
             compressed_buffer
                 .len()
                 .try_into()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
+                .map_err(io::Error::other)?,
         )
         .serialize_into(writer)?;
-        std::io::copy(&mut compressed_buffer, writer)?;
+        writer.write_all(&compressed_buffer)?;
     } else {
         // Compression enabled but packet below threshold, write packet_length + 1 (for
         // size of 0 varint), then write 0 for the uncompressed length, then the
         // uncompressed packet
-        VarInt(
-            (buffer.len() + 1)
-                .try_into()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?,
-        )
-        .serialize_into(writer)?;
+        VarInt((buffer.len() + 1).try_into().map_err(io::Error::other)?).serialize_into(writer)?;
         VarInt(0).serialize_into(writer)?;
-        std::io::copy(buffer, writer)?;
+        writer.write_all(buffer)?;
     }
     Ok(())
 }
@@ -141,48 +126,47 @@ pub fn write_compressed_buffer<W: std::io::Write>(
 pub trait PacketWrite: Serialize {
     const ID: i32;
 
-    fn write_packet_to<W: std::io::Write>(
+    fn write_packet_to<W: io::Write>(
         &self,
         writer: &mut W,
         compression_threshold: Option<usize>,
-    ) -> std::io::Result<()> {
-        let mut buffer = ByteBuffer::new();
+    ) -> io::Result<()> {
+        let mut buffer = Vec::new();
         VarInt(Self::ID).serialize_to(&mut buffer)?;
         self.serialize_to(&mut buffer)?;
         match compression_threshold {
-            None => write_uncompressed_buffer(&mut buffer, writer),
-            Some(threshold) => write_compressed_buffer(&mut buffer, writer, threshold),
+            None => write_uncompressed_buffer(&buffer, writer),
+            Some(threshold) => write_compressed_buffer(&buffer, writer, threshold),
         }
     }
 
-    fn write_packet_into<W: std::io::Write>(
+    fn write_packet_into<W: io::Write>(
         self,
         writer: &mut W,
         compression_threshold: Option<usize>,
-    ) -> std::io::Result<()> {
-        let mut buffer = ByteBuffer::new();
+    ) -> io::Result<()> {
+        let mut buffer = Vec::new();
         VarInt(Self::ID).serialize_to(&mut buffer)?;
         self.serialize_into(&mut buffer)?;
         match compression_threshold {
-            None => write_uncompressed_buffer(&mut buffer, writer),
-            Some(threshold) => write_compressed_buffer(&mut buffer, writer, threshold),
+            None => write_uncompressed_buffer(&buffer, writer),
+            Some(threshold) => write_compressed_buffer(&buffer, writer, threshold),
         }
     }
 }
 
-pub trait PacketRead: Deserialize + std::fmt::Debug {
-    fn read_from<R: std::io::Read>(
+pub trait PacketRead: Deserialize + core::fmt::Debug {
+    fn read_from<R: io::Read>(
         compression_threshold: Option<usize>,
         reader: &mut R,
-    ) -> std::io::Result<Self> {
+    ) -> io::Result<Self> {
         match compression_threshold {
             None => Self::read_uncompressed_from(reader),
             Some(_) => Self::read_compressed_from(reader),
         }
     }
 
-    // TODO: Convert asserts into useful errors, fix data_left check using all_consuming
-    fn read_uncompressed_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+    fn read_uncompressed_from<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let (_, packet_length) = read_var_int_as_usize(reader)?;
         let mut raw_packet = vec![0; packet_length];
         reader.read_exact(&mut raw_packet)?;
@@ -190,16 +174,14 @@ pub trait PacketRead: Deserialize + std::fmt::Debug {
         {
             let (data_left, packet) =
                 Self::deserialize(InputSpan::new(&raw_packet)).map_err(|err| {
+                    #[cfg(feature = "std")]
                     if let Err(err) = std::fs::write("packet.bin", &raw_packet) {
                         eprintln!("Failed to write packet to file: {err}");
                     }
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "failed to deserialise input {}: {err}",
-                            ByteView(InputSpan::new(&raw_packet))
-                        ),
-                    )
+                    io::Error::other(format!(
+                        "failed to deserialise input {}: {err}",
+                        ByteView(InputSpan::new(&raw_packet))
+                    ))
                 })?;
             assert_eq!(data_left.as_ref(), &[] as &[u8]);
             Ok(packet)
@@ -212,14 +194,14 @@ pub trait PacketRead: Deserialize + std::fmt::Debug {
                         eprintln!("Failed to write packet to file: {err}");
                     }
                     let err = convert_error_tree(err);
-                    std::io::Error::new(std::io::ErrorKind::Other, format!("{err}"))
+                    io::Error::new(io::ErrorKind::Other, format!("{err}"))
                 },
             );
             result
         }
     }
 
-    fn read_compressed_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+    fn read_compressed_from<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let (_, packet_length) = read_var_int_as_usize(reader)?;
         let (data_length_length, data_length) = read_var_int_as_usize(reader)?;
         let uncompressed_packet = match data_length {
@@ -232,26 +214,22 @@ pub trait PacketRead: Deserialize + std::fmt::Debug {
             _ => {
                 let mut compressed_packet = vec![0; packet_length - data_length_length];
                 reader.read_exact(&mut compressed_packet)?;
-                let mut decompressor = ZlibDecoder::new(compressed_packet.as_slice());
-                let mut raw_packet = vec![0; data_length];
-                decompressor.read_exact(&mut raw_packet)?;
-                raw_packet
+                decompress_to_vec_zlib_with_limit(&compressed_packet, data_length)
+                    .map_err(|err| io::Error::other(format!("{err}")))?
             }
         };
         #[cfg(not(feature = "protocol_verbose"))]
         {
             let (data_left, packet) = Self::deserialize(InputSpan::new(&uncompressed_packet))
                 .map_err(|err| {
+                    #[cfg(feature = "std")]
                     if let Err(err) = std::fs::write("packet.bin", &uncompressed_packet) {
                         eprintln!("Failed to write packet to file: {err}");
                     }
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "failed to deserialise input {}: {err}",
-                            ByteView(InputSpan::new(&uncompressed_packet)),
-                        ),
-                    )
+                    io::Error::other(format!(
+                        "failed to deserialise input {}: {err}",
+                        ByteView(InputSpan::new(&uncompressed_packet)),
+                    ))
                 })?;
             assert_eq!(
                 data_left.as_ref(),
@@ -268,15 +246,15 @@ pub trait PacketRead: Deserialize + std::fmt::Debug {
                         eprintln!("Failed to write packet to file: {err}");
                     }
                     let err = convert_error_tree(err);
-                    std::io::Error::new(std::io::ErrorKind::Other, format!("{err}"))
+                    io::Error::new(io::ErrorKind::Other, format!("{err}"))
                 });
             result
         }
     }
 }
 
-// FIXME This isn't correct, should read in i32 and check it can convert to usize
-pub fn read_var_int_as_usize<R: std::io::Read>(reader: &mut R) -> std::io::Result<(usize, usize)> {
+// FIXME: This isn't correct, should read in i32 and check it can convert to usize
+pub fn read_var_int_as_usize<R: io::Read>(reader: &mut R) -> io::Result<(usize, usize)> {
     let mut value: usize = 0;
     let mut position = 0;
     let mut bytes_read = 0;
@@ -294,26 +272,6 @@ pub fn read_var_int_as_usize<R: std::io::Read>(reader: &mut R) -> std::io::Resul
     Ok((bytes_read, value))
 }
 
-#[cfg(feature = "protocol_verbose")]
-fn convert_error_tree(error: ErrorTree) -> ByteViewErrorTree {
-    match error {
-        ErrorTree::Base { location, kind } => ByteViewErrorTree::Base {
-            location: location.into(),
-            kind,
-        },
-        ErrorTree::Stack { base, contexts } => ByteViewErrorTree::Stack {
-            base: Box::new(convert_error_tree(*base)),
-            contexts: contexts
-                .into_iter()
-                .map(|(location, stack_context)| (location.into(), stack_context))
-                .collect(),
-        },
-        ErrorTree::Alt(errors) => {
-            ByteViewErrorTree::Alt(errors.into_iter().map(convert_error_tree).collect())
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ByteView<'a>(pub InputSpan<'a>);
 
@@ -323,20 +281,51 @@ impl<'a> From<InputSpan<'a>> for ByteView<'a> {
     }
 }
 
-impl InputTake for ByteView<'_> {
-    fn take(&self, count: usize) -> Self {
-        Self(self.0.take(count))
+impl<'a> nom::Input for ByteView<'a> {
+    type Item = <&'a [u8] as nom::Input>::Item;
+    type Iter = <&'a [u8] as nom::Input>::Iter;
+    type IterIndices = <&'a [u8] as nom::Input>::IterIndices;
+
+    fn input_len(&self) -> usize {
+        self.0.input_len()
     }
 
-    fn take_split(&self, count: usize) -> (Self, Self) {
-        let (slice_1, slice_2) = self.0.take_split(count);
+    fn take(&self, index: usize) -> Self {
+        Self(self.0.take(index))
+    }
+
+    fn take_from(&self, index: usize) -> Self {
+        Self(self.0.take_from(index))
+    }
+
+    fn take_split(&self, index: usize) -> (Self, Self) {
+        let (slice_1, slice_2) = self.0.take_split(index);
         (Self(slice_1), Self(slice_2))
+    }
+
+    fn position<P>(&self, predicate: P) -> Option<usize>
+    where
+        P: Fn(Self::Item) -> bool,
+    {
+        self.0.position(predicate)
+    }
+
+    fn iter_elements(&self) -> Self::Iter {
+        self.0.iter_elements()
+    }
+
+    fn iter_indices(&self) -> Self::IterIndices {
+        self.0.iter_indices()
+    }
+
+    fn slice_index(&self, count: usize) -> Result<usize, nom::Needed> {
+        self.0.slice_index(count)
     }
 }
 
 macro_rules! impl_nom_compare {
     (<$($impl_generics:tt),+>, $T:ty, $target:ty) => {
-        impl<$($impl_generics),+> Compare<$T> for $target {
+        impl<$($impl_generics),+> nom::Compare<$T> for $target {
             fn compare(&self, t: $T) -> nom::CompareResult {
                 self.0.compare(t)
             }
@@ -347,7 +336,7 @@ macro_rules! impl_nom_compare {
         }
     };
     ($T:ty, $target:ty) => {
-        impl Compare<$T> for $target {
+        impl nom::Compare<$T> for $target {
             fn compare(&self, t: $T) -> nom::CompareResult {
                 self.0.compare(t)
             }
@@ -372,14 +361,8 @@ impl_nom_compare!([u8; 8], ByteView<'_>);
 impl_nom_compare!([u8; 9], ByteView<'_>);
 impl_nom_compare!([u8; 10], ByteView<'_>);
 
-impl InputLength for ByteView<'_> {
-    fn input_len(&self) -> usize {
-        self.0.input_len()
-    }
-}
-
-impl std::fmt::Display for ByteView<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ByteView<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         const CHUNK_SIZE: usize = 16;
         f.write_str("Bytes[\n")?;
         for (i, chunk) in self.0.chunks(CHUNK_SIZE).enumerate() {
@@ -403,7 +386,7 @@ impl std::fmt::Display for ByteView<'_> {
                 };
             }
             f.write_str("  ")?;
-            f.write_str(std::str::from_utf8(rendered_chunk.as_slice()).unwrap())?;
+            f.write_str(core::str::from_utf8(rendered_chunk.as_slice()).unwrap())?;
             f.write_str("  ")?;
             for character in text_chunk {
                 f.write_fmt(format_args!("{character}"))?;
@@ -434,7 +417,7 @@ impl Deserialize for PluginMessage {
     }
 }
 
-pub fn request_status(protocol_version: i32, address: &str, port: u16) -> std::io::Result<String> {
+pub fn request_status(protocol_version: i32, address: &str, port: u16) -> io::Result<String> {
     use status::Response;
     let mut stream = TcpStream::connect(format!("{address}:{port}"))?;
     handshaking::Handshake {
@@ -449,11 +432,9 @@ pub fn request_status(protocol_version: i32, address: &str, port: u16) -> std::i
     match Response::read_uncompressed_from(&mut stream)? {
         Response::Status(status) => Ok(status),
         Response::ErrorDisconnect { reason } => {
-            Err(std::io::Error::other(format!("Error Disconnect: {reason}")))
+            Err(io::Error::other(format!("Error Disconnect: {reason}")))
         }
-        unknown => Err(std::io::Error::other(format!(
-            "Unknown response: {unknown:?}"
-        ))),
+        unknown => Err(io::Error::other(format!("Unknown response: {unknown:?}"))),
     }
 }
 
@@ -483,8 +464,8 @@ struct EncryptedTcpStreamReader<'a> {
     decryptor: &'a mut Aes128Cfb8Dec,
 }
 
-impl<'a> Read for EncryptedTcpStreamReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl<'a> io::Read for EncryptedTcpStreamReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let bytes_read = self.tcp_stream.read(buf)?;
         for i in 0..bytes_read {
             self.decryptor.decrypt_block_mut((&mut buf[i..=i]).into());
@@ -499,8 +480,8 @@ struct EncryptedTcpStreamWriter<'a> {
     encryption_buffer: Vec<u8>,
 }
 
-impl<'a> Write for EncryptedTcpStreamWriter<'a> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl<'a> io::Write for EncryptedTcpStreamWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.encryption_buffer.extend_from_slice(buf);
         for i in 0..self.encryption_buffer.len() {
             self.encryptor
@@ -511,7 +492,7 @@ impl<'a> Write for EncryptedTcpStreamWriter<'a> {
         write_result.map(|()| buf.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         self.tcp_stream.flush()
     }
 }
@@ -536,7 +517,7 @@ impl PlayConnection {
         }
     }
 
-    pub fn read_packet(&self) -> std::io::Result<play::Clientbound> {
+    pub fn read_packet(&self) -> io::Result<play::Clientbound> {
         use play::Clientbound;
         use prelude::*;
         let mut read_state_lock = self.read_state.lock().unwrap();
@@ -546,13 +527,13 @@ impl PlayConnection {
         let inside_bundle = &mut read_state.inside_bundle;
         let mut decrypting_reader;
         let mut read_stream = match read_state.decryptor.as_mut() {
-            None => &mut &self.stream as &mut dyn Read,
+            None => &mut &self.stream as &mut dyn io::Read,
             Some(decryptor) => {
                 decrypting_reader = EncryptedTcpStreamReader {
                     tcp_stream: &self.stream,
                     decryptor,
                 };
-                &mut decrypting_reader as &mut dyn Read
+                &mut decrypting_reader as &mut dyn io::Read
             }
         };
         loop {
@@ -579,25 +560,25 @@ impl PlayConnection {
         }
     }
 
-    pub fn send_packet<P: PacketWrite>(&self, packet: P) -> std::io::Result<()> {
+    pub fn send_packet<P: PacketWrite>(&self, packet: P) -> io::Result<()> {
         let mut write_state_lock = self.write_state.lock().unwrap();
         let write_state = &mut *write_state_lock;
         let mut encrypting_writer;
         let mut write_stream = match write_state.encryptor.as_mut() {
-            None => &mut &self.stream as &mut dyn Write,
+            None => &mut &self.stream as &mut dyn io::Write,
             Some(encryptor) => {
                 encrypting_writer = EncryptedTcpStreamWriter {
                     tcp_stream: &self.stream,
                     encryptor,
                     encryption_buffer: Vec::new(),
                 };
-                &mut encrypting_writer as &mut dyn Write
+                &mut encrypting_writer as &mut dyn io::Write
             }
         };
         packet.write_packet_into(&mut write_stream, self.compression_threshold)
     }
 
-    pub fn flush(&self) -> std::io::Result<()> {
+    pub fn flush(&self) -> io::Result<()> {
         (&mut &self.stream).flush()
     }
 }

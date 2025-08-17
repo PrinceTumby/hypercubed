@@ -1,10 +1,10 @@
+use portable_std::FastHashMap;
+use crate::portable_prelude::*;
 use crate::protocol::configuration::Property as GameProfileProperty;
 use crate::protocol::prelude::*;
-use ahash::AHashMap;
 use nom::Parser;
 use nom::multi::count;
-use nom::sequence::{pair, tuple};
-use nom_supreme::ParserExt;
+use nom::sequence::pair;
 use protocol_derive::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -54,15 +54,17 @@ pub struct ShapedRecipe {
 
 impl Deserialize for ShapedRecipe {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        let (rest, (group, category, VarInt(width), VarInt(height))) = tuple((
+        let (rest, (group, category, VarInt(width), VarInt(height))) = (
             String::deserialize,
             Category::deserialize,
             VarInt::deserialize,
             VarInt::deserialize,
-        ))(input)?;
-        let (rest, ingredients) = count(Ingredient::deserialize, (width * height) as usize)(rest)?;
+        )
+            .parse(input)?;
+        let (rest, ingredients) =
+            count(Ingredient::deserialize, (width * height) as usize).parse(rest)?;
         let (rest, (result, show_notification)) =
-            tuple((Slot::deserialize, bool::deserialize))(rest)?;
+            (Slot::deserialize, bool::deserialize).parse(rest)?;
         Ok((
             rest,
             Self {
@@ -143,12 +145,13 @@ pub struct Slot {
 
 impl Deserialize for Slot {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        let (rest, VarInt(count)) = VarInt::deserialize.context("Slot::count").parse(input)?;
+        let (rest, VarInt(count)) = nom_context("Slot::count", VarInt::deserialize).parse(input)?;
         let count: u32 = count.try_into().unwrap();
         match count {
             0 => Ok((rest, Self { count, info: None })),
             _ => {
-                let (rest, slot_info) = SlotInfo::deserialize.context("Slot::info").parse(rest)?;
+                let (rest, slot_info) =
+                    nom_context("Slot::info", SlotInfo::deserialize).parse(rest)?;
                 Ok((
                     rest,
                     Self {
@@ -172,18 +175,22 @@ impl Deserialize for SlotInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         fn components_flat_map<'a>(
             (id, num_add_components, num_remove_components): (VarInt, VarInt, VarInt),
-        ) -> impl Parser<InputSpan<'a>, SlotInfo, IErr<'a>> {
+        ) -> impl Parser<InputSpan<'a>, Output = SlotInfo, Error = IErr<'a>> {
             pair(
-                count(
-                    Component::deserialize,
-                    num_add_components.0.try_into().unwrap(),
-                )
-                .context("Component::add_components"),
-                count(
-                    VarInt::deserialize,
-                    num_remove_components.0.try_into().unwrap(),
-                )
-                .context("Component::remove_components"),
+                nom_context(
+                    "Component::add_components",
+                    count(
+                        Component::deserialize,
+                        num_add_components.0.try_into().unwrap(),
+                    ),
+                ),
+                nom_context(
+                    "Component::remove_components",
+                    count(
+                        VarInt::deserialize,
+                        num_remove_components.0.try_into().unwrap(),
+                    ),
+                ),
             )
             .map(move |(add_components, remove_components)| SlotInfo {
                 id,
@@ -191,13 +198,15 @@ impl Deserialize for SlotInfo {
                 remove_components,
             })
         }
-        tuple((
-            VarInt::deserialize.context("SlotInfo::id"),
-            VarInt::deserialize.context("SlotInfo::num_add_components"),
-            VarInt::deserialize.context("SlotInfo::num_remove_components"),
-        ))
+        nom_context(
+            "SlotInfo",
+            (
+                nom_context("SlotInfo::id", VarInt::deserialize),
+                nom_context("SlotInfo::num_add_components", VarInt::deserialize),
+                nom_context("SlotInfo::num_remove_components", VarInt::deserialize),
+            ),
+        )
         .flat_map(components_flat_map)
-        .context("SlotInfo")
         .parse(input)
     }
 }
@@ -205,7 +214,7 @@ impl Deserialize for SlotInfo {
 #[derive(Clone, Debug, Deserialize)]
 #[repr(i32)]
 pub enum Component {
-    CustomData(NetworkNbtCompound) = 0,
+    CustomData(NetworkNbt) = 0,
     MaxStackSize(VarInt) = 1,
     MaxDamage(VarInt) = 2,
     Damage(VarInt) = 3,
@@ -265,7 +274,7 @@ pub enum Component {
     } = 24,
     MapColor([u8; 4]) = 25,
     MapId(VarInt) = 26,
-    MapDecorations(NetworkNbtCompound) = 27,
+    MapDecorations(NetworkNbt) = 27,
     MapPostProcessing {
         _ty: VarInt,
     } = 28,
@@ -291,14 +300,14 @@ pub enum Component {
         pattern: TrimPattern,
         show_in_tooltip: bool,
     } = 35,
-    DebugStickState(NetworkNbtCompound) = 36,
-    EntityData(NetworkNbtCompound) = 37,
-    BucketEntityData(NetworkNbtCompound) = 38,
-    BlockEntityData(NetworkNbtCompound) = 39,
+    DebugStickState(NetworkNbt) = 36,
+    EntityData(NetworkNbt) = 37,
+    BucketEntityData(NetworkNbt) = 38,
+    BlockEntityData(NetworkNbt) = 39,
     Instrument(InstrumentInfo) = 40,
     OminousBottleAmplifier(VarInt) = 41,
     JukeboxPlayable(JukeboxSong) = 42,
-    RecipeUnlocks(NetworkNbtCompound) = 43,
+    RecipeUnlocks(NetworkNbt) = 43,
     LodestoneTracker {
         global_position: GlobalPosition,
         is_tracked: bool,
@@ -319,11 +328,11 @@ pub enum Component {
     PotDecorations(Vec<VarInt>) = 51,
     ContainerItems(Vec<Slot>) = 52,
     BlockState {
-        properties: AHashMap<String, String>,
+        properties: FastHashMap<String, String>,
     } = 53,
     HiveBees(Vec<HiveBee>) = 54,
-    ContainerLock(NetworkNbtCompound) = 55,
-    ContainerLoot(NetworkNbtCompound) = 56,
+    ContainerLock(NetworkNbt) = 55,
+    ContainerLoot(NetworkNbt) = 56,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -344,7 +353,7 @@ pub struct ItemEnchantment {
 pub struct BlockPredicate {
     pub blocks: Option<BlockPredicateBlockSet>,
     pub properties: Option<Vec<BlockPredicateProperty>>,
-    pub nbt_data: Option<NetworkNbtCompound>,
+    pub nbt_data: Option<NetworkNbt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -357,16 +366,17 @@ impl Deserialize for BlockPredicateBlockSet {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, type_and_len) = VarInt::deserialize(input)?;
         match type_and_len.0 {
-            0 => Identifier::deserialize
+            0 => nom_context("BlockPredicateBlockSet", Identifier::deserialize)
                 .map(Self::Tagged)
-                .context("BlockPredicateBlockSet")
                 .parse(rest),
             len => {
                 let num_ids: usize = (len - 1).try_into().unwrap();
-                count(VarInt::deserialize, num_ids)
-                    .map(Self::Direct)
-                    .context("BlockPredicateBlockSet")
-                    .parse(rest)
+                nom_context(
+                    "BlockPredicateBlockSet",
+                    count(VarInt::deserialize, num_ids),
+                )
+                .map(Self::Direct)
+                .parse(rest)
             }
         }
     }
@@ -474,26 +484,26 @@ impl Deserialize for TrimMaterial {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, reg_id) = VarInt::deserialize(input)?;
         match reg_id.0 {
-            0 => <(
-                String,
-                VarInt,
-                f32,
-                Vec<TrimMaterialOverride>,
-                TextComponent,
-            )>::deserialize
-                .map(
-                    |(asset_name, ingredient, item_model_index, overrides, description)| {
-                        Self::Direct {
-                            asset_name,
-                            ingredient,
-                            item_model_index,
-                            overrides,
-                            description,
-                        }
-                    },
-                )
-                .context("TrimMaterial")
-                .parse(rest),
+            0 => nom_context(
+                "TrimMaterial",
+                <(
+                    String,
+                    VarInt,
+                    f32,
+                    Vec<TrimMaterialOverride>,
+                    TextComponent,
+                )>::deserialize,
+            )
+            .map(
+                |(asset_name, ingredient, item_model_index, overrides, description)| Self::Direct {
+                    asset_name,
+                    ingredient,
+                    item_model_index,
+                    overrides,
+                    description,
+                },
+            )
+            .parse(rest),
             registry_id => Ok((rest, Self::Registry(VarInt(registry_id - 1)))),
         }
     }
@@ -520,17 +530,19 @@ impl Deserialize for TrimPattern {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, reg_id) = VarInt::deserialize(input)?;
         match reg_id.0 {
-            0 => <(String, VarInt, TextComponent, bool)>::deserialize
-                .map(
-                    |(asset_name, template_item, description, is_decal)| Self::Direct {
-                        asset_name,
-                        template_item,
-                        description,
-                        is_decal,
-                    },
-                )
-                .context("TrimPattern")
-                .parse(rest),
+            0 => nom_context(
+                "TrimPattern",
+                <(String, VarInt, TextComponent, bool)>::deserialize,
+            )
+            .map(
+                |(asset_name, template_item, description, is_decal)| Self::Direct {
+                    asset_name,
+                    template_item,
+                    description,
+                    is_decal,
+                },
+            )
+            .parse(rest),
             registry_id => Ok((rest, Self::Registry(VarInt(registry_id - 1)))),
         }
     }
@@ -550,13 +562,12 @@ impl Deserialize for InstrumentInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, reg_id) = VarInt::deserialize(input)?;
         match reg_id.0 {
-            0 => <(SoundEvent, f32, f32)>::deserialize
+            0 => nom_context("InstrumentInfo", <(SoundEvent, f32, f32)>::deserialize)
                 .map(|(sound_event, use_duration, range)| Self::Direct {
                     sound_event,
                     use_duration,
                     range,
                 })
-                .context("InstrumentInfo")
                 .parse(rest),
             registry_id => Ok((rest, Self::Registry(VarInt(registry_id - 1)))),
         }
@@ -576,9 +587,8 @@ impl Deserialize for SoundEvent {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, reg_id) = VarInt::deserialize(input)?;
         match reg_id.0 {
-            0 => <(Identifier, Option<f32>)>::deserialize
+            0 => nom_context("SoundEvent", <(Identifier, Option<f32>)>::deserialize)
                 .map(|(name, fixed_range)| Self::Direct { name, fixed_range })
-                .context("SoundEvent")
                 .parse(rest),
             registry_id => Ok((rest, Self::Registry(VarInt(registry_id - 1)))),
         }
@@ -607,19 +617,19 @@ impl Deserialize for JukeboxSongInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, reg_id) = VarInt::deserialize(input)?;
         match reg_id.0 {
-            0 => <(SoundEvent, TextComponent, f32, u8)>::deserialize
-                .map(
-                    |(sound_event, description, duration, comparator_output_strength)| {
-                        Self::Direct {
-                            sound_event,
-                            description,
-                            duration,
-                            comparator_output_strength,
-                        }
-                    },
-                )
-                .context("JukeboxSongInfo")
-                .parse(rest),
+            0 => nom_context(
+                "JukeboxSongInfo",
+                <(SoundEvent, TextComponent, f32, u8)>::deserialize,
+            )
+            .map(
+                |(sound_event, description, duration, comparator_output_strength)| Self::Direct {
+                    sound_event,
+                    description,
+                    duration,
+                    comparator_output_strength,
+                },
+            )
+            .parse(rest),
             registry_id => Ok((rest, Self::Registry(VarInt(registry_id - 1)))),
         }
     }
@@ -653,13 +663,15 @@ impl Deserialize for BannerPatternLayerInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, reg_id) = VarInt::deserialize(input)?;
         match reg_id.0 {
-            0 => <(Identifier, String)>::deserialize
-                .map(|(asset_id, translation_key)| Self::Direct {
-                    asset_id,
-                    translation_key,
-                })
-                .context("BannerPatternLayerInfo")
-                .parse(rest),
+            0 => nom_context(
+                "BannerPatternLayerInfo",
+                <(Identifier, String)>::deserialize,
+            )
+            .map(|(asset_id, translation_key)| Self::Direct {
+                asset_id,
+                translation_key,
+            })
+            .parse(rest),
             registry_id => Ok((rest, Self::Registry(VarInt(registry_id - 1)))),
         }
     }
@@ -688,7 +700,7 @@ pub enum DyeColor {
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct HiveBee {
-    pub entity_data: NetworkNbtCompound,
+    pub entity_data: NetworkNbt,
     pub ticks_in_hive: VarInt,
     pub min_ticks_in_hive: VarInt,
 }

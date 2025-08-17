@@ -1,27 +1,38 @@
 pub mod blockstate;
 pub mod model;
 
-use super::{Identifier, RegistryData, RegistryIndex, texture};
-use ahash::AHashSet;
+use super::{Identifier, RegistryData, RegistryIndex};
+use model::ModelRegistry;
+use portable_std::prelude::*;
+use portable_std::{Atom, FastHashSet};
 use anyhow::{Context, anyhow};
-use blockstate::{
-    BlockOpacity, BlockstateInfo, BlockstateInfoModifier, CollisionInfo, CustomPropertyType,
-};
-use model::ModelCache;
+use blockstate::{BlockOpacity, BlockstateInfo, CollisionInfo};
 use serde::Deserialize;
-use serde_repr::Deserialize_repr;
-use string_cache::DefaultAtom as Atom;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
-#[derive(Debug, Default)]
+#[cfg(feature = "std")]
+use std_imports::*;
+#[cfg(feature = "std")]
+mod std_imports {
+    pub use super::super::texture;
+    pub use super::blockstate::{BlockstateInfoModifier, CustomPropertyType};
+    pub use super::model::ModelRegistryBuilder;
+}
+
+#[derive(Debug, Default, bincode::Encode, bincode::Decode)]
 pub struct Registry {
     data: RegistryData<Info>,
     global_palette: Vec<blockstate::Blockstate>,
-    air_blockstates: AHashSet<GlobalPaletteIndex>,
-    light_emitting_blockstates: AHashSet<GlobalPaletteIndex>,
+    #[bincode(with_serde)]
+    air_blockstates: FastHashSet<GlobalPaletteIndex>,
+    #[bincode(with_serde)]
+    light_emitting_blockstates: FastHashSet<GlobalPaletteIndex>,
 }
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct GlobalPaletteIndex(u16);
 
 impl GlobalPaletteIndex {
@@ -75,8 +86,8 @@ impl Registry {
         Self {
             data: RegistryData::new(),
             global_palette: Vec::new(),
-            air_blockstates: AHashSet::new(),
-            light_emitting_blockstates: AHashSet::new(),
+            air_blockstates: FastHashSet::new(),
+            light_emitting_blockstates: FastHashSet::new(),
         }
     }
 
@@ -98,15 +109,16 @@ impl Registry {
         self.air_blockstates.contains(&global_palette_index)
     }
 
-    pub fn light_emitting_blockstates(&self) -> &AHashSet<GlobalPaletteIndex> {
+    pub fn light_emitting_blockstates(&self) -> &FastHashSet<GlobalPaletteIndex> {
         &self.light_emitting_blockstates
     }
 
     /// Panics if an entry is already registered with `identifier`.
     #[expect(clippy::too_many_arguments)]
+    #[cfg(feature = "std")]
     pub(super) fn register<'a, I, II>(
         &mut self,
-        model_cache: &mut ModelCache,
+        model_cache: &mut ModelRegistryBuilder,
         texture_atlas: &mut texture::AtlasBuilder,
         identifier: Identifier,
         custom_variant_properties: Option<&'a [(&'a str, CustomPropertyType)]>,
@@ -118,7 +130,8 @@ impl Registry {
     ) -> anyhow::Result<RegistryIndex>
     where
         II: IntoIterator<IntoIter = I>,
-        I: Clone + std::iter::Iterator<Item = (BlockstateInfoModifier, &'a [(&'a Atom, &'a Atom)])>,
+        I: Clone
+            + core::iter::Iterator<Item = (BlockstateInfoModifier, &'a [(&'a Atom, &'a Atom)])>,
     {
         let block_index = self.data.register_default(identifier.clone());
         let mut blockstates = blockstate::load_blockstates(
@@ -211,9 +224,10 @@ impl Registry {
     /// `skip_properties` is a list of property names from `properties` that do not appear in the
     /// blockstates file.
     #[expect(clippy::too_many_arguments)]
+    #[cfg(feature = "std")]
     pub(super) fn register_full_custom<'a, I, II>(
         &mut self,
-        model_cache: &mut ModelCache,
+        model_cache: &mut ModelRegistryBuilder,
         texture_atlas: &mut texture::AtlasBuilder,
         identifier: Identifier,
         custom_properties: &'a [(&'a str, CustomPropertyType)],
@@ -225,7 +239,8 @@ impl Registry {
     ) -> anyhow::Result<RegistryIndex>
     where
         II: IntoIterator<IntoIter = I>,
-        I: Clone + std::iter::Iterator<Item = (BlockstateInfoModifier, &'a [(&'a Atom, &'a Atom)])>,
+        I: Clone
+            + core::iter::Iterator<Item = (BlockstateInfoModifier, &'a [(&'a Atom, &'a Atom)])>,
     {
         let block_index = self.data.register_default(identifier.clone());
         let mut blockstates = blockstate::load_full_custom_blockstates(
@@ -301,9 +316,10 @@ impl Registry {
         Ok(block_index)
     }
 
+    #[cfg(feature = "std")]
     pub(super) fn register_liquid<'a, I, II>(
         &mut self,
-        model_cache: &mut ModelCache,
+        model_cache: &mut ModelRegistryBuilder,
         texture_atlas: &mut texture::AtlasBuilder,
         identifier: Identifier,
         properties: Properties,
@@ -312,7 +328,8 @@ impl Registry {
     ) -> anyhow::Result<RegistryIndex>
     where
         II: IntoIterator<IntoIter = I>,
-        I: Clone + std::iter::Iterator<Item = (BlockstateInfoModifier, &'a [(&'a Atom, &'a Atom)])>,
+        I: Clone
+            + core::iter::Iterator<Item = (BlockstateInfoModifier, &'a [(&'a Atom, &'a Atom)])>,
     {
         let block_index = self.data.register_default(identifier.clone());
         default_extra_info.opacity = BlockOpacity::Transparent;
@@ -366,7 +383,7 @@ impl Registry {
     }
 }
 
-impl std::ops::Index<RegistryIndex> for Registry {
+impl core::ops::Index<RegistryIndex> for Registry {
     type Output = Info;
 
     fn index(&self, index: RegistryIndex) -> &Self::Output {
@@ -374,13 +391,13 @@ impl std::ops::Index<RegistryIndex> for Registry {
     }
 }
 
-impl std::ops::IndexMut<RegistryIndex> for Registry {
+impl core::ops::IndexMut<RegistryIndex> for Registry {
     fn index_mut(&mut self, index: RegistryIndex) -> &mut Self::Output {
         &mut self.data[index]
     }
 }
 
-impl std::ops::Index<GlobalPaletteIndex> for Registry {
+impl core::ops::Index<GlobalPaletteIndex> for Registry {
     type Output = blockstate::Blockstate;
 
     fn index(&self, index: GlobalPaletteIndex) -> &blockstate::Blockstate {
@@ -388,18 +405,18 @@ impl std::ops::Index<GlobalPaletteIndex> for Registry {
     }
 }
 
-impl std::ops::IndexMut<GlobalPaletteIndex> for Registry {
+impl core::ops::IndexMut<GlobalPaletteIndex> for Registry {
     fn index_mut(&mut self, index: GlobalPaletteIndex) -> &mut Self::Output {
         &mut self.global_palette[index.as_usize()]
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, bincode::Encode, bincode::Decode)]
 pub struct Info {
     pub default_blockstate: GlobalPaletteIndex,
     pub properties: Properties,
     #[cfg(debug_assertions)]
-    pub blockstate_id_range: std::ops::RangeInclusive<usize>,
+    pub blockstate_id_range: core::ops::RangeInclusive<usize>,
 }
 
 impl Default for Info {
@@ -413,7 +430,7 @@ impl Default for Info {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct Properties {
     pub air_like: bool,
 }
@@ -425,7 +442,9 @@ impl Default for Properties {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq, Deserialize_repr)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+#[derive(Serialize_repr, Deserialize_repr)]
+#[derive(bincode::Encode, bincode::Decode)]
 #[repr(u16)]
 pub enum RightAngleRotation {
     #[default]
@@ -435,7 +454,7 @@ pub enum RightAngleRotation {
     TwoSeventy = 270,
 }
 
-impl std::ops::Add for RightAngleRotation {
+impl core::ops::Add for RightAngleRotation {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
@@ -450,7 +469,7 @@ impl std::ops::Add for RightAngleRotation {
     }
 }
 
-impl std::ops::Sub for RightAngleRotation {
+impl core::ops::Sub for RightAngleRotation {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self {
@@ -465,20 +484,21 @@ impl std::ops::Sub for RightAngleRotation {
     }
 }
 
-impl std::ops::AddAssign for RightAngleRotation {
+impl core::ops::AddAssign for RightAngleRotation {
     fn add_assign(&mut self, other: Self) {
         *self = *self + other;
     }
 }
 
-impl std::ops::SubAssign for RightAngleRotation {
+impl core::ops::SubAssign for RightAngleRotation {
     fn sub_assign(&mut self, other: Self) {
         *self = *self - other;
     }
 }
 
-// Dhall types
+// Nickel/JSON types
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum Registration<'a> {
@@ -490,6 +510,7 @@ enum Registration<'a> {
     Liquid(LiquidRegistration<'a>),
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StandardRegistration<'a> {
@@ -505,6 +526,7 @@ struct StandardRegistration<'a> {
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FullCustomRegistration<'a> {
@@ -520,6 +542,7 @@ struct FullCustomRegistration<'a> {
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LiquidRegistration<'a> {
@@ -529,6 +552,7 @@ struct LiquidRegistration<'a> {
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockstateInfoModifierCase {
@@ -536,6 +560,7 @@ struct BlockstateInfoModifierCase {
     pub conditions: Vec<PropertyValueAtoms>,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PropertyValueAtoms {
@@ -543,6 +568,7 @@ struct PropertyValueAtoms {
     pub value: Atom,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CustomProperty<'a> {
@@ -551,6 +577,7 @@ struct CustomProperty<'a> {
     pub prop_type: JsonCustomPropertyType<'a>,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum JsonCustomPropertyType<'a> {
@@ -563,6 +590,7 @@ enum JsonCustomPropertyType<'a> {
     Enum(Vec<&'a str>),
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PropertyValue<'a> {
@@ -570,16 +598,20 @@ struct PropertyValue<'a> {
     pub value: &'a str,
 }
 
+#[cfg(feature = "std")]
 pub fn register_blocks_from_json(
     registry: &mut Registry,
-    model_cache: &mut ModelCache,
+    model_cache: &mut ModelRegistryBuilder,
     texture_atlas_builder: &mut texture::AtlasBuilder,
     json_data: &str,
 ) -> anyhow::Result<()> {
     // XXX: DEBUG
     let start_time = std::time::Instant::now();
     let registrations: Vec<Registration> = serde_json::from_str(json_data)?;
-    println!("Block JSON load time: {:?}", std::time::Instant::now() - start_time);
+    println!(
+        "Block JSON load time: {:?}",
+        std::time::Instant::now() - start_time
+    );
     for registration in registrations {
         fn convert_custom_property_list<'a>(
             properties: &'a [CustomProperty<'a>],
@@ -713,9 +745,10 @@ pub fn register_blocks_from_json(
     Ok(())
 }
 
+#[cfg(feature = "std")]
 pub fn register_vanilla_blocks(
     registry: &mut Registry,
-    model_cache: &mut ModelCache,
+    model_cache: &mut ModelRegistryBuilder,
     texture_atlas_builder: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
@@ -724,15 +757,19 @@ pub fn register_vanilla_blocks(
         registry,
         model_cache,
         texture_atlas_builder,
+        // Generated by `build.rs` from `vanilla_block.ncl`.
         include_str!(concat!(env!("OUT_DIR"), "/vanilla_blocks_generated.json")),
     )?;
 
-    println!("Block load time: {:?}", std::time::Instant::now() - start_time);
+    println!(
+        "Block load time: {:?}",
+        std::time::Instant::now() - start_time
+    );
     // TODO: Move this to a startup flag
     // Write out registry IDs to "entries.json", helpful for adding new blocks
     #[cfg(debug_assertions)]
     {
-        use std::fmt::Write;
+        use core::fmt::Write;
         let mut block_ids = Vec::new();
         for (identifier, idx) in registry.data.identifier_map.iter() {
             let entry = &registry.data.entries[idx.0 as usize];
@@ -765,7 +802,7 @@ pub fn register_vanilla_blocks(
         }
         #[derive(Clone, Debug, serde::Serialize)]
         struct JsonBlockstate {
-            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            #[serde(skip_serializing_if = "core::ops::Not::not")]
             pub default: bool,
             pub id: usize,
             #[serde(skip_serializing_if = "IndexMap::is_empty")]
@@ -830,4 +867,62 @@ pub fn register_vanilla_blocks(
     }
 
     Ok(())
+}
+
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct EmbeddedCache {
+    pub block_registry: Registry,
+    pub models: ModelRegistry,
+    pub atlas: crate::texture::RawAtlas,
+}
+
+/// Intended to be used by build scripts to compile a client with the assets already generated
+/// and cached.
+/// Currently used by the PS2 version of the client.
+#[cfg(feature = "std")]
+pub fn generate_vanilla_embedded_cache() -> anyhow::Result<EmbeddedCache> {
+    let size = [512, 1024];
+    let square_length = 16;
+    let mut atlas_builder =
+        crate::texture::AtlasBuilder::new(size[0], size[1], square_length);
+    let mut model_cache = ModelRegistryBuilder::new();
+    let mut block_registry = Registry::new();
+    register_vanilla_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
+    // XXX: DEBUG
+    {
+        let atlas = atlas_builder.clone().finish();
+        let path = format!(
+            "{}/texture_atlas.png",
+            std::env::var("OUT_DIR").unwrap(),
+        );
+        atlas.texture.save(&path).unwrap();
+        println!("cargo::warning=Texture Atlas Output: {path}");
+    }
+    // XXX: DEBUG
+    {
+        let mut other_count: usize = 0;
+        for model in &model_cache.model_list {
+            if let model::ModelType::Other(info) = model {
+                other_count += 1;
+            }
+        }
+        let mut model_count: usize = 0;
+        for ((identifier, _rotation), model_idx) in &model_cache.completed_models {
+            let model = &model_cache[*model_idx];
+            if let model::ModelType::Other(info) = model {
+                model_count += 1;
+            }
+        }
+        println!("cargo::warning=Other count: {other_count}");
+        println!("cargo::warning=Other model count: {model_count}");
+        assert!(model_cache.model_identifiers.len() == model_cache.model_list.len());
+        println!("cargo::warning=Combined model count: {}", model_cache.completed_model_combinations.len());
+        println!("cargo::warning=Model identifiers: {:?}", &model_cache.model_identifiers);
+    }
+    let atlas = atlas_builder.finish().into_raw();
+    Ok(EmbeddedCache {
+        block_registry,
+        models: model_cache.finish(),
+        atlas,
+    })
 }

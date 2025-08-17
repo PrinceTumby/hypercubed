@@ -1,14 +1,15 @@
 mod internal_overlay;
 
 use super::Identifier;
+use portable_std::{Arc, Cow};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail};
 use lazy_static::lazy_static;
-use zip::ZipArchive;
-use std::borrow::Cow;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 use std::io::{Cursor, Read};
+use std::path::PathBuf;
+#[cfg(feature = "std")]
+use std::sync::RwLock;
+use zip::ZipArchive;
 
 pub fn get_resource_file(
     resource_type: &ResourceType,
@@ -58,9 +59,7 @@ pub fn get_resource_file(
                 file_in_zip.read_to_end(&mut buffer)?;
                 Ok(buffer.into())
             }
-            MainFilesystem::AssetsFolder(_path_prefix) => {
-                Ok(Cow::Owned(std::fs::read(&path)?))
-            }
+            MainFilesystem::AssetsFolder(_path_prefix) => Ok(Cow::Owned(std::fs::read(&path)?)),
         }
     }
 }

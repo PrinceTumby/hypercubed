@@ -1,5 +1,6 @@
 use super::crafting::Slot;
 use super::particle::Particle;
+use crate::portable_prelude::*;
 use crate::protocol::prelude::*;
 // use nom::multi::many_till;
 // use nom::Parser;
@@ -57,7 +58,7 @@ pub enum EntryValue {
     OptUuid(Option<Uuid>) = 13,
     Blockstate(VarInt) = 14,
     OptBlockstate(VarInt) = 15,
-    Nbt(NetworkNbtCompound) = 16,
+    Nbt(NetworkNbt) = 16,
     Particle(Particle) = 17,
     VillagerData {
         ty: VarInt,
@@ -104,7 +105,7 @@ pub enum EntryValue {
 //                 13 => <Option<Uuid>>::deserialize.map(Self::OptUuid),
 //                 14 => VarInt::deserialize.map(Self::BlockId),
 //                 15 => VarInt::deserialize.map(Self::OptBlockId),
-//                 16 => NbtCompound::deserialize.map(Self::Nbt),
+//                 16 => Nbt::deserialize.map(Self::Nbt),
 //                 17 => Particle::deserialize.map(Self::Particle),
 //                 18 => <(VarInt, VarInt, VarInt)>::deserialize.map(|(ty, profession, level)| {
 //                     Self::VillagerData {

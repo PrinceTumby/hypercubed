@@ -1,5 +1,5 @@
 use super::Texture;
-use crate::resource::block::RightAngleRotation;
+use resources::block::RightAngleRotation;
 use nalgebra::{Matrix3, Rotation3};
 use std::collections::HashMap;
 use std::marker::PhantomData;

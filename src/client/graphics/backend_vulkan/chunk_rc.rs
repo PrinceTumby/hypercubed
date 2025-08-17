@@ -1,19 +1,16 @@
-pub use super::chunk::{
+pub use super::chunk_no_rc::{
     BufferManager, CustomBlockGroup, DrawArgsBuffer, IndexListBuffer, SubchunkConnectivity,
     VertexBufferManager, VertexListBuffer,
 };
 use super::shader_exports::chunk_rc::consts::CASCADE_0_NUM_RAYS;
-use super::shader_exports::chunk_rc::types::{
-    self as shader_chunk_rc_types,
-    vertex_input_state,
-};
+use super::shader_exports::chunk_rc::types::{self as shader_chunk_rc_types, vertex_input_state};
 use super::shader_exports::shader_stage_from_entry_point;
 use crate::client::RayTracedQuadInfo;
-use vulkan_prelude::*;
 use anyhow::Context;
 use nalgebra::{Matrix3, Rotation3};
 use std::marker::{PhantomData, Send, Sync};
 use std::sync::Arc;
+use vulkan_prelude::*;
 
 pub struct Subchunk {
     pub start_coords: [i32; 3],
@@ -397,7 +394,7 @@ pub mod block_face {
                 }),
                 dynamic_state: &[VulkanDynamicState::Viewport],
                 layout,
-                subpass: Some(VulkanPipelineSubpassType::BeginRenderPass(&subpass)),
+                subpass: Some(VulkanPipelineSubpassType::BeginRenderPass(subpass)),
                 base_pipeline: None,
                 discard_rectangle_state: None,
                 fragment_shading_rate_state: None,
@@ -459,7 +456,7 @@ pub mod block_face {
     }
 
     pub use shader_chunk_rc_types::BlockFaceVertex as Vertex;
-    
+
     pub use shader_chunk_rc_types::BlockFaceInstance as Instance;
 
     pub type BlockFaceVertexBufferManager = VertexBufferManager<Vertex, { 1 << 20 }>;
@@ -611,5 +608,5 @@ pub mod custom_block {
     pub type VertexList = VertexListBuffer<Vertex>;
     pub type IndexList = IndexListBuffer<u32>;
     pub type CustomBlockInstanceBufferManager =
-        super::super::chunk::InstanceBufferManager<Instance, 4, { 1 << 20 }>;
+        super::super::chunk_no_rc::InstanceBufferManager<Instance, 4, { 1 << 20 }>;
 }

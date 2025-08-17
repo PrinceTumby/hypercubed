@@ -1,4 +1,5 @@
 use super::prelude::*;
+use portable_std::io;
 use protocol_derive::PacketWrite;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PacketWrite)]
@@ -11,7 +12,7 @@ pub struct Handshake<'a> {
 }
 
 impl Serialize for Handshake<'_> {
-    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn serialize_to<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         VarInt(self.protocol_version).serialize_to(writer)?;
         self.address.serialize_to(writer)?;
         self.server_port.serialize_to(writer)?;
@@ -26,7 +27,7 @@ pub enum HandshakeNextState {
 }
 
 impl Serialize for HandshakeNextState {
-    fn serialize_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn serialize_to<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         VarInt(*self as i32).serialize_into(writer)
     }
 }

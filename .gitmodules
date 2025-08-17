@@ -1,0 +1,9 @@
+[submodule "crates/CrabNBT"]
+	path = crates/CrabNBT
+	url = https://github.com/CrabCraftDev/CrabNBT
+[submodule "crates/cesu8-rs"]
+	path = crates/cesu8-rs
+	url = https://github.com/emk/cesu8-rs
+[submodule "crates/bimap-rs"]
+	path = crates/bimap-rs
+	url = https://github.com/billyrieger/bimap-rs/

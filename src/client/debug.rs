@@ -1,13 +1,14 @@
-use crate::PlayConnection;
 use crate::client::graphics::debug::PackedFlags as DebugPackedFlags;
 use crate::client::graphics::debug::line::Instance as DebugLine;
 use crate::client::graphics::debug::point::Vertex as DebugPoint;
 use crate::client::graphics::debug::triangle::Instance as DebugTriangle;
 use crate::client::graphics::{self, Camera, DebugVisualisationDrawMethod, GraphicsState};
 use crate::client::{ClientPlayState, MIN_HEIGHT_I32};
+use portable_std::VecDeque;
+use crate::portable_prelude::*;
+use crate::protocol::PlayConnection;
 use crate::protocol::play::GameMode;
 use nalgebra::Point3;
-use alloc::collections::VecDeque;
 use threadpool::ThreadPool;
 
 pub struct DebugRenderOutput {
@@ -56,7 +57,7 @@ pub fn render_debug_ui(
         }),
         time: Some(current_time_s),
         predicted_dt: delta_time,
-        events: std::mem::take(events),
+        events: core::mem::take(events),
         ..Default::default()
     };
     #[allow(unused_mut)]
@@ -262,7 +263,10 @@ pub fn render_debug_ui(
                     &mut debug_state.radiance_cascades_light_tree_visualiser,
                     "Light tree visualiser",
                 );
-                ui.add(Slider::new(&mut debug_state.radiance_cascades_light_tree_level, 0..=12).text("Light tree level"));
+                ui.add(
+                    Slider::new(&mut debug_state.radiance_cascades_light_tree_level, 0..=12)
+                        .text("Light tree level"),
+                );
                 ui.checkbox(
                     &mut debug_state.radiance_cascades_areaquad_visualiser,
                     "Areaquad visualiser",
@@ -666,31 +670,28 @@ pub fn render_debug_ui(
                             x as u8,
                             (x >> 8) as u8,
                             (x >> 16) as u8,
-                            0xFF
+                            0xFF,
                         )
                     }
-                    tris.extend(BOX_QUAD_INDICES
-                        .into_iter()
-                        .map(|tri_indices| {
-                            let points = tri_indices.map(|idx| vertices[idx]);
-                            [
-                                DebugTriangle {
-                                    p1: points[0],
-                                    p2: points[1],
-                                    p3: points[2],
-                                    color: colour_hash(i).gamma_multiply(0.25).to_array(),
-                                    packed_fields: DebugPackedFlags::NONE,
-                                },
-                                DebugTriangle {
-                                    p1: points[0],
-                                    p2: points[3],
-                                    p3: points[2],
-                                    color: colour_hash(i).gamma_multiply(0.25).to_array(),
-                                    packed_fields: DebugPackedFlags::NONE,
-                                },
-                            ]
-                        })
-                        .flatten());
+                    tris.extend(BOX_QUAD_INDICES.into_iter().flat_map(|tri_indices| {
+                        let points = tri_indices.map(|idx| vertices[idx]);
+                        [
+                            DebugTriangle {
+                                p1: points[0],
+                                p2: points[1],
+                                p3: points[2],
+                                color: colour_hash(i).gamma_multiply(0.25).to_array(),
+                                packed_fields: DebugPackedFlags::NONE,
+                            },
+                            DebugTriangle {
+                                p1: points[0],
+                                p2: points[3],
+                                p3: points[2],
+                                color: colour_hash(i).gamma_multiply(0.25).to_array(),
+                                packed_fields: DebugPackedFlags::NONE,
+                            },
+                        ]
+                    }));
                 }
             }
             debug_triangles.extend(tris);
@@ -728,7 +729,8 @@ pub fn render_debug_ui(
             let mut max_elevation = f32::NEG_INFINITY;
             for corner in local_corners {
                 // let corner = Point3::new(corner.x, -corner.z, corner.y);
-                let azimuth = corner.y.signum() * f32::acos(corner.x / corner.xy().coords.magnitude());
+                let azimuth =
+                    corner.y.signum() * f32::acos(corner.x / corner.xy().coords.magnitude());
                 let elevation = f32::acos(corner.z / corner.coords.magnitude());
                 min_azimuth = min_azimuth.min(azimuth);
                 max_azimuth = max_azimuth.max(azimuth);
@@ -812,7 +814,7 @@ pub fn render_debug_ui(
             // };
             let rays = {
                 let mut rays = Vec::new();
-                let phi = std::f32::consts::PI * ((5.0_f32).sqrt() - 1.0);
+                let phi = core::f32::consts::PI * ((5.0_f32).sqrt() - 1.0);
                 let num_samples = 16 * 8_i32.pow(debug_state.max_radiance_cascade);
                 for ray_i in 0..num_samples {
                     let y = 1.0 - (ray_i as f32 / (num_samples * 2 - 1) as f32) * 2.0;
@@ -916,7 +918,8 @@ pub fn render_debug_ui(
                 // TODO: Points and triangles
                 for line in debug_lines.drain(..) {
                     let points = [line.p1, line.p2].map(Point3::from);
-                    if let Some(screen_line) = debug_clip_and_project_line(points, graphics_camera) {
+                    if let Some(screen_line) = debug_clip_and_project_line(points, graphics_camera)
+                    {
                         let [r, g, b, a] = line.color;
                         painter.add(Shape::line_segment(
                             screen_line.map(|p| {
@@ -994,7 +997,7 @@ fn debug_clip_and_project_points(points: &[Point3<f32>], camera: &Camera) -> Vec
                     vec2.push($func(prev_point, point, $edge));
                 }
             }
-            std::mem::swap(&mut vec1, &mut vec2);
+            core::mem::swap(&mut vec1, &mut vec2);
             vec2.clear();
         }};
     }

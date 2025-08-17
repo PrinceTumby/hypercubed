@@ -18,8 +18,8 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
                 let idents_to = fields.named.iter().map(|Field { ident, .. }| ident);
                 let idents_into = idents_to.clone();
                 quote! {
-                    fn serialize_to<W: ::std::io::Write>(&self, writer: &mut W)
-                        -> ::std::io::Result<()>
+                    fn serialize_to<W: ::portable_std::io::Write>(&self, writer: &mut W)
+                        -> ::portable_std::io::Result<()>
                     {
                         #(
                             self.#idents_to.serialize_to(writer)?;
@@ -27,8 +27,8 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
                         Ok(())
                     }
 
-                    fn serialize_into<W: ::std::io::Write>(self, writer: &mut W)
-                        -> ::std::io::Result<()>
+                    fn serialize_into<W: ::portable_std::io::Write>(self, writer: &mut W)
+                        -> ::portable_std::io::Result<()>
                     {
                         #(
                             self.#idents_into.serialize_into(writer)?;
@@ -41,8 +41,8 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
                 let field_indexes_to = (0..fields.unnamed.len()).map(syn::Index::from);
                 let field_indexes_into = field_indexes_to.clone();
                 quote! {
-                    fn serialize_to<W: ::std::io::Write>(&self, writer: &mut W)
-                        -> ::std::io::Result<()>
+                    fn serialize_to<W: ::portable_std::io::Write>(&self, writer: &mut W)
+                        -> ::portable_std::io::Result<()>
                     {
                         #(
                             self.#field_indexes_to.serialize_to(writer)?;
@@ -50,8 +50,8 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
                         Ok(())
                     }
 
-                    fn serialize_into<W: ::std::io::Write>(self, writer: &mut W)
-                        -> ::std::io::Result<()>
+                    fn serialize_into<W: ::portable_std::io::Write>(self, writer: &mut W)
+                        -> ::portable_std::io::Result<()>
                     {
                         #(
                             self.#field_indexes_into.serialize_into(writer)?;
@@ -61,21 +61,21 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
                 }
             }
             Fields::Unit => quote! {
-                fn serialize_to<W: ::std::io::Write>(&self, writer: &mut W) -> ::std::io::Result<()> {
+                fn serialize_to<W: ::portable_std::io::Write>(&self, writer: &mut W) -> ::portable_std::io::Result<()> {
                     Ok(())
                 }
             },
         },
         Data::Enum(_enum_data) => {
             quote! {
-                fn serialize_to<W: ::std::io::Write>(&self, writer: &mut W)
-                    -> ::std::io::Result<()>
+                fn serialize_to<W: ::portable_std::io::Write>(&self, writer: &mut W)
+                    -> ::portable_std::io::Result<()>
                 {
                     VarInt(*self as i32).serialize_into(writer)
                 }
 
-                fn serialize_into<W: ::std::io::Write>(self, writer: &mut W)
-                    -> ::std::io::Result<()>
+                fn serialize_into<W: ::portable_std::io::Write>(self, writer: &mut W)
+                    -> ::portable_std::io::Result<()>
                 {
                     VarInt(self as i32).serialize_into(writer)
                 }
@@ -119,8 +119,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                     .map(|Field { ident, .. }| quote! { #ident, })
                     .collect();
                 quote! {
-                    ::nom::sequence::tuple(( #(#field_deserializers)* ))
-                        .context(#name_string)
+                    ::nom::error::context(#name_string, ( #(#field_deserializers)* ))
                         .map(|( #(#idents)* )| #name { #(#idents)* })
                         .parse(input)
                 }
@@ -134,8 +133,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                     },
                     _ => {
                         quote! {
-                            <( #(#field_types,)* )>::deserialize
-                                .context(#name_string)
+                            ::nom::error::context(#name_string, <( #(#field_types,)* )>::deserialize)
                                 .map(#name)
                                 .parse(input)
                         }
@@ -159,8 +157,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                         let field_types: Vec<_> =
                             fields.named.iter().map(|field| &field.ty).collect();
                         quote! {
-                            <( #(#field_types,)* )>::deserialize
-                                .context(#name_string)
+                            ::nom::error::context(#name_string, <( #(#field_types,)* )>::deserialize)
                                 .map(|( #( #field_names, )* )| Self::#variant_name {
                                     #( #field_names, )*
                                 })
@@ -177,16 +174,14 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                             ),
                             [field_type] => {
                                 quote! {
-                                    <#field_type>::deserialize
-                                        .context(#name_string)
+                                    ::nom::error::context(#name_string, <#field_type>::deserialize)
                                         .map(Self::#variant_name)
                                         .parse(rest)
                                 }
                             }
                             _ => {
                                 quote! {
-                                    <( #(#field_types,)* )>::deserialize
-                                        .context(#name_string)
+                                    ::nom::error::context(#name_string, <( #(#field_types,)* )>::deserialize)
                                         .map(Self::#variant_name)
                                         .parse(rest)
                                 }
@@ -213,7 +208,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
             let context = format!("\"{name_string} - Enum Tag Match\"");
             quote! {
                 let (rest, VarInt(tag)) =
-                    VarInt::deserialize.context(#name_string).parse(input)?;
+                    ::nom::error::context(#name_string, VarInt::deserialize).parse(input)?;
                 match tag {
                     #(
                         #discriminants => #variant_branches,
@@ -235,7 +230,6 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
         impl #impl_generics Deserialize for #name #ty_generics #where_clause {
             fn deserialize(input: crate::protocol::InputSpan) -> IResult<Self> {
                 use ::nom::Parser;
-                use ::nom_supreme::parser_ext::ParserExt;
                 #implementation
             }
         }

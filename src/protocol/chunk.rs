@@ -1,9 +1,10 @@
 use super::prelude::*;
-use crate::resource::block::GlobalPaletteIndex;
-use ahash::HashSet;
+use portable_std::FastHashSet;
+use crate::portable_prelude::*;
+use resources::block::GlobalPaletteIndex;
 use nom::Parser;
+use nom::bytes::tag;
 use nom::sequence::pair;
-use nom_supreme::tag::complete::tag;
 use protocol_derive::Deserialize;
 
 #[derive(Clone, Deserialize)]
@@ -145,13 +146,13 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
 
     pub fn get_all_of_types(
         &self,
-        blockstate_types_set: &HashSet<GlobalPaletteIndex>,
+        blockstate_types_set: &FastHashSet<GlobalPaletteIndex>,
     ) -> Vec<([u8; 3], GlobalPaletteIndex)> {
         let axis_len_u8: u8 = AXIS_LEN.try_into().unwrap();
         let mut light_positions = Vec::new();
         match &self.palette {
             Palette::SingleValue(value) => {
-                if blockstate_types_set.contains(&value) {
+                if blockstate_types_set.contains(value) {
                     for x in 0..axis_len_u8 {
                         for y in 0..axis_len_u8 {
                             for z in 0..axis_len_u8 {
@@ -302,11 +303,11 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8>
     }
 }
 
-impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> std::fmt::Display
+impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> core::fmt::Display
     for PalettedContainer<AXIS_LEN, INDIRECT_MAX_BPE>
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        use std::fmt::Write;
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        use core::fmt::Write;
         write!(
             f,
             "PalettedContainer(bits_per_entry: {}, palette: {:?})",
@@ -344,7 +345,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> Deserialize
                     VarInt::deserialize.map(|VarInt(value)| value.try_into().unwrap()),
                     // Length of `data`, zero because there's no data needed for a single value
                     // palette
-                    tag(std::slice::from_ref(&0)),
+                    tag(core::slice::from_ref(&0)),
                 )
                 .map(|(palette_index, _data_len)| Self {
                     bits_per_entry,
@@ -365,7 +366,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> Deserialize
             .map(|(palette_entries, data)| {
                 let entries_per_long = 64 / bits_per_entry as usize;
                 let num_longs = AXIS_LEN.pow(3) / entries_per_long;
-                let extra_long = AXIS_LEN.pow(3) % entries_per_long > 0;
+                let extra_long = !AXIS_LEN.pow(3).is_multiple_of(entries_per_long);
                 assert_eq!(data.len(), num_longs + extra_long as usize);
                 Self {
                     bits_per_entry,
@@ -378,7 +379,7 @@ impl<const AXIS_LEN: usize, const INDIRECT_MAX_BPE: u8> Deserialize
                 .map(|data| {
                     let entries_per_long = 64 / bits_per_entry as usize;
                     let num_longs = AXIS_LEN.pow(3) / entries_per_long;
-                    let extra_long = AXIS_LEN.pow(3) % entries_per_long > 0;
+                    let extra_long = !AXIS_LEN.pow(3).is_multiple_of(entries_per_long);
                     assert_eq!(data.len(), num_longs + extra_long as usize);
                     Self {
                         bits_per_entry,
@@ -459,7 +460,11 @@ impl ChunkLightInfo {
     }
 
     #[inline]
-    pub fn get_section(&self, min_height: i32, subchunk_y: i32) -> Option<ChunkSectionLightInfo> {
+    pub fn get_section<'a>(
+        &'a self,
+        min_height: i32,
+        subchunk_y: i32,
+    ) -> Option<ChunkSectionLightInfo<'a>> {
         // Light arrays contain an extra section above and below the world chunk sections
         let adjusted_min_height = min_height - 16;
         let min_subchunk_y = adjusted_min_height / 16;
@@ -471,12 +476,12 @@ impl ChunkLightInfo {
     }
 
     #[inline]
-    pub fn get_section_channel_mut(
-        &mut self,
+    pub fn get_section_channel_mut<'a>(
+        &'a mut self,
         min_height: i32,
         subchunk_y: i32,
         channel: LightType,
-    ) -> Option<ChunkSectionLightChannelInfoMut> {
+    ) -> Option<ChunkSectionLightChannelInfoMut<'a>> {
         // Light arrays contain an extra section above and below the world chunk sections
         let adjusted_min_height = min_height - 16;
         let min_subchunk_y = adjusted_min_height / 16;

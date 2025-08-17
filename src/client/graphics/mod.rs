@@ -8,6 +8,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(feature = "graphics_backend_software")] {
         mod backend_software;
         pub use backend_software::*;
+    } else if #[cfg(feature = "platform_ps2")] {
+        mod backend_ps2;
+        pub use backend_ps2::*;
     } else {
         compile_error!("A graphics backend feature must be enabled.");
     }

@@ -1,57 +1,65 @@
-use nickel_lang_core::program::Program as NickelProgram;
-use nickel_lang_core::error::IntoDiagnostics;
-use nickel_lang_core::eval::cache::lazy::CBNCache;
-use std::io::Write;
-
-#[derive(Clone, Copy, Debug)]
-struct NickelTraceWriter;
-
-impl Write for NickelTraceWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let trace_str = std::str::from_utf8(buf).unwrap();
-        println!("cargo::warning={trace_str}");
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct NickelReporter;
-
-type NickelWarning = (
-    nickel_lang_core::error::warning::Warning,
-    nickel_lang_core::files::Files,
-);
-
-impl nickel_lang_core::error::Reporter<NickelWarning> for NickelReporter {
-    fn report(&mut self, (warning, mut files): NickelWarning) {
-        for diagnostic in warning.into_diagnostics(&mut files) {
-            println!("cargo::warning={diagnostic:?}");
-        }
-    }
-}
-
 fn main() {
-    println!("cargo::rerun-if-changed=src/resource/block/vanilla_blocks.ncl");
-    type CBNCachedProgram = NickelProgram<CBNCache>;
-    let mut program = CBNCachedProgram::new_from_file(
-        "src/resource/block/vanilla_blocks.ncl",
-        NickelTraceWriter,
-        NickelReporter,
-    )
-    .unwrap();
-    let rich_term = program.eval_full_for_export().unwrap();
-    let exported_json = nickel_lang_core::serialize::to_string(
-        nickel_lang_core::serialize::ExportFormat::Json,
-        &rich_term,
-    )
-    .unwrap();
-    std::fs::write(
-        format!("{}/vanilla_blocks_generated.json", std::env::var("OUT_DIR").unwrap()),
-        &exported_json
-    )
-    .unwrap();
+    println!("cargo::rerun-if-changed=build.rs");
+    if std::env::var("CARGO_FEATURE_USE_EMBEDDED_CACHE").is_ok() {
+        let embedded_cache = if std::env::var("CARGO_FEATURE_EMBED_VANILLA_CACHE").is_ok() {
+            resources::block::generate_vanilla_embedded_cache().unwrap()
+        } else {
+            panic!(concat!(
+                "Feature `use_embedded_cache` requires another feature to be enabled to ",
+                "specify which cache to generate and embed. ",
+                "See feature `embed_vanilla_cache`.",
+            ));
+        };
+        let out_dir = std::env::var("OUT_DIR").unwrap();
+        // XXX: DEBUG
+        {
+            bincode_encode_to_file(
+                &embedded_cache.block_registry,
+                format!("{out_dir}/block_registry.bincode"),
+            );
+            bincode_encode_to_file(
+                &embedded_cache.models,
+                format!("{out_dir}/models.bincode"),
+            );
+            // XXX: DEBUG
+            {
+                bincode_encode_to_file(
+                    &embedded_cache.models.model_list,
+                    format!("{out_dir}/models_model_list.bincode"),
+                );
+                bincode_encode_to_file(
+                    &embedded_cache.models.custom_block_faces,
+                    format!("{out_dir}/models_custom_block_faces.bincode"),
+                );
+                println!(
+                    "cargo::warning=Number of Custom Block Faces: {}",
+                    embedded_cache.models.custom_block_faces.len(),
+                );
+                println!(
+                    "cargo::warning=dbg: {}",
+                    std::mem::size_of::<resources::block::model::ModelVertex>(),
+                );
+                bincode_encode_to_file(
+                    &embedded_cache.models.custom_block_indices,
+                    format!("{out_dir}/models_custom_block_indices.bincode"),
+                );
+            }
+            bincode_encode_to_file(
+                &embedded_cache.atlas,
+                format!("{out_dir}/atlas.bincode"),
+            );
+        }
+        bincode_encode_to_file(
+            embedded_cache,
+            format!("{out_dir}/embedded_cache.bincode"),
+        );
+    }
+}
+
+fn bincode_encode_to_file<P: AsRef<std::path::Path>, E: bincode::Encode>(
+    value: E,
+    path: P,
+) {
+    let bytes = bincode::encode_to_vec(value, bincode::config::standard()).unwrap();
+    std::fs::write(path, bytes).unwrap();
 }

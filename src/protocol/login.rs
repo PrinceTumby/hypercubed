@@ -3,11 +3,11 @@ use super::{
     Aes128Cfb8Dec, Aes128Cfb8Enc, EncryptedTcpStreamReader, EncryptedTcpStreamWriter,
     OFFLINE_PLAYER_NAMESPACE, PlayConnection, configuration,
 };
-use crate::identifier;
-use bytebuffer::ByteBuffer;
+use resources::identifier;
+use portable_std::io;
+use crate::portable_prelude::*;
+use crate::platform::net::TcpStream;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, PacketRead)]
@@ -82,16 +82,16 @@ struct SessionJoinInfo<'a> {
     pub server_hash: &'a str,
 }
 
-pub fn login(
+pub async fn login(
     address: &str,
     port: u16,
-    client_information: configuration::ClientInformation,
+    client_information: configuration::ClientInformation<'_>,
     session_information: Option<&SessionInfo>,
-) -> std::io::Result<(PlayConnection, LoginSuccess)> {
+) -> io::Result<(PlayConnection, LoginSuccess)> {
     use super::{configuration, handshaking};
     let tcp_stream = TcpStream::connect(format!("{address}:{port}"))?;
-    let mut read_stream = &mut &tcp_stream as &mut dyn Read;
-    let mut write_stream = &mut &tcp_stream as &mut dyn Write;
+    let mut read_stream = &mut &tcp_stream as &mut dyn io::Read;
+    let mut write_stream = &mut &tcp_stream as &mut dyn io::Write;
     // Send handshake packet
     handshaking::Handshake {
         protocol_version: PROTOCOL_VERSION,
@@ -129,10 +129,10 @@ pub fn login(
                 use cfb8::cipher::KeyIvInit;
                 use rand::Rng;
                 use rsa::pkcs8::DecodePublicKey;
-                let mut thread_rng = rand::thread_rng();
+                let mut rng = crate::platform::new_strong_rng();
                 let pub_key = rsa::RsaPublicKey::from_public_key_der(&request_info.public_key)
-                    .map_err(std::io::Error::other)?;
-                let shared_secret: [u8; 16] = thread_rng.r#gen();
+                    .map_err(|err| io::Error::other(format!("{err}")))?;
+                let shared_secret: [u8; 16] = rng.r#gen();
                 // Send session information to session server
                 if request_info.should_authenticate {
                     let (access_token, player_uuid) = session_information
@@ -140,13 +140,18 @@ pub fn login(
                         .map(|info| (info.access_token.as_str(), info.player_uuid.as_simple()))
                         .expect("session information required for authentication");
                     let server_hash = {
-                        use num_bigint::BigInt;
                         use sha1::{Digest, Sha1};
                         let mut hasher = Sha1::new();
                         hasher.update(&request_info.server_id);
                         hasher.update(shared_secret);
                         hasher.update(&request_info.public_key);
-                        BigInt::from_signed_bytes_be(&hasher.finalize()).to_str_radix(16)
+                        let hash_bytes = hasher.finalize();
+                        let mut hash_string = String::with_capacity(hash_bytes.len() * 2);
+                        for byte in hash_bytes {
+                            use core::fmt::Write;
+                            write!(&mut hash_string, "{byte:x}").unwrap();
+                        }
+                        hash_string
                     };
                     let server_hash = server_hash.as_str();
                     let join_info = SessionJoinInfo {
@@ -154,30 +159,63 @@ pub fn login(
                         player_uuid,
                         server_hash,
                     };
-                    let auth_response = reqwest::blocking::Client::new()
-                        .post("https://sessionserver.mojang.com/session/minecraft/join")
-                        .json(&join_info)
-                        .send()
-                        .map_err(std::io::Error::other)?;
-                    if !auth_response.status().is_success() {
-                        let status = auth_response.status();
-                        return Err(std::io::Error::other(format!(
-                            "authentication failure - {status:?}: {}",
-                            auth_response.text().unwrap_or_default(),
-                        )));
+                    let session_server_url =
+                        "https://sessionserver.mojang.com/session/minecraft/join";
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature = "std")] {
+                            let auth_response = reqwest::blocking::Client::new()
+                                .post(session_server_url)
+                                .json(&join_info)
+                                .send()
+                                .map_err(io::Error::other)?;
+                            if !auth_response.status().is_success() {
+                                let status = auth_response.status();
+                                return Err(io::Error::other(format!(
+                                    "authentication failure - {status:?}: {}",
+                                    auth_response.text().unwrap_or_default(),
+                                )));
+                            }
+                        } else {{
+                            use reqwless::request::{RequestBuilder, Method};
+                            use reqwless::client::HttpClient;
+                            use reqwless::headers::ContentType;
+                            let mut auth_tcp_stack = crate::platform::net::TcpStack;
+                            let mut auth_dns_resolver = crate::platform::net::DnsResolver;
+                            let mut auth_client = HttpClient::new(
+                                &auth_tcp_stack,
+                                &auth_dns_resolver,
+                            );
+                            let join_info_json = serde_json::to_vec(&join_info)
+                                .map_err(io::Error::other)?;
+                            let join_info_json_bytes = join_info_json.as_slice();
+                            let mut auth_response_buffer = [0u8; 4096];
+                            let mut auth_request = auth_client
+                                .request(Method::POST, session_server_url)
+                                .await
+                                .unwrap()
+                                .body(join_info_json_bytes)
+                                .content_type(ContentType::ApplicationJson);
+                            let mut auth_response = auth_request
+                                .send(&mut auth_response_buffer)
+                                .await
+                                .unwrap();
+                            if !auth_response.status.is_successful() {
+                                let status = auth_response.status;
+                                return Err(io::Error::other(format!(
+                                    "authentication failure - {status:?}: {:?}",
+                                    core::str::from_utf8(auth_response.body().body_buf),
+                                )));
+                            }
+                        }}
                     }
                 }
                 // Send encryption info to server
                 let encrypted_shared_secret = pub_key
-                    .encrypt(&mut thread_rng, rsa::Pkcs1v15Encrypt, &shared_secret)
-                    .map_err(std::io::Error::other)?;
+                    .encrypt(&mut rng, rsa::Pkcs1v15Encrypt, &shared_secret)
+                    .map_err(|err| io::Error::other(format!("{err}")))?;
                 let encrypted_verify_token = pub_key
-                    .encrypt(
-                        &mut thread_rng,
-                        rsa::Pkcs1v15Encrypt,
-                        &request_info.verify_token,
-                    )
-                    .map_err(std::io::Error::other)?;
+                    .encrypt(&mut rng, rsa::Pkcs1v15Encrypt, &request_info.verify_token)
+                    .map_err(|err| io::Error::other(format!("{err}")))?;
                 EncryptionResponse {
                     encrypted_shared_secret: &encrypted_shared_secret,
                     encrypted_verify_token: &encrypted_verify_token,
@@ -201,8 +239,8 @@ pub fn login(
                     encryptor: encryptor.as_mut().unwrap(),
                     encryption_buffer: Vec::new(),
                 };
-                read_stream = &mut decrypting_reader as &mut dyn Read;
-                write_stream = &mut encrypting_writer as &mut dyn Write;
+                read_stream = &mut decrypting_reader as &mut dyn io::Read;
+                write_stream = &mut encrypting_writer as &mut dyn io::Write;
             }
             Response::SetCompression { threshold } => {
                 log::debug!("Compression threshold set to {}", threshold.0);
@@ -212,7 +250,7 @@ pub fn login(
                 };
             }
             Response::ErrorDisconnect { reason } => {
-                return Err(std::io::Error::other(reason));
+                return Err(io::Error::other(reason));
             }
         }
     };
@@ -221,7 +259,7 @@ pub fn login(
         use configuration::{ClientDataPack, ClientDataPacks, Response, ServerboundPluginMessage};
         match configuration::Response::read_from(compression_threshold, &mut read_stream)? {
             Response::ErrorDisconnect { reason } => {
-                return Err(std::io::Error::other(format!("{reason:?}")));
+                return Err(io::Error::other(format!("{reason:?}")));
             }
             Response::Finish => {
                 client_information.write_packet_into(&mut write_stream, compression_threshold)?;
@@ -237,9 +275,9 @@ pub fn login(
                     const CLIENT_BRAND: &str = "rust_minecraft_client";
                     let (extra_data, server_brand) =
                         String::deserialize(InputSpan::new(&message.data))
-                            .map_err(|err| std::io::Error::other(format!("{err}")))?;
+                            .map_err(|err| io::Error::other(format!("{err}")))?;
                     if extra_data.len() != 0 {
-                        return Err(std::io::Error::other(format!(
+                        return Err(io::Error::other(format!(
                             "Invalid extra data while deserializing server brand: {extra_data:?}"
                         )));
                     }
@@ -248,11 +286,11 @@ pub fn login(
                         server_brand,
                         CLIENT_BRAND,
                     );
-                    let mut client_brand_data = ByteBuffer::new();
+                    let mut client_brand_data = Vec::new();
                     String::from(CLIENT_BRAND).serialize_into(&mut client_brand_data)?;
                     ServerboundPluginMessage {
                         channel: &identifier!("minecraft:brand"),
-                        data: ProtocolRawSlice(client_brand_data.as_bytes()),
+                        data: ProtocolRawSlice(&client_brand_data),
                     }
                     .write_packet_into(&mut write_stream, compression_threshold)?;
                 }

@@ -1,0 +1,51 @@
+[package]
+name = "minecraft_client_resources"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["std"]
+std = [
+    # Dependencies
+    "dep:image",
+    "dep:zip",
+    # Dependency features
+    "ahash/default",
+    "ahash/serde",
+    "anyhow/default",
+    "bimap/default",
+    "portable_std/default",
+    "thiserror/default",
+]
+luma_textures = ["std"]
+
+# Data embedding
+use_embedded_cache = []
+
+[build-dependencies]
+nickel-lang-core = { version = "0.13", default-features = false }
+
+[dependencies]
+ahash.workspace = true
+anyhow.workspace = true
+bimap.workspace = true
+bincode.workspace = true
+bitfield.workspace = true
+cfg-if.workspace = true
+image = { workspace = true, features = ["png"], optional = true }
+indexmap = { workspace = true, features = ["serde"] }
+lazy_static.workspace = true
+log.workspace = true
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_repr = "0"
+smallstr.workspace = true
+smallvec.workspace = true
+thiserror = { version = "2", default-features = false }
+zip = { workspace = true, optional = true }
+
+[dependencies.portable_std]
+package = "minecraft_client_portable_std"
+path = "../minecraft_client_portable_std"
+default-features = false

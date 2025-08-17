@@ -1,5 +1,5 @@
 pub use super::chunk::SubchunkConnectivity;
-use crate::resource::block::RightAngleRotation;
+use resources::block::RightAngleRotation;
 use bitfield::bitfield;
 use nalgebra::Rotation3;
 
@@ -16,6 +16,7 @@ pub struct Subchunk {
     // pub custom_block_groups: Vec<CustomBlockGroup>,
     pub connected_faces: SubchunkConnectivity,
 }
+
 pub mod block_face {
     use super::*;
 

@@ -6,13 +6,13 @@ use super::PluginMessage;
 use super::chunk::RawChunkLightInfo;
 pub use super::configuration::{ChatMode, MainHand};
 use super::prelude::*;
-use crate::resource::block::GlobalPaletteIndex;
+use crate::portable_prelude::*;
+use resources::block::GlobalPaletteIndex;
 use nom::Parser;
 use nom::bytes::complete::take;
 use nom::combinator::{cond, verify};
 use nom::multi::length_count;
-use nom::sequence::{pair, tuple};
-use nom_supreme::ParserExt;
+use nom::sequence::pair;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
 use uuid::Uuid;
 
@@ -293,7 +293,7 @@ pub struct InitializeWorldBorder {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ChunkDataAndUpdateLight {
     pub chunk_xz: [i32; 2],
-    pub heightmaps: NetworkNbtCompound,
+    pub heightmaps: NetworkNbt,
     pub chunk_data: Vec<u8>,
     pub block_entities: Vec<BlockEntity>,
     pub light_info: RawChunkLightInfo,
@@ -326,13 +326,15 @@ pub enum GameMode {
 
 impl Deserialize for GameMode {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        byte_enum_parser!(
-            0 => Self::Survival,
-            1 => Self::Creative,
-            2 => Self::Adventure,
-            3 => Self::Spectator,
+        nom_context(
+            "GameMode",
+            byte_enum_parser!(
+                0 => Self::Survival,
+                1 => Self::Creative,
+                2 => Self::Adventure,
+                3 => Self::Spectator,
+            ),
         )
-        .context("GameMode")
         .parse(input)
     }
 }
@@ -402,13 +404,15 @@ pub enum Difficulty {
 
 impl Deserialize for Difficulty {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        byte_enum_parser!(
-            0 => Self::Peaceful,
-            1 => Self::Easy,
-            2 => Self::Normal,
-            3 => Self::Hard,
+        nom_context(
+            "Difficulty",
+            byte_enum_parser!(
+                0 => Self::Peaceful,
+                1 => Self::Easy,
+                2 => Self::Normal,
+                3 => Self::Hard,
+            ),
         )
-        .context("Difficulty")
         .parse(input)
     }
 }
@@ -423,16 +427,18 @@ pub struct CommandNode {
 
 impl Deserialize for CommandNode {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        let (rest, flags) = u8::deserialize.context("CommandNode.flags").parse(input)?;
+        let (rest, flags) = nom_context("CommandNode.flags", u8::deserialize).parse(input)?;
         match flags & 0x03 {
             // Root
             0 => {
                 assert!(flags & 0x10 == 0);
-                pair(
-                    <Vec<VarInt>>::deserialize,
-                    cond(flags & 0x08 != 0, VarInt::deserialize),
+                nom_context(
+                    "CommandNode::Root",
+                    pair(
+                        <Vec<VarInt>>::deserialize,
+                        cond(flags & 0x08 != 0, VarInt::deserialize),
+                    ),
                 )
-                .context("CommandNode::Root")
                 .map(move |(child_indices, redirect_node)| CommandNode {
                     child_indices,
                     redirect_node,
@@ -444,12 +450,14 @@ impl Deserialize for CommandNode {
             // Literal
             1 => {
                 assert!(flags & 0x10 == 0);
-                tuple((
-                    <Vec<VarInt>>::deserialize,
-                    cond(flags & 0x08 != 0, VarInt::deserialize),
-                    String::deserialize,
-                ))
-                .context("CommandNode::Literal")
+                nom_context(
+                    "CommandNode::Literal",
+                    (
+                        <Vec<VarInt>>::deserialize,
+                        cond(flags & 0x08 != 0, VarInt::deserialize),
+                        String::deserialize,
+                    ),
+                )
                 .map(move |(child_indices, redirect_node, name)| CommandNode {
                     child_indices,
                     redirect_node,
@@ -459,14 +467,16 @@ impl Deserialize for CommandNode {
                 .parse(rest)
             }
             // Argument
-            2 => tuple((
-                <Vec<VarInt>>::deserialize,
-                cond(flags & 0x08 != 0, VarInt::deserialize),
-                String::deserialize,
-                CommandNodeParserInfo::deserialize,
-                cond(flags & 0x10 != 0, Identifier::deserialize),
-            ))
-            .context("CommandNode::Argument")
+            2 => nom_context(
+                "CommandNode::Argument",
+                (
+                    <Vec<VarInt>>::deserialize,
+                    cond(flags & 0x08 != 0, VarInt::deserialize),
+                    String::deserialize,
+                    CommandNodeParserInfo::deserialize,
+                    cond(flags & 0x10 != 0, Identifier::deserialize),
+                ),
+            )
             .map(
                 move |(child_indices, redirect_node, name, parser_info, suggestions_type)| {
                     CommandNode {
@@ -571,11 +581,13 @@ pub struct CommandNodeFloatParserInfo {
 impl Deserialize for CommandNodeFloatParserInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, flags) = u8::deserialize(input)?;
-        pair(
-            cond(flags & 0b01 != 0, f32::deserialize).map(|v| v.unwrap_or(f32::MIN)),
-            cond(flags & 0b10 != 0, f32::deserialize).map(|v| v.unwrap_or(f32::MAX)),
+        nom_context(
+            "CommandNodeFloatParserInfo",
+            pair(
+                cond(flags & 0b01 != 0, f32::deserialize).map(|v| v.unwrap_or(f32::MIN)),
+                cond(flags & 0b10 != 0, f32::deserialize).map(|v| v.unwrap_or(f32::MAX)),
+            ),
         )
-        .context("CommandNodeFloatParserInfo")
         .map(|(min, max)| Self { min, max })
         .parse(rest)
     }
@@ -590,11 +602,13 @@ pub struct CommandNodeDoubleParserInfo {
 impl Deserialize for CommandNodeDoubleParserInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, flags) = u8::deserialize(input)?;
-        pair(
-            cond(flags & 0b01 != 0, f64::deserialize).map(|v| v.unwrap_or(f64::MIN)),
-            cond(flags & 0b10 != 0, f64::deserialize).map(|v| v.unwrap_or(f64::MAX)),
+        nom_context(
+            "CommandNodeDoubleParserInfo",
+            pair(
+                cond(flags & 0b01 != 0, f64::deserialize).map(|v| v.unwrap_or(f64::MIN)),
+                cond(flags & 0b10 != 0, f64::deserialize).map(|v| v.unwrap_or(f64::MAX)),
+            ),
         )
-        .context("CommandNodeDoubleParserInfo")
         .map(|(min, max)| Self { min, max })
         .parse(rest)
     }
@@ -609,11 +623,13 @@ pub struct CommandNodeIntParserInfo {
 impl Deserialize for CommandNodeIntParserInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, flags) = u8::deserialize(input)?;
-        pair(
-            cond(flags & 0b01 != 0, i32::deserialize).map(|v| v.unwrap_or(i32::MIN)),
-            cond(flags & 0b10 != 0, i32::deserialize).map(|v| v.unwrap_or(i32::MAX)),
+        nom_context(
+            "CommandNodeIntParserInfo",
+            pair(
+                cond(flags & 0b01 != 0, i32::deserialize).map(|v| v.unwrap_or(i32::MIN)),
+                cond(flags & 0b10 != 0, i32::deserialize).map(|v| v.unwrap_or(i32::MAX)),
+            ),
         )
-        .context("CommandNodeIntParserInfo")
         .map(|(min, max)| Self { min, max })
         .parse(rest)
     }
@@ -628,11 +644,13 @@ pub struct CommandNodeLongParserInfo {
 impl Deserialize for CommandNodeLongParserInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, flags) = u8::deserialize(input)?;
-        pair(
-            cond(flags & 0b01 != 0, i64::deserialize).map(|v| v.unwrap_or(i64::MIN)),
-            cond(flags & 0b10 != 0, i64::deserialize).map(|v| v.unwrap_or(i64::MAX)),
+        nom_context(
+            "CommandNodeLongParserInfo",
+            pair(
+                cond(flags & 0b01 != 0, i64::deserialize).map(|v| v.unwrap_or(i64::MIN)),
+                cond(flags & 0b10 != 0, i64::deserialize).map(|v| v.unwrap_or(i64::MAX)),
+            ),
         )
-        .context("CommandNodeLongParserInfo")
         .map(|(min, max)| Self { min, max })
         .parse(rest)
     }
@@ -665,35 +683,50 @@ impl Deserialize for UpdatePlayerInfo {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         fn action_parser<'a>(
             flags: u8,
-        ) -> impl Parser<InputSpan<'a>, PlayerInfoUpdateAction, IErr<'a>> {
-            move |input: InputSpan<'a>| {
-                tuple((
-                    cond(flags & 0b000001 != 0, PlayerInfoAddPlayer::deserialize),
-                    cond(flags & 0b000010 != 0, PlayerInfoInitializeChat::deserialize),
-                    cond(flags & 0b000100 != 0, GameMode::deserialize),
-                    cond(flags & 0b001000 != 0, bool::deserialize),
-                    cond(flags & 0b010000 != 0, VarInt::deserialize),
-                    cond(flags & 0b100000 != 0, <Option<TextComponent>>::deserialize),
-                ))
-                .map(
-                    |(
-                        add_player,
-                        initialize_chat,
-                        update_game_mode,
-                        update_listed,
-                        update_latency,
-                        update_display_name,
-                    )| PlayerInfoUpdateAction {
-                        add_player,
-                        initialize_chat,
-                        update_game_mode,
-                        update_listed,
-                        update_latency,
-                        update_display_name,
-                    },
-                )
-                .parse(input)
+        ) -> impl Parser<InputSpan<'a>, Output = PlayerInfoUpdateAction, Error = IErr<'a>> {
+            struct ActionParser {
+                flags: u8,
             }
+
+            impl<'a> Parser<InputSpan<'a>> for ActionParser {
+                type Output = PlayerInfoUpdateAction;
+                type Error = IErr<'a>;
+
+                fn process<OM: nom::OutputMode>(
+                    &mut self,
+                    input: InputSpan<'a>,
+                ) -> nom::PResult<OM, InputSpan<'a>, Self::Output, Self::Error> {
+                    let flags = self.flags;
+                    (
+                        cond(flags & 0b000001 != 0, PlayerInfoAddPlayer::deserialize),
+                        cond(flags & 0b000010 != 0, PlayerInfoInitializeChat::deserialize),
+                        cond(flags & 0b000100 != 0, GameMode::deserialize),
+                        cond(flags & 0b001000 != 0, bool::deserialize),
+                        cond(flags & 0b010000 != 0, VarInt::deserialize),
+                        cond(flags & 0b100000 != 0, <Option<TextComponent>>::deserialize),
+                    )
+                        .map(
+                            |(
+                                add_player,
+                                initialize_chat,
+                                update_game_mode,
+                                update_listed,
+                                update_latency,
+                                update_display_name,
+                            )| PlayerInfoUpdateAction {
+                                add_player,
+                                initialize_chat,
+                                update_game_mode,
+                                update_listed,
+                                update_latency,
+                                update_display_name,
+                            },
+                        )
+                        .process::<OM>(input)
+                }
+            }
+
+            ActionParser { flags }
         }
         let (rest, action_flags) = u8::deserialize(input)?;
         length_count(
@@ -754,7 +787,7 @@ pub struct SynchronizePlayerPosition {
 
 impl Deserialize for SynchronizePlayerPosition {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        let (rest, (x, y, z, yaw, pitch, flags, teleport_id)) = tuple((
+        let (rest, (x, y, z, yaw, pitch, flags, teleport_id)) = (
             f64::deserialize,
             f64::deserialize,
             f64::deserialize,
@@ -762,7 +795,8 @@ impl Deserialize for SynchronizePlayerPosition {
             f32::deserialize,
             u8::deserialize,
             VarInt::deserialize,
-        ))(input)?;
+        )
+            .parse(input)?;
         let x = match flags & 0b00001 != 0 {
             false => PositionChange::Absolute(x),
             true => PositionChange::Relative(x),
@@ -840,7 +874,7 @@ impl Deserialize for UpdateRecipeBook {
                 smoker_recipe_book_filter_active,
                 recipe_ids_1,
             ),
-        ) = tuple((
+        ) = (
             UpdateRecipeBookAction::deserialize,
             bool::deserialize,
             bool::deserialize,
@@ -851,7 +885,8 @@ impl Deserialize for UpdateRecipeBook {
             bool::deserialize,
             bool::deserialize,
             <Vec<Identifier>>::deserialize,
-        ))(input)?;
+        )
+            .parse(input)?;
         let (rest, recipe_ids_2) = match action {
             UpdateRecipeBookAction::Init => {
                 let (rest, ids) = <Vec<Identifier>>::deserialize(rest)?;
@@ -887,12 +922,14 @@ pub enum UpdateRecipeBookAction {
 
 impl Deserialize for UpdateRecipeBookAction {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        byte_enum_parser!(
-            0 => Self::Init,
-            1 => Self::Add,
-            2 => Self::Remove,
+        nom_context(
+            "UpdateRecipeBookAction",
+            byte_enum_parser!(
+                0 => Self::Init,
+                1 => Self::Add,
+                2 => Self::Remove,
+            ),
         )
-        .context("UpdateRecipeBookAction")
         .parse(input)
     }
 }
@@ -911,7 +948,7 @@ pub struct UpdateSectionBlocks {
 
 impl Deserialize for UpdateSectionBlocks {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        <(i64, Vec<VarLong>)>::deserialize
+        nom_context("UpdateSedctionBlocks", <(i64, Vec<VarLong>)>::deserialize)
             .map(|(packed_coords, packed_blocks)| UpdateSectionBlocks {
                 subchunk_coords: [
                     (packed_coords >> 42) as i32,
@@ -932,7 +969,6 @@ impl Deserialize for UpdateSectionBlocks {
                     })
                     .collect(),
             })
-            .context("UpdateSectionBlocks")
             .parse(input)
     }
 }
@@ -963,16 +999,14 @@ pub struct SetEquipment {
 
 impl Deserialize for SetEquipment {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        let (mut rest, entity_id) = EntityId::deserialize
-            .context("SetEquipment::entity_id")
-            .parse(input)?;
+        let (mut rest, entity_id) =
+            nom_context("SetEquipment::entity_id", EntityId::deserialize).parse(input)?;
         let mut more_pieces = true;
         let mut equipment = Vec::new();
         while more_pieces {
             more_pieces = rest[0] & 0x80 != 0;
-            let (new_rest, equipment_piece) = EquipmentPiece::deserialize
-                .context("SetEquipment::equipment")
-                .parse(rest)?;
+            let (new_rest, equipment_piece) =
+                nom_context("SetEquipment::equipment", EquipmentPiece::deserialize).parse(rest)?;
             equipment.push(equipment_piece);
             rest = new_rest;
         }
@@ -1005,23 +1039,25 @@ pub enum EquipmentSlot {
 
 impl Deserialize for EquipmentSlot {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        byte_enum_parser!(
-            0x00 => Self::MainHand,
-            0x01 => Self::OffHand,
-            0x02 => Self::Boots,
-            0x03 => Self::Leggings,
-            0x04 => Self::Chestplate,
-            0x05 => Self::Helmet,
-            0x06 => Self::Body,
-            0x80 => Self::MainHand,
-            0x81 => Self::OffHand,
-            0x82 => Self::Boots,
-            0x83 => Self::Leggings,
-            0x84 => Self::Chestplate,
-            0x85 => Self::Helmet,
-            0x86 => Self::Body,
+        nom_context(
+            "EquipmentSlot",
+            byte_enum_parser!(
+                0x00 => Self::MainHand,
+                0x01 => Self::OffHand,
+                0x02 => Self::Boots,
+                0x03 => Self::Leggings,
+                0x04 => Self::Chestplate,
+                0x05 => Self::Helmet,
+                0x06 => Self::Body,
+                0x80 => Self::MainHand,
+                0x81 => Self::OffHand,
+                0x82 => Self::Boots,
+                0x83 => Self::Leggings,
+                0x84 => Self::Chestplate,
+                0x85 => Self::Helmet,
+                0x86 => Self::Body,
+            ),
         )
-        .context("EquipmentSlot")
         .parse(input)
     }
 }
@@ -1040,26 +1076,26 @@ pub struct PlaySoundEffect {
 impl Deserialize for PlaySoundEffect {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         let (rest, VarInt(sound_id)) = VarInt::deserialize(input)?;
-        tuple((
+        (
             cond(sound_id == 0, <(Identifier, Option<f32>)>::deserialize),
             verify(VarInt::deserialize, |value| value.0 > 0).map(|value| value.0 as u32),
-            tuple((i32::deserialize, i32::deserialize, i32::deserialize)),
+            (i32::deserialize, i32::deserialize, i32::deserialize),
             f32::deserialize,
             f32::deserialize,
             u64::deserialize,
-        ))
-        .map(
-            |(name_and_fixed_range, category, (x, y, z), volume, pitch, seed)| Self {
-                id: if sound_id == 0 { None } else { Some(sound_id) },
-                name_and_fixed_range,
-                category,
-                position: [x, y, z],
-                volume,
-                pitch,
-                seed,
-            },
         )
-        .parse(rest)
+            .map(
+                |(name_and_fixed_range, category, (x, y, z), volume, pitch, seed)| Self {
+                    id: if sound_id == 0 { None } else { Some(sound_id) },
+                    name_and_fixed_range,
+                    category,
+                    position: [x, y, z],
+                    volume,
+                    pitch,
+                    seed,
+                },
+            )
+            .parse(rest)
     }
 }
 
@@ -1147,16 +1183,19 @@ pub struct AdvancementDisplay {
 
 impl Deserialize for AdvancementDisplay {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        let (rest, (title, description, icon, frame_type, flags)) =
-            <(TextComponent, TextComponent, crafting::Slot, FrameType, u32)>::deserialize
-                .context("AdvancementDisplay")
-                .parse(input)?;
-        let (rest, (background_texture, x_pos, y_pos)) = tuple((
-            cond(flags & 0b001 != 0, Identifier::deserialize),
-            f32::deserialize,
-            f32::deserialize,
-        ))
-        .context("AdvancementDisplay")
+        let (rest, (title, description, icon, frame_type, flags)) = nom_context(
+            "AdvancementDisplay",
+            <(TextComponent, TextComponent, crafting::Slot, FrameType, u32)>::deserialize,
+        )
+        .parse(input)?;
+        let (rest, (background_texture, x_pos, y_pos)) = nom_context(
+            "AdvancementDisplay",
+            (
+                cond(flags & 0b001 != 0, Identifier::deserialize),
+                f32::deserialize,
+                f32::deserialize,
+            ),
+        )
         .parse(rest)?;
         Ok((
             rest,
@@ -1183,12 +1222,14 @@ pub enum FrameType {
 
 impl Deserialize for FrameType {
     fn deserialize(input: InputSpan) -> IResult<Self> {
-        byte_enum_parser!(
-            0 => Self::Task,
-            1 => Self::Challenge,
-            2 => Self::Goal,
+        nom_context(
+            "FrameType",
+            byte_enum_parser!(
+                0 => Self::Task,
+                1 => Self::Challenge,
+                2 => Self::Goal,
+            ),
         )
-        .context("FrameType")
         .parse(input)
     }
 }

@@ -1,25 +1,30 @@
-use ahash::{AHashMap, AHashSet};
+use portable_std::prelude::*;
+use portable_std::{Atom, Cow, FastHashMap, FastHashSet};
 use anyhow::{Context, anyhow, bail, ensure};
-use indexmap::IndexMap;
+use core::fmt::Write;
 use serde::Deserialize;
-use std::borrow::Cow;
-use std::fmt::Write;
-use std::sync::Arc;
-use string_cache::DefaultAtom as Atom;
 
-use super::RightAngleRotation;
-use super::model::{CombinedModelPart, ModelCache, ModelRotationInfo, ModelType};
-use super::{Identifier, texture};
-use crate::physics::AABB;
-use crate::resource::RegistryIndex;
-use crate::resource::manager::{ResourceType, get_resource_file};
+use super::{Identifier, RightAngleRotation, RegistryIndex};
+use super::model::{ModelRotationInfo, ModelIndex};
+use crate::aabb::AABB;
 
+#[cfg(feature = "std")]
+use std_imports::*;
+#[cfg(feature = "std")]
+mod std_imports {
+    pub use super::super::super::texture;
+    pub use super::super::model::{CombinedModelPart, ModelRegistryBuilder};
+    pub use crate::manager::{ResourceType, get_resource_file};
+    pub use indexmap::IndexMap;
+}
+
+#[cfg(feature = "std")]
 pub fn load_blockstates(
     block_index: RegistryIndex,
     identifier: &Identifier,
     custom_properties: Option<&[(&str, CustomPropertyType)]>,
     replacement_properties: Option<&[(&str, CustomPropertyType)]>,
-    model_cache: &mut ModelCache,
+    model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
     let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
@@ -55,12 +60,13 @@ pub fn load_blockstates(
     }
 }
 
+#[cfg(feature = "std")]
 fn load_blockstate_variants(
     block_index: RegistryIndex,
     variants: IndexMap<String, Variant>,
     custom_properties: &[(&str, CustomPropertyType)],
     replacement_properties: Option<&[(&str, CustomPropertyType)]>,
-    model_cache: &mut ModelCache,
+    model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
     // Check condition sets
@@ -150,7 +156,7 @@ fn load_blockstate_variants(
             }
             // Generate condition set string (for finding entry), and map (stored as extra info)
             let mut condition_set = String::new();
-            let mut condition_map = AHashMap::new();
+            let mut condition_map = FastHashMap::new();
             for (i, (name, value)) in state.into_iter().enumerate() {
                 if i > 0 {
                     write!(&mut condition_set, ",").unwrap();
@@ -297,7 +303,7 @@ fn load_blockstate_variants(
             if !is_valid_condition_set(&condition_set) {
                 bail!("Invalid condition set {condition_set}");
             }
-            let condition_map: AHashMap<Atom, Atom> = condition_set
+            let condition_map: FastHashMap<Atom, Atom> = condition_set
                 .split(',')
                 .filter(|condition| condition != &"")
                 .map(|condition| {
@@ -442,13 +448,13 @@ fn load_blockstate_variants(
     }
 }
 
-#[tracing::instrument(skip(cases, properties, model_cache, texture_atlas))]
+#[cfg(feature = "std")]
 fn load_blockstate_multipart_cases(
     block_index: RegistryIndex,
     identifier: &Identifier,
     mut cases: Vec<MultipartCase>,
     properties: &[(&str, CustomPropertyType)],
-    model_cache: &mut ModelCache,
+    model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
     // Rescale weighted cases, so for each case, all weights sum to 1.0
@@ -472,7 +478,7 @@ fn load_blockstate_multipart_cases(
     let mut blockstates = Vec::new();
     while !is_final_state {
         // Get current state
-        let state: AHashMap<_, _> = property_iters
+        let state: FastHashMap<_, _> = property_iters
             .iter()
             .zip(current_property_states.iter())
             .map(|((name, _iter), value)| (*name, value.clone()))
@@ -492,7 +498,7 @@ fn load_blockstate_multipart_cases(
                 is_final_state = true;
             }
         }
-        let condition_map: AHashMap<Atom, Atom> = state
+        let condition_map: FastHashMap<Atom, Atom> = state
             .iter()
             .map(|(&k, v)| (Atom::from(k), Atom::from(v.as_ref())))
             .collect();
@@ -577,7 +583,7 @@ fn load_blockstate_multipart_cases(
         if let [model_parts] = &model_part_groups[..] {
             // Only one possible model
             let model = model_cache
-                .load_combined_model(&model_parts.parts, texture_atlas)
+                .load_combined_model(identifier, &model_parts.parts, texture_atlas)
                 .with_context(|| format!("Error combining model list {:?}", &model_parts.parts))?;
             blockstates.push(Blockstate {
                 block_index,
@@ -593,7 +599,7 @@ fn load_blockstate_multipart_cases(
                 .into_iter()
                 .map(|group| {
                     let model = model_cache
-                        .load_combined_model(&group.parts, texture_atlas)
+                        .load_combined_model(identifier, &group.parts, texture_atlas)
                         .with_context(|| {
                             format!("Error combining model list {:?}", &group.parts)
                         })?;
@@ -616,8 +622,9 @@ fn load_blockstate_multipart_cases(
     Ok(blockstates)
 }
 
+#[cfg(feature = "std")]
 fn is_multipart_condition_group_satisfied(
-    state: &AHashMap<&str, Cow<'_, str>>,
+    state: &FastHashMap<&str, Cow<'_, str>>,
     condition_group: &MultipartConditionGroup,
 ) -> bool {
     for condition in &condition_group.0 {
@@ -641,12 +648,13 @@ fn is_multipart_condition_group_satisfied(
 /// `custom_properties` is each property that defines the blockstates, in order.
 /// `skip_properties` is a list of property names from `properties` that do not appear in the
 /// blockstates file.
+#[cfg(feature = "std")]
 pub fn load_full_custom_blockstates(
     block_index: RegistryIndex,
     identifier: &Identifier,
     properties: &[(&str, CustomPropertyType)],
     skip_properties: &[&str],
-    model_cache: &mut ModelCache,
+    model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
     // Check all skip properties are actually also properties
@@ -658,7 +666,7 @@ pub fn load_full_custom_blockstates(
             "Skip property '{skip_prop}' not found in properties"
         );
     }
-    let skip_properties: AHashSet<_> = skip_properties.iter().map(|p| Atom::from(*p)).collect();
+    let skip_properties: FastHashSet<_> = skip_properties.iter().map(|p| Atom::from(*p)).collect();
     let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
         .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
     let file: File = serde_json::from_slice(&blockstate_json_bytes)
@@ -705,7 +713,7 @@ pub fn load_full_custom_blockstates(
                 }
                 // Generate condition set string (for finding entry), and map (stored as extra info)
                 let mut condition_strings = Vec::new();
-                let mut condition_map = AHashMap::new();
+                let mut condition_map = FastHashMap::new();
                 for (name, value) in state {
                     if !skip_properties.contains(&name) {
                         condition_strings.push(format!("{name}={value}"));
@@ -794,10 +802,11 @@ pub fn load_full_custom_blockstates(
     }
 }
 
+#[cfg(feature = "std")]
 pub fn load_liquid_blockstates(
     block_index: RegistryIndex,
     identifier: &Identifier,
-    model_cache: &mut ModelCache,
+    model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
     let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
@@ -849,6 +858,7 @@ pub fn load_liquid_blockstates(
     Ok(blockstates)
 }
 
+#[cfg(feature = "std")]
 fn is_valid_condition_set(set: &str) -> bool {
     if set.is_empty() {
         return true;
@@ -875,15 +885,17 @@ fn is_valid_condition_set(set: &str) -> bool {
     matches!(state, State::Value)
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CustomPropertyType<'a, 'b> {
     Bool,
-    Int(std::ops::RangeInclusive<u32>),
+    Int(core::ops::RangeInclusive<u32>),
     Enum(&'a [&'b str]),
 }
 
-impl CustomPropertyType<'_, '_> {
-    pub fn iter(&self) -> CustomPropertyIterator {
+#[cfg(feature = "std")]
+impl<'a, 'b> CustomPropertyType<'a, 'b> {
+    pub fn iter(&self) -> CustomPropertyIterator<'a, 'b> {
         let type_state = match self {
             Self::Bool => CustomPropertyIteratorType::Bool {
                 current_state: true,
@@ -904,19 +916,21 @@ impl CustomPropertyType<'_, '_> {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 pub struct CustomPropertyIterator<'a, 'b> {
     type_state: CustomPropertyIteratorType<'a, 'b>,
     just_reset: bool,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 pub enum CustomPropertyIteratorType<'a, 'b> {
     Bool {
         current_state: bool,
     },
     Int {
-        range: std::ops::RangeInclusive<u32>,
+        range: core::ops::RangeInclusive<u32>,
         current_num: u32,
     },
     Enum {
@@ -925,6 +939,7 @@ pub enum CustomPropertyIteratorType<'a, 'b> {
     },
 }
 
+#[cfg(feature = "std")]
 impl<'b> CustomPropertyIterator<'_, 'b> {
     /// Returns the next value, along with whether the value has just reset
     #[expect(clippy::should_implement_trait)]
@@ -949,7 +964,7 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
                     (
                         Cow::Owned(format!(
                             "{}",
-                            std::mem::replace(current_num, *range.start())
+                            core::mem::replace(current_num, *range.start())
                         )),
                         true,
                     )
@@ -965,7 +980,7 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
                     (Cow::Borrowed(kinds[index]), false)
                 } else {
                     (
-                        Cow::Borrowed(kinds[std::mem::replace(current_index, 0)]),
+                        Cow::Borrowed(kinds[core::mem::replace(current_index, 0)]),
                         true,
                     )
                 }
@@ -973,23 +988,24 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
         };
         (
             state,
-            std::mem::replace(&mut self.just_reset, is_last_state),
+            core::mem::replace(&mut self.just_reset, is_last_state),
         )
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
 pub struct Blockstate {
     pub block_index: RegistryIndex,
     pub extra_info: BlockstateInfo,
-    pub properties: AHashMap<Atom, Atom>,
+    #[bincode(with_serde)]
+    pub properties: FastHashMap<Atom, Atom>,
     pub model_data: ModelData,
     // Used for rotating collision AABBs.
     pub rough_x_rotation: RightAngleRotation,
     pub rough_y_rotation: RightAngleRotation,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
 pub struct BlockstateInfo {
     pub opacity: BlockOpacity,
     pub light_info: BlockLightInfo,
@@ -1006,6 +1022,7 @@ impl Default for BlockstateInfo {
     }
 }
 
+#[cfg(feature = "std")]
 impl BlockstateInfo {
     pub fn merge_modifier(&mut self, modifier: BlockstateInfoModifier) {
         // We manually deconstruct here to make sure changes to the `BlockstateInfoModifier` struct
@@ -1018,19 +1035,21 @@ impl BlockstateInfo {
         self.opacity = opacity.unwrap_or(self.opacity);
         self.light_info = light_info.unwrap_or(self.light_info);
         // Can't move out of the mutable reference, so we do this to avoid a clone.
-        let self_collision_info = std::mem::replace(&mut self.collision_info, CollisionInfo::Empty);
+        let self_collision_info =
+            core::mem::replace(&mut self.collision_info, CollisionInfo::Empty);
         self.collision_info = collision_info.unwrap_or(self_collision_info);
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[cfg(feature = "std")]
+#[derive(Clone, Debug, Deserialize, Default, bincode::Encode, bincode::Decode)]
 pub struct BlockstateInfoModifier {
     pub opacity: Option<BlockOpacity>,
     pub light_info: Option<BlockLightInfo>,
     pub collision_info: Option<CollisionInfo>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum BlockOpacity {
     Opaque,
     /// Leaves are either opaque or transparent, depending on graphics settings.
@@ -1044,7 +1063,7 @@ pub enum BlockOpacity {
     Transparent,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct BlockLightInfo {
     pub sky_light_opacity: SkyLightOpacity,
     pub emission_level: u8,
@@ -1059,7 +1078,7 @@ impl Default for BlockLightInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum SkyLightOpacity {
     /// Transparent blocks allow sky light through unaffected.
     Transparent,
@@ -1069,27 +1088,26 @@ pub enum SkyLightOpacity {
     Opaque,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
 pub enum CollisionInfo {
     Empty,
     FullBlock,
     Complex(Box<[AABB]>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
 pub enum ModelData {
-    Single(Model),
+    Single(ModelIndex),
     RandomChoice(Box<[WeightedModel]>),
 }
 
-pub type Model = Arc<ModelType>;
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, bincode::Encode, bincode::Decode)]
 pub struct WeightedModel {
-    pub model: Arc<ModelType>,
+    pub model: ModelIndex,
     pub weight: f32,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum File {
@@ -1097,6 +1115,7 @@ enum File {
     Multipart(Vec<MultipartCase>),
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Variant {
@@ -1104,6 +1123,7 @@ pub enum Variant {
     List(Vec<WeightedVariantModel>),
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 pub struct VariantModel {
     pub model: String,
@@ -1115,6 +1135,7 @@ pub struct VariantModel {
     pub uv_lock: bool,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 pub struct WeightedVariantModel {
     pub model: String,
@@ -1128,6 +1149,7 @@ pub struct WeightedVariantModel {
     pub weight: f32,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 struct MultipartCase {
     #[serde(rename = "when")]
@@ -1136,6 +1158,7 @@ struct MultipartCase {
     pub apply_variant: Variant,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 enum MultipartConditionContainer {
@@ -1143,6 +1166,7 @@ enum MultipartConditionContainer {
     Combination(MultipartConditionCombination),
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 enum MultipartConditionCombination {
     #[serde(rename = "OR")]
@@ -1151,20 +1175,23 @@ enum MultipartConditionCombination {
     Intersection(Vec<MultipartConditionGroup>),
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
-#[serde(try_from = "AHashMap<String, String>")]
+#[serde(try_from = "FastHashMap<String, String>")]
 pub struct MultipartConditionGroup(Vec<MultipartCondition>);
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 struct MultipartCondition {
-    pub property_set: AHashSet<String>,
-    pub value_set: AHashSet<String>,
+    pub property_set: FastHashSet<String>,
+    pub value_set: FastHashSet<String>,
 }
 
-impl TryFrom<AHashMap<String, String>> for MultipartConditionGroup {
+#[cfg(feature = "std")]
+impl TryFrom<FastHashMap<String, String>> for MultipartConditionGroup {
     type Error = String;
 
-    fn try_from(conditions: AHashMap<String, String>) -> Result<Self, Self::Error> {
+    fn try_from(conditions: FastHashMap<String, String>) -> Result<Self, Self::Error> {
         if conditions.is_empty() {
             return Err("MultipartCondition requires at least one condition".to_string());
         }
@@ -1189,6 +1216,7 @@ impl TryFrom<AHashMap<String, String>> for MultipartConditionGroup {
     }
 }
 
+#[cfg(feature = "std")]
 fn is_valid_property_or_value_set(set: &str) -> bool {
     #[derive(Clone, Copy)]
     enum State {
@@ -1207,6 +1235,7 @@ fn is_valid_property_or_value_set(set: &str) -> bool {
     matches!(state, State::Property)
 }
 
+#[cfg(feature = "std")]
 fn default_weight() -> f32 {
     1.0
 }

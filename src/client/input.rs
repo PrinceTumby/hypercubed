@@ -1,7 +1,22 @@
 use super::graphics::Camera;
 use nalgebra::Vector3;
-use winit::event::ElementState;
-use winit::keyboard::{KeyCode, PhysicalKey};
+
+#[cfg(feature = "std")]
+use std_imports::*;
+#[cfg(feature = "std")]
+mod std_imports {
+    pub use winit::event::ElementState;
+    pub use winit::keyboard::{KeyCode, PhysicalKey};
+}
+
+#[cfg(not(feature = "std"))]
+use ps2_imports::*;
+#[cfg(not(feature = "std"))]
+mod ps2_imports {
+    pub use crate::platform::libs::winit;
+    pub use winit::event::ElementState;
+    pub use winit::keyboard::{KeyCode, PhysicalKey};
+}
 
 // TODO We probably want to convert this to an action system at some point, where actions are
 // registered as being continuous, single press, toggle, etc. Would make modded custom controls

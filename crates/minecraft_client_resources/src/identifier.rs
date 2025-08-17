@@ -1,9 +1,12 @@
-pub use string_cache::DefaultAtom as Atom;
+pub use portable_std::prelude::*;
+pub use portable_std::Atom;
 
 use smallvec::SmallVec;
 use thiserror::Error;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Identifier {
     pub namespace: Atom,
     pub path_prefix_segments: SmallVec<[Atom; 2]>,
@@ -13,12 +16,12 @@ pub struct Identifier {
 #[macro_export]
 macro_rules! identifier {
     ($string:expr) => {
-        ($crate::resource::identifier::Identifier::parse($string).unwrap())
+        ($crate::identifier::Identifier::parse($string).unwrap())
     };
 }
 
-impl std::fmt::Debug for Identifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+impl core::fmt::Debug for Identifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
         write!(f, "<{}:", &self.namespace)?;
         for path_segment in &self.path_prefix_segments {
             write!(f, "{path_segment}/")?;
@@ -27,13 +30,38 @@ impl std::fmt::Debug for Identifier {
     }
 }
 
-impl std::fmt::Display for Identifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+impl core::fmt::Display for Identifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
         write!(f, "{}:", &self.namespace)?;
         for path_segment in &self.path_prefix_segments {
             write!(f, "{path_segment}/")?;
         }
         write!(f, "{}", &self.path_name)
+    }
+}
+
+impl TryFrom<&str> for Identifier {
+    type Error = ParseIdentifierError;
+    
+    fn try_from(value: &str) -> Result<Self, ParseIdentifierError> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for Identifier {
+    type Error = ParseIdentifierError;
+    
+    fn try_from(value: String) -> Result<Self, ParseIdentifierError> {
+        Self::parse(&value)
+    }
+}
+
+impl From<Identifier> for String {
+    fn from(identifier: Identifier) -> String {
+        use core::fmt::Write;
+        let mut out_string = String::new();
+        write!(out_string, "{identifier}").unwrap();
+        out_string
     }
 }
 

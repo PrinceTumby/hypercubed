@@ -9,25 +9,26 @@ use crate::client::{
 };
 #[cfg(feature = "graphics_backend_vulkan")]
 use crate::client::{RayTracedQuadInfo, RayTracedQuadPackedFields};
-use crate::identifier;
+use resources::identifier;
+use crate::portable_prelude::*;
+use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
+use portable_std::sync::mpsc;
 use crate::protocol::chunk::{
     self as protocol_chunk, ChunkSection, ChunkSectionLightChannelInfoMut, LightType,
 };
-use crate::resource::block::{GlobalPaletteIndex, RightAngleRotation};
-use crate::resource::block::blockstate::{self, BlockOpacity, SkyLightOpacity};
-use crate::resource::block::model::{ModelType, Tint};
-use ahash::{AHashMap, AHashSet, AHasher};
+use resources::block::blockstate::{self, BlockOpacity, SkyLightOpacity};
+use resources::block::model::{ModelType, Tint};
+use resources::block::{GlobalPaletteIndex, RightAngleRotation};
+use ahash::AHasher;
+use core::hash::Hasher;
 use fixedbitset::FixedBitSet;
 use ordered_float::NotNan;
 use smallvec::SmallVec;
-use std::collections::VecDeque;
-use std::hash::Hasher;
-use std::sync::{Arc, mpsc};
 
 #[cfg(feature = "graphics_backend_software")]
 pub fn process_subchunks(
     _graphics_resources: &GraphicsResources,
-    _raw_chunks: &AHashMap<[i32; 2], Arc<RawChunk>>,
+    _raw_chunks: &FastHashMap<[i32; 2], Arc<RawChunk>>,
     _play_state_update_tx: mpsc::Sender<ClientPlayStateUpdate>,
     _subchunks: &[[i32; 3]],
     _update_id: usize,
@@ -38,7 +39,7 @@ pub fn process_subchunks(
 #[cfg(not(feature = "graphics_backend_software"))]
 pub fn process_subchunks(
     graphics_resources: &GraphicsResources,
-    raw_chunks: &AHashMap<[i32; 2], Arc<RawChunk>>,
+    raw_chunks: &FastHashMap<[i32; 2], Arc<RawChunk>>,
     play_state_update_tx: mpsc::Sender<ClientPlayStateUpdate>,
     subchunks: &[[i32; 3]],
     update_id: usize,
@@ -75,7 +76,7 @@ pub fn process_subchunks(
         }
         let mut block_faces: [Vec<_>; 6] = Default::default();
         let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
-        let mut custom_block_instance_groups = AHashMap::new();
+        let mut custom_block_instance_groups = FastHashMap::new();
         // NOTE: RADIANCE CASCADES
         #[cfg(feature = "graphics_backend_vulkan")]
         let (
@@ -89,7 +90,7 @@ pub fn process_subchunks(
             mut custom_block_face_quad_info,
         ) = (
             <Vec<[f32; 3]>>::new(),
-            <AHashMap<[NotNan<f32>; 3], u32>>::new(),
+            <FastHashMap<[NotNan<f32>; 3], u32>>::new(),
             <Vec<[[u32; 3]; 2]>>::new(),
             <Vec<RayTracedQuadInfo>>::new(),
             <Vec<[[u32; 3]; 2]>>::new(),
@@ -98,18 +99,19 @@ pub fn process_subchunks(
             <Vec<RayTracedQuadInfo>>::new(),
         );
         #[cfg(feature = "graphics_backend_vulkan")]
+        #[expect(clippy::too_many_arguments)]
         fn add_block_quad(
             triangle_quads_list: &mut Vec<[[u32; 3]; 2]>,
             quad_info_list: &mut Vec<RayTracedQuadInfo>,
             vertex_positions: &mut Vec<[f32; 3]>,
-            vertex_position_index_map: &mut AHashMap<[NotNan<f32>; 3], u32>,
+            vertex_position_index_map: &mut FastHashMap<[NotNan<f32>; 3], u32>,
             global_pos: [f32; 3],
             dir_i: usize,
             atlas_uvs: [u16; 4],
-            uv_rotation: crate::resource::block::RightAngleRotation,
+            uv_rotation: resources::block::RightAngleRotation,
             tint_colour: Option<[u8; 4]>,
         ) {
-            use crate::resource::block::RightAngleRotation;
+            use resources::block::RightAngleRotation;
             use nalgebra::Vector3;
             assert!(dir_i < 6);
             let global_pos_vec = Vector3::from(global_pos) + Vector3::repeat(0.5);
@@ -120,7 +122,7 @@ pub fn process_subchunks(
                 Vector3::new(-0.5, 0.5, -0.5),
             ];
             let face_matrix =
-                crate::client::graphics::chunk_rc::block_face::face_matrices::rotations()[dir_i];
+                crate::client::graphics::chunk::block_face::face_matrices::rotations()[dir_i];
             let global_positions = base_positions
                 .map(|pos| face_matrix.transform_vector(&pos))
                 .map(|pos| pos + global_pos_vec)
@@ -183,8 +185,8 @@ pub fn process_subchunks(
                     let global_x = global_x_i32 as f32;
                     let global_palette_index = chunk_section.block_states.get(x, y, z);
                     let blockstate_info = &graphics_resources.block_registry[global_palette_index];
-                    let model = match &blockstate_info.model_data {
-                        blockstate::ModelData::Single(model) => model,
+                    let model_idx = match &blockstate_info.model_data {
+                        blockstate::ModelData::Single(model_idx) => *model_idx,
                         blockstate::ModelData::RandomChoice(models) => 'model_blk: {
                             // Find weight for model by hashed position
                             let mut block_hasher = AHasher::default();
@@ -193,16 +195,16 @@ pub fn process_subchunks(
                             block_hasher.write_i32(global_z_i32);
                             let hash = block_hasher.finish();
                             let mut current_percentage = (hash % 65537) as f32 / 65536.0;
-                            for model in models.iter() {
-                                if current_percentage <= model.weight {
-                                    break 'model_blk &model.model;
+                            for variant in models.iter() {
+                                if current_percentage <= variant.weight {
+                                    break 'model_blk variant.model;
                                 } else {
-                                    current_percentage -= model.weight;
+                                    current_percentage -= variant.weight;
                                 }
                             }
                             // Should be unreachable
-                            let model = &models[models.len() - 1];
-                            &model.model
+                            let variant = &models[models.len() - 1];
+                            variant.model
                         }
                     };
                     let block_opacity = blockstate_info.extra_info.opacity;
@@ -274,7 +276,8 @@ pub fn process_subchunks(
                         ident if ident == spruce_leaves_registry_index => [0x61, 0x99, 0x61, 0xFF],
                         _ => [0x91, 0xBD, 0x59, 0xFF],
                     };
-                    match model.as_ref() {
+                    let model = &graphics_resources.model_registry[model_idx];
+                    match model {
                         ModelType::None => continue,
                         ModelType::Block(info) => {
                             match block_opacity {
@@ -284,15 +287,18 @@ pub fn process_subchunks(
                                             continue;
                                         }
                                         block_faces[i].push(
-                                            graphics::chunk_rc::block_face::Instance::new(
+                                            graphics::chunk::block_face::Instance::new(
                                                 [x as u8, y as u8, z as u8],
                                                 info.per_face_atlas_uvs[i],
+                                                #[cfg(feature = "graphics_backend_vulkan")]
                                                 match info.per_face_uv_rotations[i] {
                                                     RightAngleRotation::Zero => 0,
                                                     RightAngleRotation::Ninety => 1,
                                                     RightAngleRotation::OneEighty => 2,
                                                     RightAngleRotation::TwoSeventy => 3,
                                                 },
+                                                #[cfg(not(feature = "graphics_backend_vulkan"))]
+                                                info.per_face_uv_rotations[i],
                                                 face_light_map[i],
                                                 blockstate_info
                                                     .extra_info
@@ -321,15 +327,18 @@ pub fn process_subchunks(
                                             continue;
                                         }
                                         tinted_block_faces[i].push(
-                                            graphics::chunk_rc::tinted_block_face::Instance::new(
+                                            graphics::chunk::tinted_block_face::Instance::new(
                                                 [x as u8, y as u8, z as u8],
                                                 info.per_face_atlas_uvs[i],
+                                                #[cfg(feature = "graphics_backend_vulkan")]
                                                 match info.per_face_uv_rotations[i] {
                                                     RightAngleRotation::Zero => 0,
                                                     RightAngleRotation::Ninety => 1,
                                                     RightAngleRotation::OneEighty => 2,
                                                     RightAngleRotation::TwoSeventy => 3,
                                                 },
+                                                #[cfg(not(feature = "graphics_backend_vulkan"))]
+                                                info.per_face_uv_rotations[i],
                                                 face_light_map[i],
                                                 // Block doesn't have any tint, so just use
                                                 // transparent white as a null value.
@@ -363,15 +372,18 @@ pub fn process_subchunks(
                                     continue;
                                 }
                                 tinted_block_faces[i].push(
-                                    graphics::chunk_rc::tinted_block_face::Instance::new(
+                                    graphics::chunk::tinted_block_face::Instance::new(
                                         [x as u8, y as u8, z as u8],
                                         info.per_face_atlas_uvs[i],
+                                        #[cfg(feature = "graphics_backend_vulkan")]
                                         match info.per_face_uv_rotations[i] {
                                             RightAngleRotation::Zero => 0,
                                             RightAngleRotation::Ninety => 1,
                                             RightAngleRotation::OneEighty => 2,
                                             RightAngleRotation::TwoSeventy => 3,
                                         },
+                                        #[cfg(not(feature = "graphics_backend_vulkan"))]
+                                        info.per_face_uv_rotations[i],
                                         face_light_map[i],
                                         tint_color,
                                         blockstate_info.extra_info.light_info.emission_level > 0,
@@ -399,15 +411,18 @@ pub fn process_subchunks(
                                 if let Some(tint) = face.tint {
                                     assert!(tint == Tint::Biome, "TODO: Alternative tints");
                                     tinted_block_faces[face.face_i as usize].push(
-                                        graphics::chunk_rc::tinted_block_face::Instance::new(
+                                        graphics::chunk::tinted_block_face::Instance::new(
                                             [x as u8, y as u8, z as u8],
                                             face.atlas_uvs,
+                                            #[cfg(feature = "graphics_backend_vulkan")]
                                             match face.uv_rotation {
                                                 RightAngleRotation::Zero => 0,
                                                 RightAngleRotation::Ninety => 1,
                                                 RightAngleRotation::OneEighty => 2,
                                                 RightAngleRotation::TwoSeventy => 3,
                                             },
+                                            #[cfg(not(feature = "graphics_backend_vulkan"))]
+                                            face.uv_rotation,
                                             face_light_map[face.face_i as usize],
                                             tint_color,
                                             blockstate_info.extra_info.light_info.emission_level
@@ -428,15 +443,18 @@ pub fn process_subchunks(
                                     );
                                 } else {
                                     block_faces[face.face_i as usize].push(
-                                        graphics::chunk_rc::block_face::Instance::new(
+                                        graphics::chunk::block_face::Instance::new(
                                             [x as u8, y as u8, z as u8],
                                             face.atlas_uvs,
+                                            #[cfg(feature = "graphics_backend_vulkan")]
                                             match face.uv_rotation {
                                                 RightAngleRotation::Zero => 0,
                                                 RightAngleRotation::Ninety => 1,
                                                 RightAngleRotation::OneEighty => 2,
                                                 RightAngleRotation::TwoSeventy => 3,
                                             },
+                                            #[cfg(not(feature = "graphics_backend_vulkan"))]
+                                            face.uv_rotation,
                                             face_light_map[face.face_i as usize],
                                             blockstate_info.extra_info.light_info.emission_level
                                                 > 0,
@@ -469,7 +487,7 @@ pub fn process_subchunks(
                             let block_instances = custom_block_instance_groups
                                 .entry(info)
                                 .or_insert_with(Vec::new);
-                            block_instances.push(graphics::chunk_rc::custom_block::Instance::new(
+                            block_instances.push(graphics::chunk::custom_block::Instance::new(
                                 [global_x, global_y, global_z],
                                 tint_color,
                                 light_section.get(x, y, z),
@@ -484,14 +502,17 @@ pub fn process_subchunks(
                                         + Vector3::repeat(0.5);
                                 for local_index_i in (0..info.indices.len()).step_by(6) {
                                     // Refer to FACE_INDICES in
-                                    // crate::resource::model::finalise_model.
+                                    // resources::model::finalise_model.
                                     // Should give indices [0, 1, 2, 3] + base.
-                                    let quad_model_vertices = [
-                                        &info.vertices[info.indices[local_index_i + 1] as usize],
-                                        &info.vertices[info.indices[local_index_i + 3] as usize],
-                                        &info.vertices[info.indices[local_index_i + 4] as usize],
-                                        &info.vertices[info.indices[local_index_i + 5] as usize],
+                                    let quad_model_indices = [
+                                        info.indices[local_index_i + 1] as usize,
+                                        info.indices[local_index_i + 3] as usize,
+                                        info.indices[local_index_i + 4] as usize,
+                                        info.indices[local_index_i + 5] as usize,
                                     ];
+                                    let quad_model_vertices = quad_model_indices.map(|i| {
+                                        &info.faces[i / 4][i % 4]
+                                    });
                                     let quad_indices = quad_model_vertices.map(|v| {
                                         let global_pos = v.local_pos + block_global_pos_vec;
                                         let global_pos_f32s = <[f32; 3]>::from(global_pos);
@@ -537,7 +558,7 @@ pub fn process_subchunks(
         // face generation.
         // Outlined here: https://tomcc.github.io/2014/08/31/visibility-1.html
         let connected_faces = 'connected_faces: {
-            use graphics::chunk_rc::SubchunkConnectivity;
+            use graphics::chunk::SubchunkConnectivity;
             use protocol_chunk::Palette;
             // If we can immediately tell all the subchunk blocks are opaque, skip this entire
             // process and just return that no subchunk faces are connected.
@@ -616,7 +637,7 @@ pub fn process_subchunks(
                 }
             }
             // Flood fill from each non-opaque block, to split all the blocks into groups.
-            let mut queue: AHashSet<[i8; 3]> = AHashSet::new();
+            let mut queue: FastHashSet<[i8; 3]> = FastHashSet::new();
             while !queue.is_empty() || !unchecked_blocks.is_clear() {
                 let [x, y, z] = queue
                     .iter()
@@ -702,7 +723,7 @@ pub fn process_subchunks(
                 continue;
             }
             let base_quad =
-                graphics::chunk_rc::block_face::Vertex::generate_base_quad(start_coords, i);
+                graphics::chunk::block_face::Vertex::generate_base_quad(start_coords, i);
             block_face_quads[i] = Some(base_quad);
         }
         // Tinted block faces
@@ -713,7 +734,7 @@ pub fn process_subchunks(
                 continue;
             }
             let base_quad =
-                graphics::chunk_rc::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
+                graphics::chunk::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
             tinted_block_face_quads[i] = Some(base_quad);
         }
         // Custom block groups
@@ -765,8 +786,8 @@ pub fn process_subchunks(
 
 pub fn recalculate_light(
     graphics_resources: &GraphicsResources,
-    raw_chunks: &mut AHashMap<[i32; 2], Arc<RawChunk>>,
-    subchunks_to_update: &mut AHashSet<[i32; 3]>,
+    raw_chunks: &mut FastHashMap<[i32; 2], Arc<RawChunk>>,
+    subchunks_to_update: &mut FastHashSet<[i32; 3]>,
     pos: [i32; 3],
     old_block_id: GlobalPaletteIndex,
     new_block_id: GlobalPaletteIndex,
@@ -845,8 +866,8 @@ pub fn recalculate_light(
 
 fn update_light_and_propagate(
     graphics_resources: &GraphicsResources,
-    raw_chunks: &mut AHashMap<[i32; 2], Arc<RawChunk>>,
-    subchunks_to_update: &mut AHashSet<[i32; 3]>,
+    raw_chunks: &mut FastHashMap<[i32; 2], Arc<RawChunk>>,
+    subchunks_to_update: &mut FastHashSet<[i32; 3]>,
     pos: [i32; 3],
     new_light_levels: [u8; 2],
 ) {
@@ -879,7 +900,7 @@ fn update_light_and_propagate(
             new_level,
         );
         match u8::cmp(&new_level, &old_level) {
-            std::cmp::Ordering::Less => {
+            core::cmp::Ordering::Less => {
                 let mut decrease_queue: VecDeque<([i32; 3], u8, Option<AxisDirection>)> =
                     VecDeque::new();
                 decrease_queue.push_back((pos, old_level, None));
@@ -944,8 +965,8 @@ fn update_light_and_propagate(
                     increase_queue.push_back((pos, new_level, None));
                 }
             }
-            std::cmp::Ordering::Equal => break 'block_light,
-            std::cmp::Ordering::Greater => increase_queue.push_back((pos, new_level, None)),
+            core::cmp::Ordering::Equal => break 'block_light,
+            core::cmp::Ordering::Greater => increase_queue.push_back((pos, new_level, None)),
         }
         // Propagate increases
         while let Some((pos, new_level, from_dir)) = increase_queue.pop_front() {
@@ -987,7 +1008,7 @@ fn update_light_and_propagate(
             new_level,
         );
         match u8::cmp(&new_level, &old_level) {
-            std::cmp::Ordering::Less => {
+            core::cmp::Ordering::Less => {
                 let mut decrease_queue: VecDeque<([i32; 3], u8, Option<AxisDirection>)> =
                     VecDeque::new();
                 decrease_queue.push_back((pos, old_level, None));
@@ -1032,8 +1053,8 @@ fn update_light_and_propagate(
                     }
                 }
             }
-            std::cmp::Ordering::Equal => break 'sky_light,
-            std::cmp::Ordering::Greater => increase_queue.push_back((pos, new_level, None)),
+            core::cmp::Ordering::Equal => break 'sky_light,
+            core::cmp::Ordering::Greater => increase_queue.push_back((pos, new_level, None)),
         }
         // Propagate increases
         while let Some((pos, new_level, from_dir)) = increase_queue.pop_front() {
@@ -1065,13 +1086,13 @@ fn update_light_and_propagate(
 }
 
 #[inline]
-fn get_section_info_and_inner_pos(
-    raw_chunks: &mut AHashMap<[i32; 2], Arc<RawChunk>>,
+fn get_section_info_and_inner_pos<'a>(
+    raw_chunks: &'a mut FastHashMap<[i32; 2], Arc<RawChunk>>,
     global_pos: [i32; 3],
     channel: LightType,
 ) -> Option<(
-    &mut ChunkSection,
-    ChunkSectionLightChannelInfoMut,
+    &'a mut ChunkSection,
+    ChunkSectionLightChannelInfoMut<'a>,
     [usize; 3],
 )> {
     let chunk_x = global_pos[0].div_euclid(SUBCHUNK_AXIS_LEN_I32);
@@ -1101,7 +1122,7 @@ fn get_section_info_and_inner_pos(
 /// Returns the block light, opacity, and emission level.
 fn get_block_light_level_and_info(
     graphics_resources: &GraphicsResources,
-    raw_chunks: &mut AHashMap<[i32; 2], Arc<RawChunk>>,
+    raw_chunks: &mut FastHashMap<[i32; 2], Arc<RawChunk>>,
     global_pos: [i32; 3],
 ) -> (u8, BlockOpacity, u8) {
     match get_section_info_and_inner_pos(raw_chunks, global_pos, LightType::Block) {
@@ -1123,7 +1144,7 @@ fn get_block_light_level_and_info(
 #[inline]
 fn get_sky_light_level_and_opacity(
     graphics_resources: &GraphicsResources,
-    raw_chunks: &mut AHashMap<[i32; 2], Arc<RawChunk>>,
+    raw_chunks: &mut FastHashMap<[i32; 2], Arc<RawChunk>>,
     global_pos: [i32; 3],
 ) -> (u8, SkyLightOpacity) {
     match get_section_info_and_inner_pos(raw_chunks, global_pos, LightType::Sky) {
@@ -1140,8 +1161,8 @@ fn get_sky_light_level_and_opacity(
 
 #[inline]
 fn set_light_level(
-    raw_chunks: &mut AHashMap<[i32; 2], Arc<RawChunk>>,
-    subchunks_to_update: &mut AHashSet<[i32; 3]>,
+    raw_chunks: &mut FastHashMap<[i32; 2], Arc<RawChunk>>,
+    subchunks_to_update: &mut FastHashSet<[i32; 3]>,
     global_pos: [i32; 3],
     channel: LightType,
     new_level: u8,

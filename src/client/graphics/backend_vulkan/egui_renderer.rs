@@ -1,9 +1,9 @@
 use super::GraphicsResources;
 use super::shader_exports::shader_stage_from_entry_point;
-use vulkan_prelude::*;
 use anyhow::Context;
 use foldhash::{HashMap, HashMapExt};
 use std::sync::Arc;
+use vulkan_prelude::*;
 
 pub struct Renderer {
     pipeline: Arc<VulkanGraphicsPipeline>,
@@ -96,7 +96,7 @@ impl Renderer {
         )
         .context("Error while creating screen size descriptor set")?;
         let image_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
+            device,
             &VulkanDescriptorSetLayoutCreateInfo {
                 bindings: &[
                     VulkanDescriptorSetLayoutBinding {
@@ -140,7 +140,7 @@ impl Renderer {
         .context("Error while creating image descriptor set layout")?;
         // Render pipeline
         let pipeline_layout = VulkanPipelineLayout::new(
-            &device,
+            device,
             &VulkanPipelineLayoutCreateInfo {
                 set_layouts: &[
                     &screen_size_descriptor_set_layout,
@@ -151,7 +151,7 @@ impl Renderer {
         )
         .context("Error while creating egui graphics pipeline layout")?;
         let pipeline = VulkanGraphicsPipeline::new(
-            &device,
+            device,
             None, // No pipeline cache
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),

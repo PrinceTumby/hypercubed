@@ -1,23 +1,7 @@
-#![warn(clippy::all)]
-#![deny(clippy::correctness)]
-#![deny(clippy::std_instead_of_core)]
-#![deny(clippy::std_instead_of_alloc)]
-#![deny(clippy::alloc_instead_of_core)]
-
-extern crate alloc;
-
-pub mod basic_types;
-pub mod client;
-pub mod physics;
-pub mod protocol;
-pub mod resource;
-pub mod world;
-
-use protocol::prelude::*;
-use std::sync::Arc;
-
-#[global_allocator]
-static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+use minecraft_client::client;
+use minecraft_client::protocol;
+use minecraft_client::protocol::prelude::*;
+use portable_std::Arc;
 
 const SERVER_ADDRESS: &str = "localhost";
 const SERVER_PORT: u16 = 25565;
@@ -41,7 +25,7 @@ fn main() -> anyhow::Result<()> {
         std::fs::read_to_string("session.json")
             .map(|session_json| serde_json::from_str(&session_json).unwrap())
             .ok();
-    let (server_connection, login_success_packet) = protocol::login::login(
+    let (server_connection, login_success_packet) = pollster::block_on(protocol::login::login(
         SERVER_ADDRESS,
         SERVER_PORT,
         configuration::ClientInformation {
@@ -55,7 +39,7 @@ fn main() -> anyhow::Result<()> {
             server_listings_allowed: true,
         },
         session_info.as_ref(),
-    )?;
+    ))?;
     println!("{login_success_packet:?}");
     // TODO: Refactor this:
     // - Change PlayConnection to have an internal thread sending packets on a channel

@@ -14,7 +14,7 @@ pub use super::Camera;
 
 #[derive(Clone)]
 pub struct GraphicsResources {
-    pub block_registry: Arc<crate::resource::block::Registry>,
+    pub block_registry: Arc<resources::block::Registry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,9 +86,9 @@ impl GraphicsState {
     pub async fn new<F>(window: &'static Window, register_blocks: F) -> anyhow::Result<Self>
     where
         F: FnOnce(
-            &mut crate::resource::block::Registry,
-            &mut crate::resource::block::model::ModelCache,
-            &mut crate::resource::texture::AtlasBuilder,
+            &mut resources::block::Registry,
+            &mut resources::block::model::ModelRegistryBuilder,
+            &mut resources::texture::AtlasBuilder,
         ) -> anyhow::Result<()>,
     {
         let graphics_options = GraphicsOptions::default();
@@ -107,12 +107,12 @@ impl GraphicsState {
             custom_block_vertices,
             custom_block_indices,
         ) = {
-            use crate::resource;
+            use resources;
             let size = [1024; 2];
             let square_length = 16;
             let mut atlas_builder =
                 resource::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_cache = resource::block::model::ModelCache::new();
+            let mut model_cache = resource::block::model::ModelRegistryBuilder::new();
             let mut block_registry = resource::block::Registry::new();
             register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
             let atlas = atlas_builder.build();
@@ -234,7 +234,7 @@ pub struct TextureAtlas {
 }
 
 impl TextureAtlas {
-    pub fn from_builder(builder: crate::resource::texture::AtlasBuilder) -> Self {
+    pub fn from_builder(builder: resources::texture::AtlasBuilder) -> Self {
         Self {
             texture: builder.texture,
             luma_texture: builder.luma_texture,

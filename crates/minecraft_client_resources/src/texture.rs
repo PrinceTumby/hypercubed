@@ -1,30 +1,78 @@
 use super::Identifier;
-use crate::resource::manager::{ResourceType, get_resource_file};
-use ahash::AHashMap;
 use anyhow::Context;
-use image::error::ImageError;
-use image::{GenericImage, GenericImageView, GrayImage, ImageFormat, RgbaImage};
-use thiserror::Error;
+use portable_std::FastHashMap;
+use portable_std::prelude::*;
 
-pub use crate::client::graphics::TextureAtlas as Atlas;
+#[cfg(feature = "std")]
+use std_imports::*;
+#[cfg(feature = "std")]
+mod std_imports {
+    pub use crate::manager::{ResourceType, get_resource_file};
+    pub use image::error::ImageError;
+    pub use image::{GenericImage, GenericImageView, ImageFormat, RgbaImage};
+    #[cfg(feature = "luma_textures")]
+    pub use image::GrayImage;
+}
 
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
+pub struct RawAtlas {
+    pub width: u32,
+    pub height: u32,
+    pub texture_bytes: Box<[u8]>,
+    #[cfg(feature = "luma_textures")]
+    pub luma_texture_bytes: Box<[u8]>,
+    #[bincode(with_serde)]
+    pub stored_textures: FastHashMap<Identifier, TextureInfo>,
+}
+
+#[cfg(feature = "std")]
+#[derive(Clone, Debug)]
+pub struct Atlas {
+    pub texture: RgbaImage,
+    #[cfg(feature = "luma_textures")]
+    pub luma_texture: GrayImage,
+    pub stored_textures: FastHashMap<Identifier, TextureInfo>,
+}
+
+#[cfg(feature = "std")]
+impl Atlas {
+    pub fn into_raw(self) -> RawAtlas {
+        let (width, height) = (self.texture.width(), self.texture.height());
+        let texture_bytes = self.texture.into_vec().into_boxed_slice();
+        #[cfg(feature = "luma_textures")]
+        let luma_texture_bytes = self.luma_texture.into_vec().into_boxed_slice();
+        let stored_textures = self.stored_textures;
+        RawAtlas {
+            width,
+            height,
+            texture_bytes,
+            #[cfg(feature = "luma_textures")]
+            luma_texture_bytes,
+            stored_textures,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 pub struct AtlasBuilder {
-    pub(crate) texture: RgbaImage,
-    // NOTE: RADIANCE CASCADES
-    pub(crate) luma_texture: GrayImage,
+    pub texture: RgbaImage,
+    #[cfg(feature = "luma_textures")]
+    pub luma_texture: GrayImage,
     square_length: u16,
     usage_bitmap: UsageBitmap2d,
-    stored_textures: AHashMap<Identifier, TextureInfo>,
+    stored_textures: FastHashMap<Identifier, TextureInfo>,
 }
 
 #[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TextureInfo {
     pub uvs: [u16; 4],
     pub space_dims: [u16; 2],
 }
 
-#[derive(Debug, Error)]
+#[cfg(feature = "std")]
+#[derive(Debug, thiserror::Error)]
 pub enum StitchError {
     #[error("invalid texture size")]
     InvalidTextureSize,
@@ -34,6 +82,7 @@ pub enum StitchError {
     ImageError(#[from] ImageError),
 }
 
+#[cfg(feature = "std")]
 impl AtlasBuilder {
     pub fn new(pixel_width: u32, pixel_height: u32, square_length: u16) -> Self {
         assert!(pixel_width < 65536);
@@ -44,13 +93,14 @@ impl AtlasBuilder {
         assert_eq!(65536 % pixel_height, 0);
         Self {
             texture: RgbaImage::new(pixel_width, pixel_height),
+            #[cfg(feature = "luma_textures")]
             luma_texture: GrayImage::new(pixel_width, pixel_height),
             square_length,
             usage_bitmap: UsageBitmap2d::new(
                 (pixel_width / square_length as u32).try_into().unwrap(),
                 (pixel_height / square_length as u32).try_into().unwrap(),
             ),
-            stored_textures: AHashMap::new(),
+            stored_textures: FastHashMap::new(),
         }
     }
 
@@ -70,17 +120,22 @@ impl AtlasBuilder {
             let texture = image::load_from_memory_with_format(&texture_bytes, ImageFormat::Png)
                 .with_context(|| format!("Failed to parse image texture for {location:?}"))?
                 .into_rgba8();
-            let luma_texture = get_resource_file(&ResourceType::TextureLuma, location)
-                .with_context(|| format!("Failed to read raw image luma texture for {location:?}"))
-                .and_then(|bytes| {
-                    image::load_from_memory_with_format(&bytes, ImageFormat::Png)
-                        .context("Failed to parse image luma texture")
-                })
-                .map(|raw_texture| raw_texture.into_luma8());
-            if let Ok(ref luma_texture) = luma_texture {
-                assert!(luma_texture.dimensions() == texture.dimensions());
-            }
-            let texture_info = self.stitch_in(&texture, luma_texture.ok().as_ref())?;
+            #[cfg(feature = "luma_textures")]
+            let texture_info = {
+                let luma_texture = get_resource_file(&ResourceType::TextureLuma, location)
+                    .with_context(|| format!("Failed to read raw image luma texture for {location:?}"))
+                    .and_then(|bytes| {
+                        image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+                            .context("Failed to parse image luma texture")
+                    })
+                    .map(|raw_texture| raw_texture.into_luma8());
+                if let Ok(ref luma_texture) = luma_texture {
+                    assert!(luma_texture.dimensions() == texture.dimensions());
+                }
+                self.stitch_in(&texture, luma_texture.ok().as_ref())?
+            };
+            #[cfg(not(feature = "luma_textures"))]
+            let texture_info = self.stitch_in(&texture)?;
             let animation_bytes = get_resource_file(&ResourceType::TextureMeta, location);
             if let Ok(animation_bytes) = animation_bytes {
                 #[expect(unused)]
@@ -133,21 +188,29 @@ impl AtlasBuilder {
     }
 
     /// Stitches a texture into the atlas, returning UV fractions `[1/U, 1/V]`
-    fn stitch_in<O, L>(
+    fn stitch_in
+    <
+        O: GenericImageView<Pixel = <RgbaImage as GenericImageView>::Pixel>,
+        #[cfg(feature = "luma_textures")]
+        L: GenericImageView<Pixel = <GrayImage as GenericImageView>::Pixel>,
+    >
+    (
         &mut self,
         texture: &O,
+        #[cfg(feature = "luma_textures")]
         luma_texture: Option<&L>,
     ) -> Result<TextureInfo, StitchError>
-    where
-        O: GenericImageView<Pixel = <RgbaImage as GenericImageView>::Pixel>,
-        L: GenericImageView<Pixel = <GrayImage as GenericImageView>::Pixel>,
     {
         let texture_width: u16 = texture.width().try_into().unwrap();
         let texture_height: u16 = texture.height().try_into().unwrap();
-        if texture.width() > self.texture.width() || texture_width % self.square_length != 0 {
+        if texture.width() > self.texture.width()
+            || !texture_width.is_multiple_of(self.square_length)
+        {
             return Err(StitchError::InvalidTextureSize);
         }
-        if texture.height() > self.texture.height() || texture_height % self.square_length != 0 {
+        if texture.height() > self.texture.height()
+            || !texture_height.is_multiple_of(self.square_length)
+        {
             return Err(StitchError::InvalidTextureSize);
         }
         let space_width = texture_width / self.square_length;
@@ -161,6 +224,7 @@ impl AtlasBuilder {
         let end_y = start_y + texture_height;
         self.texture
             .copy_from(texture, start_x as u32, start_y as u32)?;
+        #[cfg(feature = "luma_textures")]
         if let Some(luma_texture) = luma_texture {
             self.luma_texture
                 .copy_from(luma_texture, start_x as u32, start_y as u32)?;
@@ -170,30 +234,18 @@ impl AtlasBuilder {
             space_dims: [space_width, space_height],
         })
     }
-
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "graphics_backend_vulkan")] {
-            pub fn build(
-                self,
-                device: &std::sync::Arc<vulkano::device::Device>,
-                queue: &std::sync::Arc<vulkano::device::Queue>,
-                memory_allocator: &std::sync::Arc<dyn vulkano::memory::allocator::MemoryAllocator>,
-                command_buffer_allocator: std::sync::Arc<dyn vulkano::command_buffer::allocator::CommandBufferAllocator>,
-            ) -> anyhow::Result<Atlas> {
-                Atlas::from_builder(self, device, queue, memory_allocator, command_buffer_allocator)
-            }
-        } else if #[cfg(feature = "graphics_backend_wgpu")] {
-            pub fn build(self, device: &wgpu::Device, queue: &wgpu::Queue, label: Option<&str>) -> Atlas {
-                Atlas::from_builder(self, device, queue, label)
-            }
-        } else if #[cfg(feature = "graphics_backend_software")] {
-            pub fn build(self) -> Atlas {
-                Atlas::from_builder(self)
-            }
+    
+    pub fn finish(self) -> Atlas {
+        Atlas {
+            texture: self.texture,
+            #[cfg(feature = "luma_textures")]
+            luma_texture: self.luma_texture,
+            stored_textures: self.stored_textures,
         }
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 struct UsageBitmap2d {
     bytes: Vec<u8>,
@@ -201,6 +253,7 @@ struct UsageBitmap2d {
     height: u16,
 }
 
+#[cfg(feature = "std")]
 impl UsageBitmap2d {
     pub fn new(width: u16, height: u16) -> Self {
         // Currently only works with multiple of 8 dimensions

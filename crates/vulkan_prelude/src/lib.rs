@@ -95,17 +95,14 @@ pub use vulkano::instance::{
     InstanceExtensions as VulkanInstanceExtensions,
 };
 pub use vulkano::memory::allocator::{
-    AllocationCreateInfo as VulkanAllocationCreateInfo,
-    DeviceLayout as VulkanDeviceLayout,
+    AllocationCreateInfo as VulkanAllocationCreateInfo, DeviceLayout as VulkanDeviceLayout,
     MemoryAllocatePreference as VulkanMemoryAllocatePreference,
     MemoryAllocator as VulkanMemoryAllocator, MemoryTypeFilter as VulkanMemoryTypeFilter,
     StandardMemoryAllocator as VulkanStandardMemoryAllocator,
 };
 pub use vulkano::memory::{
-    DedicatedAllocation as VulkanDedicatedAllocation,
-    DeviceAlignment as VulkanDeviceAlignment,
-    DeviceMemory as VulkanDeviceMemory,
-    MemoryAllocateInfo as VulkanMemoryAllocateInfo,
+    DedicatedAllocation as VulkanDedicatedAllocation, DeviceAlignment as VulkanDeviceAlignment,
+    DeviceMemory as VulkanDeviceMemory, MemoryAllocateInfo as VulkanMemoryAllocateInfo,
     ResourceMemory as VulkanResourceMemory,
 };
 pub use vulkano::pipeline::compute::ComputePipelineCreateInfo as VulkanComputePipelineCreateInfo;
@@ -262,12 +259,7 @@ pub fn vulkan_new_buffer_slice<T: vulkano::buffer::BufferContents>(
     allocation_info: &VulkanAllocationCreateInfo,
     num_items: VulkanDeviceSize,
 ) -> Result<VulkanSubbuffer<[T]>, VulkanValidated<vulkano::buffer::AllocateBufferError>> {
-    VulkanBuffer::new_slice(
-        allocator,
-        create_info,
-        allocation_info,
-        num_items,
-    )
+    VulkanBuffer::new_slice(allocator, create_info, allocation_info, num_items)
 }
 
 /// Creates a new uninitialized buffer for a slice, with a specified alignment for the device
@@ -287,7 +279,10 @@ pub fn vulkan_new_buffer_slice_aligned<T: vulkano::buffer::BufferContents>(
         allocation_info,
         VulkanDeviceLayout::from_size_alignment(
             t_device_size * num_items,
-            VulkanDeviceSize::max(T::LAYOUT.alignment().as_devicesize(), alignment.as_devicesize()),
+            VulkanDeviceSize::max(
+                T::LAYOUT.alignment().as_devicesize(),
+                alignment.as_devicesize(),
+            ),
         )
         .unwrap(),
     )?;
@@ -317,11 +312,15 @@ where
         allocation_info,
         VulkanDeviceLayout::from_size_alignment(
             t_device_size * iter_len,
-            VulkanDeviceSize::max(T::LAYOUT.alignment().as_devicesize(), alignment.as_devicesize()),
+            VulkanDeviceSize::max(
+                T::LAYOUT.alignment().as_devicesize(),
+                alignment.as_devicesize(),
+            ),
         )
         .unwrap(),
     )?;
-    let aligned_buffer: VulkanSubbuffer<[T]> = VulkanSubbuffer::new(unaligned_byte_buffer).cast_aligned();
+    let aligned_buffer: VulkanSubbuffer<[T]> =
+        VulkanSubbuffer::new(unaligned_byte_buffer).cast_aligned();
     // Write elements
     {
         let mut write_guard = aligned_buffer.write().unwrap();

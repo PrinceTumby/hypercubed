@@ -1,5 +1,5 @@
 [workspace]
-members = [ "builder", "builder/crate_redirect" ]
+members = ["builder", "builder/crate_redirect"]
 
 [workspace.dependencies]
 cfg-if = "1"
@@ -14,9 +14,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = [ "vulkano" ]
+default = ["vulkano"]
 shader_code = []
-vulkano = [ "dep:vulkano" ]
+vulkano = ["dep:vulkano"]
 
 [dependencies]
 cfg-if = { workspace = true }
@@ -24,9 +24,9 @@ spirv-std = { workspace = true }
 bitfield = { workspace = true }
 vulkano = { workspace = true, optional = true }
 vulkan_prelude = { path = "../vulkan_prelude" }
-ahash = { version = "0", features = [ "serde" ] }
+ahash = { version = "0", features = ["serde"] }
 anyhow = "1"
-bytemuck = { version = "1", features = [ "derive" ] }
+bytemuck = { version = "1", features = ["derive"] }
 foldhash = "0"
 lazy_static = "1"
 

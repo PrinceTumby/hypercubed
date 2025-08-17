@@ -1,7 +1,7 @@
-use vulkan_prelude::*;
 use crate::basic_types::AxisDirection;
 use std::marker::{PhantomData, Send, Sync};
 use std::sync::Arc;
+use vulkan_prelude::*;
 
 pub struct Subchunk {
     pub start_coords: [i32; 3],
@@ -167,7 +167,7 @@ impl<T: bytemuck::Pod + Send + Sync> VertexListBuffer<T> {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             buffer: VulkanBuffer::from_iter(
-                &memory_allocator,
+                memory_allocator,
                 &VulkanBufferCreateInfo {
                     usage: VulkanBufferUsage::VERTEX_BUFFER,
                     ..Default::default()
@@ -324,13 +324,10 @@ pub struct BufferManager<
 impl<T: bytemuck::Pod + Send + Sync, const ITEMS_PER_CHUNK: usize, const NUM_CHUNKS: usize>
     BufferManager<T, ITEMS_PER_CHUNK, NUM_CHUNKS>
 {
-    pub fn new(
-        device: &Arc<VulkanDevice>,
-        usage: VulkanBufferUsage,
-    ) -> anyhow::Result<Self> {
+    pub fn new(device: &Arc<VulkanDevice>, usage: VulkanBufferUsage) -> anyhow::Result<Self> {
         Ok(Self {
             buffer: vulkan_new_buffer_slice_large(
-                &device,
+                device,
                 usage
                     | VulkanBufferUsage::TRANSFER_DST
                     // NOTE: RADIANCE CASCADES
