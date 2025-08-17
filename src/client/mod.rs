@@ -134,8 +134,7 @@ bitfield::bitfield! {
 
 #[derive(Debug)]
 pub struct RawCustomBlockGroup {
-    pub start_vertex: u32,
-    pub start_index_and_len: [u32; 2],
+    pub start_face_and_len: [u32; 2],
     pub instances: Vec<graphics::chunk::custom_block::Instance>,
 }
 

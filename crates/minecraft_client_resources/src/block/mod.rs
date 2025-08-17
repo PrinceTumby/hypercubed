@@ -917,7 +917,6 @@ pub fn generate_vanilla_embedded_cache() -> anyhow::Result<EmbeddedCache> {
         println!("cargo::warning=Other model count: {model_count}");
         assert!(model_cache.model_identifiers.len() == model_cache.model_list.len());
         println!("cargo::warning=Combined model count: {}", model_cache.completed_model_combinations.len());
-        println!("cargo::warning=Model identifiers: {:?}", &model_cache.model_identifiers);
     }
     let atlas = atlas_builder.finish().into_raw();
     Ok(EmbeddedCache {

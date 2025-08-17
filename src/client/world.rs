@@ -741,8 +741,7 @@ pub fn process_subchunks(
         let custom_block_groups = custom_block_instance_groups
             .into_iter()
             .map(|(info, instances)| RawCustomBlockGroup {
-                start_vertex: info.start_vertex,
-                start_index_and_len: info.start_index_and_len,
+                start_face_and_len: info.start_face_and_len,
                 instances,
             })
             .collect();

@@ -13,7 +13,7 @@ use std_imports::*;
 #[cfg(feature = "std")]
 mod std_imports {
     pub use super::super::super::texture;
-    pub use super::super::model::{CombinedModelPart, ModelRegistryBuilder};
+    pub use super::super::model::{RawCompositeModelPart, ModelRegistryBuilder};
     pub use crate::manager::{ResourceType, get_resource_file};
     pub use indexmap::IndexMap;
 }
@@ -510,7 +510,7 @@ fn load_blockstate_multipart_cases(
         log::debug!("Generating model for state {state:?}");
         #[derive(Clone, Debug)]
         struct WeightedModelPartGroup {
-            pub parts: Vec<CombinedModelPart>,
+            pub parts: Vec<RawCompositeModelPart>,
             pub weight: f32,
         }
         let mut model_part_groups = vec![WeightedModelPartGroup {
@@ -541,7 +541,7 @@ fn load_blockstate_multipart_cases(
             if condition_satisfied {
                 match &case.apply_variant {
                     Variant::Single(variant) => {
-                        let model_part = CombinedModelPart {
+                        let model_part = RawCompositeModelPart {
                             location: Identifier::parse(&variant.model).with_context(|| {
                                 format!("Failed to parse {:?} as identifier", &variant.model)
                             })?,
@@ -556,7 +556,7 @@ fn load_blockstate_multipart_cases(
                     Variant::List(variants) => {
                         let mut new_model_part_groups = Vec::new();
                         for variant in variants {
-                            let variant_part = CombinedModelPart {
+                            let variant_part = RawCompositeModelPart {
                                 location: Identifier::parse(&variant.model).with_context(|| {
                                     format!("Failed to parse {:?} as identifier", &variant.model)
                                 })?,
@@ -583,7 +583,7 @@ fn load_blockstate_multipart_cases(
         if let [model_parts] = &model_part_groups[..] {
             // Only one possible model
             let model = model_cache
-                .load_combined_model(identifier, &model_parts.parts, texture_atlas)
+                .load_composite_model(identifier, &model_parts.parts, texture_atlas)
                 .with_context(|| format!("Error combining model list {:?}", &model_parts.parts))?;
             blockstates.push(Blockstate {
                 block_index,
@@ -599,7 +599,7 @@ fn load_blockstate_multipart_cases(
                 .into_iter()
                 .map(|group| {
                     let model = model_cache
-                        .load_combined_model(identifier, &group.parts, texture_atlas)
+                        .load_composite_model(identifier, &group.parts, texture_atlas)
                         .with_context(|| {
                             format!("Error combining model list {:?}", &group.parts)
                         })?;

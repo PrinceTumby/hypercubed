@@ -27,11 +27,8 @@ const EMPTY_MODEL_IDX: ModelIndex = ModelIndex(0);
 pub struct ModelRegistry {
     /// Index 0 (`EMPTY_MODEL_IDX`) always contains an empty model.
     pub model_list: Vec<ModelType>,
-    // Once all custom blocks have been loaded, these two lists are converted into GPU buffers for
-    // rendering.
+    /// Counter-clockwise order is [1, 0, 2, 1, 2, 3].
     pub custom_block_faces: Vec<[ModelVertex; 4]>,
-    /// Each index is a vertex index in a flattened version of `custom_block_faces`.
-    pub custom_block_indices: Vec<u32>,
 }
 
 impl core::ops::Index<ModelIndex> for ModelRegistry {
@@ -47,13 +44,10 @@ pub struct ModelRegistryBuilder {
     pub model_list: Vec<ModelType>,
     pub model_identifiers: Vec<Identifier>,
     pub completed_models: FastHashMap<(Identifier, ModelRotationInfo), ModelIndex>,
-    pub completed_model_combinations: FastHashMap<Box<[CombinedModelPart]>, ModelIndex>,
+    pub completed_model_combinations: FastHashMap<Box<[RawCompositeModelPart]>, ModelIndex>,
     pub templates: FastHashMap<Identifier, Arc<Template>>,
-    // Once all custom blocks have been loaded, these two lists are converted into GPU buffers for
-    // rendering.
+    /// Counter-clockwise order is [1, 0, 2, 1, 2, 3].
     pub custom_block_faces: Vec<[ModelVertex; 4]>,
-    /// Each index is a vertex index in a flattened version of `custom_block_faces`.
-    pub custom_block_indices: Vec<u32>,
 }
 
 #[cfg(feature = "std")]
@@ -84,7 +78,6 @@ impl ModelRegistryBuilder {
             completed_model_combinations: FastHashMap::new(),
             templates: FastHashMap::new(),
             custom_block_faces: Vec::new(),
-            custom_block_indices: Vec::new(),
         }
     }
 }
@@ -95,7 +88,6 @@ impl ModelRegistryBuilder {
         ModelRegistry {
             model_list: self.model_list,
             custom_block_faces: self.custom_block_faces,
-            custom_block_indices: self.custom_block_indices,
         }
     }
 
@@ -169,11 +161,59 @@ impl ModelRegistryBuilder {
         }
     }
 
-    // #[tracing::instrument(skip(self, texture_atlas))]
-    pub fn load_combined_model(
+    pub fn load_composite_model(
         &mut self,
         location: &Identifier,
-        parts: &[CombinedModelPart],
+        parts: &[RawCompositeModelPart],
+        texture_atlas: &mut texture::AtlasBuilder,
+    ) -> anyhow::Result<ModelIndex> {
+        if parts.len() == 0 {
+            return Ok(EMPTY_MODEL_IDX);
+        }
+        // Ditto here, we don't have the `Equivalent` trait, so we have to do allocate a box just
+        // to find if the combination's already been cached.
+        let owned_parts = Box::from(parts);
+        if let Some(&model_idx) = self.completed_model_combinations.get(&owned_parts) {
+            return Ok(model_idx);
+        }
+        if parts.is_empty() {
+            return Ok(EMPTY_MODEL_IDX);
+        }
+        let mut converted_parts: Vec<CompositeModelPart> = Vec::new();
+        for RawCompositeModelPart {
+            x_rotation,
+            y_rotation,
+            location,
+            uv_lock,
+        } in parts
+        {
+            let part_model_idx = self.load_model(
+                location,
+                &ModelRotationInfo {
+                    x_rotation: *x_rotation,
+                    y_rotation: *y_rotation,
+                    uv_lock: *uv_lock,
+                },
+                texture_atlas,
+            )?;
+            converted_parts.push(CompositeModelPart {
+                model_idx: part_model_idx,
+                x_rotation: *x_rotation,
+                y_rotation: *y_rotation,
+                uv_lock: *uv_lock,
+            });
+        }
+        let completed_model = ModelType::Composite(converted_parts.into());
+        let completed_model_idx = self.register_model(completed_model, location);
+        self.completed_model_combinations.insert(owned_parts, completed_model_idx);
+        Ok(completed_model_idx)
+    }
+
+    /* // #[tracing::instrument(skip(self, texture_atlas))]
+    pub fn load_composite_model(
+        &mut self,
+        location: &Identifier,
+        parts: &[RawCompositeModelPart],
         texture_atlas: &mut texture::AtlasBuilder,
     ) -> anyhow::Result<ModelIndex> {
         if parts.len() == 0 {
@@ -189,13 +229,26 @@ impl ModelRegistryBuilder {
             return Ok(EMPTY_MODEL_IDX);
         }
         let mut current_template: Option<Template> = None;
-        for CombinedModelPart {
+        for RawCompositeModelPart {
             x_rotation,
             y_rotation,
             location,
             uv_lock,
         } in parts
         {
+            let part_model_idx = match self.get_or_load_model(
+                location,
+                &ModelRotationInfo {
+                    x_rotation: *x_rotation,
+                    y_rotation: *y_rotation,
+                    uv_lock: *uv_lock,
+                },
+                texture_atlas,
+                true,
+            )? {
+                ModelState::Complete(model_idx) => model_idx,
+                ModelState::Pending | ModelState::Template(_) => unreachable!(),
+            };
             let template = match self.get_or_load_model(
                 location,
                 &ModelRotationInfo {
@@ -237,7 +290,7 @@ impl ModelRegistryBuilder {
         let completed_model_idx = self.register_model(completed_model, location);
         self.completed_model_combinations.insert(owned_parts, completed_model_idx);
         Ok(completed_model_idx)
-    }
+    } */
 
     /// If `skip_finalising_model` is specified, this will return the model's template instead of
     /// attempting to finalise and return the completed model.
@@ -840,7 +893,6 @@ impl ModelRegistryBuilder {
         }
         // Fall back to more expensive model rendering if we can't specialise
         let mut converted_faces: Vec<[ModelVertex; 4]> = Vec::new();
-        let mut converted_indices: Vec<u32> = Vec::new();
         for template_element in model_template.elements.unwrap() {
             const FACE_NORMALS: [Vector3<f32>; 6] = [
                 // Top
@@ -856,7 +908,6 @@ impl ModelRegistryBuilder {
                 // West
                 Vector3::new(-1.0, 0.0, 0.0),
             ];
-            const FACE_INDICES: [u32; 6] = [1, 0, 2, 1, 2, 3];
             const BLOCK_FACES: [BlockFace; 6] = [
                 BlockFace::Top,
                 BlockFace::Bottom,
@@ -938,7 +989,6 @@ impl ModelRegistryBuilder {
                 };
                 let face_normal = FACE_NORMALS[face_i];
                 let base_index = u32::try_from(converted_faces.len() * 4).unwrap();
-                let face_indices = FACE_INDICES.map(|index| base_index + index);
                 let basic_rotation = match template_element.rotation {
                     None => Matrix4::identity(),
                     Some(template_rotation) => {
@@ -973,7 +1023,7 @@ impl ModelRegistryBuilder {
                 if template_element.blockstate_rotation.is_some()
                     && rotation != ModelRotationInfo::default()
                 {
-                    // If this needs implementing, see the TODO above in `load_combined_model`.
+                    // If this needs implementing, see the TODO above in `load_composite_model`.
                     // Basically, we want to get rid of template element blockstate rotation info,
                     // and just rotate the template elements before they reach here, so this only
                     // has to deal with final model blockstate rotations.
@@ -1036,20 +1086,15 @@ impl ModelRegistryBuilder {
                     transformed_vertex.uvs = converted_face.uvs[i];
                 }
                 converted_faces.push(transformed_face);
-                converted_indices.extend(face_indices.into_iter());
             }
         }
         // Add converted model for later rendering
-        let start_vertex: u32 = u32::try_from(self.custom_block_faces.len() * 4).unwrap();
-        let start_index: u32 = self.custom_block_indices.len().try_into().unwrap();
-        let num_indices: u32 = converted_indices.len().try_into().unwrap();
+        let start_face: u32 = self.custom_block_faces.len().try_into().unwrap();
+        let num_faces: u32 = converted_faces.len().try_into().unwrap();
         self.custom_block_faces
             .extend(converted_faces.iter().copied());
-        self.custom_block_indices
-            .extend(converted_indices.iter().copied());
         Ok(ModelType::Other(OtherInfo {
-            start_vertex,
-            start_index_and_len: [start_index, num_indices],
+            start_face_and_len: [start_face, num_faces],
         }))
     }
 
@@ -1203,7 +1248,7 @@ impl ModelRegistryBuilder {
 
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct CombinedModelPart {
+pub struct RawCompositeModelPart {
     pub location: Identifier,
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
@@ -1237,8 +1282,10 @@ pub enum ModelType {
     BiomeTintedCross(CrossInfo),
     /// Hardcoded rendering, faces dynamically generated. Example: Water
     Liquid(LiquidInfo),
-    /// Any other type of model, unspecialised. Example: Farmland
+    /// Any other type of single component model, unspecialised. Example: Farmland
     Other(OtherInfo),
+    /// Model made up of multiple subcomponents.
+    Composite(Box<[CompositeModelPart]>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1297,8 +1344,17 @@ pub struct LiquidInfo {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct OtherInfo {
-    pub start_vertex: u32,
-    pub start_index_and_len: [u32; 2],
+    pub start_face_and_len: [u32; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
+pub struct CompositeModelPart {
+    pub model_idx: ModelIndex,
+    pub x_rotation: RightAngleRotation,
+    pub y_rotation: RightAngleRotation,
+    pub uv_lock: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
