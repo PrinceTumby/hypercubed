@@ -7,14 +7,20 @@ cfg_if::cfg_if! {
 
 #[cfg(feature = "use_embedded_cache")]
 pub fn get_embedded_cache() -> resources::block::EmbeddedCache {
-    static EMBEDDED_CACHE_BYTES: &'static [u8] =
-        include_bytes!(concat!(env!("OUT_DIR"), "/embedded_cache.bincode"));
+    static EMBEDDED_CACHE_COMPRESSED_BYTES: &'static [u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/embedded_cache.bincode.zlib"));
+    // TODO: Write an adaptor that can stream bytes from this to bincode, so we don't have to
+    //       allocate a Vec.
+    let embedded_cache_bytes = miniz_oxide::inflate::decompress_to_vec_zlib(
+        EMBEDDED_CACHE_COMPRESSED_BYTES
+    )
+    .unwrap();
     let (embedded_cache, num_bytes_read) = bincode::decode_from_slice(
-        EMBEDDED_CACHE_BYTES,
+        &embedded_cache_bytes,
         bincode::config::standard(),
     )
     .unwrap();
-    debug_assert!(num_bytes_read == EMBEDDED_CACHE_BYTES.len());
+    debug_assert!(num_bytes_read == embedded_cache_bytes.len());
     embedded_cache
 }
 

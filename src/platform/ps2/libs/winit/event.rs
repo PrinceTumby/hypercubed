@@ -71,6 +71,7 @@ impl ElementState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum MouseButton {
     Left,
     Right,

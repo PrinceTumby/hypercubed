@@ -278,6 +278,8 @@ impl core::fmt::Display for Error {
     }
 }
 
+impl core::error::Error for Error {}
+
 impl From<ReadExactError<Error>> for Error {
     fn from(error: ReadExactError<Error>) -> Self {
         match error {

@@ -53,7 +53,7 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         --features=platform_ps2,embed_vanilla_cache \
         --profile=dev-ps2 \
         -Zbuild-std=core,compiler_builtins,alloc \
-        -Zbuild-std-features=compiler-builtins-mem,no-f16-f128,compiler-builtins-no-f16-f128
+        -Zbuild-std-features=compiler-builtins-mem
     {{wsl}} \
         /usr/local/ps2dev/ee/bin/mips64r5900el-ps2-elf-gcc \
         src/platform/ps2/entry.s \
@@ -79,7 +79,7 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         --features=platform_ps2,embed_vanilla_cache \
         --profile=release-ps2 \
         -Zbuild-std=core,compiler_builtins,alloc \
-        -Zbuild-std-features=compiler-builtins-mem,no-f16-f128,compiler-builtins-no-f16-f128
+        -Zbuild-std-features=compiler-builtins-mem
     {{wsl}} \
         /usr/local/ps2dev/ee/bin/mips64r5900el-ps2-elf-gcc \
         src/platform/ps2/entry.s \

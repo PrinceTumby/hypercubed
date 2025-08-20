@@ -85,8 +85,6 @@ SECTIONS {
     _end_bss = .;
 
     _end = . ;
-    PROVIDE(end = .);
 
-    PROVIDE(_stack = -1);
-    PROVIDE(_stack_size = 128 * 1024);
+    PROVIDE(__heap_start = .);
 }

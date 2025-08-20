@@ -26,6 +26,7 @@ image = { version = "0" }
 indexmap = { version = "2", default-features = false }
 lazy_static = "1"
 log = "0"
+miniz_oxide = "0"
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 # If updating, also update in "crates/minecraft_client_vk_shaders/Cargo.toml"
@@ -135,6 +136,7 @@ platform_ps2 = [
 [build-dependencies]
 anyhow.workspace = true
 bincode.workspace = true
+miniz_oxide.workspace = true
 
 [build-dependencies.resources]
 package = "minecraft_client_resources"
@@ -167,7 +169,7 @@ image = { workspace = true, optional = true }
 indexmap.workspace = true
 log.workspace = true
 mimalloc = { version = "0.1", optional = true }
-miniz_oxide = "0.8"
+miniz_oxide.workspace = true
 multiversion = { version = "0.8", optional = true }
 nalgebra.workspace = true
 nom = { version = "8", default-features = false, features = ["alloc"] }

@@ -42,7 +42,6 @@ impl core::ops::Index<ModelIndex> for ModelRegistry {
 #[cfg(feature = "std")]
 pub struct ModelRegistryBuilder {
     pub model_list: Vec<ModelType>,
-    pub model_identifiers: Vec<Identifier>,
     pub completed_models: FastHashMap<(Identifier, ModelRotationInfo), ModelIndex>,
     pub completed_model_combinations: FastHashMap<Box<[RawCompositeModelPart]>, ModelIndex>,
     pub templates: FastHashMap<Identifier, Arc<Template>>,
@@ -73,7 +72,6 @@ impl ModelRegistryBuilder {
     pub fn new() -> Self {
         Self {
             model_list: Vec::from([ModelType::None]),
-            model_identifiers: Vec::from([crate::identifier!("debug:debug")]),
             completed_models: FastHashMap::new(),
             completed_model_combinations: FastHashMap::new(),
             templates: FastHashMap::new(),
@@ -154,7 +152,7 @@ impl ModelRegistryBuilder {
                 .get_or_load_texture(&particle_identifier)
                 .context("Failed to load \"particle\" texture")?
                 .uvs;
-            let completed_model_idx = self.register_model(ModelType::Liquid(LiquidInfo { uvs }), &location);
+            let completed_model_idx = self.register_model(ModelType::Liquid(LiquidInfo { uvs }));
             self.completed_models
                 .insert(location_and_rotation, completed_model_idx);
             Ok(completed_model_idx)
@@ -163,7 +161,7 @@ impl ModelRegistryBuilder {
 
     pub fn load_composite_model(
         &mut self,
-        location: &Identifier,
+        _location: &Identifier,
         parts: &[RawCompositeModelPart],
         texture_atlas: &mut texture::AtlasBuilder,
     ) -> anyhow::Result<ModelIndex> {
@@ -204,7 +202,7 @@ impl ModelRegistryBuilder {
             });
         }
         let completed_model = ModelType::Composite(converted_parts.into());
-        let completed_model_idx = self.register_model(completed_model, location);
+        let completed_model_idx = self.register_model(completed_model);
         self.completed_model_combinations.insert(owned_parts, completed_model_idx);
         Ok(completed_model_idx)
     }
@@ -287,7 +285,7 @@ impl ModelRegistryBuilder {
             texture_atlas,
             None,
         )?;
-        let completed_model_idx = self.register_model(completed_model, location);
+        let completed_model_idx = self.register_model(completed_model);
         self.completed_model_combinations.insert(owned_parts, completed_model_idx);
         Ok(completed_model_idx)
     } */
@@ -405,7 +403,7 @@ impl ModelRegistryBuilder {
                 texture_atlas,
                 Some(location),
             )?;
-            let completed_model_idx = self.register_model(completed_model, &location);
+            let completed_model_idx = self.register_model(completed_model);
             assert!(
                 self.completed_models
                     .insert((location.clone(), *rotation), completed_model_idx)
@@ -418,10 +416,9 @@ impl ModelRegistryBuilder {
         }
     }
 
-    fn register_model(&mut self, model: ModelType, location: &Identifier) -> ModelIndex {
+    fn register_model(&mut self, model: ModelType) -> ModelIndex {
         let index = self.model_list.len();
         self.model_list.push(model);
-        self.model_identifiers.push(location.clone());
         ModelIndex(index.try_into().unwrap())
     }
 

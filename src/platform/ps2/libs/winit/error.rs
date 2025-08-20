@@ -17,7 +17,7 @@ impl core::fmt::Display for ExternalError {
 pub enum OsError {}
 
 impl core::fmt::Display for OsError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+    fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
         todo!()
     }
 }

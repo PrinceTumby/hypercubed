@@ -233,10 +233,10 @@ pub mod tag {
     impl SetFramebuffer1 {
         pub fn new(framebuffer: &draw::Framebuffer) -> Self {
             let mut out = Self(0);
-            out.set_shifted_base_address(framebuffer.get_address() >> 11);
-            out.set_shifted_buffer_width(framebuffer.get_width() >> 6);
-            out.set_format_raw(framebuffer.get_psm() as u8);
-            out.set_mask(framebuffer.get_mask());
+            out.set_shifted_base_address(framebuffer.start_address() >> 11);
+            out.set_shifted_buffer_width(framebuffer.width() >> 6);
+            out.set_format_raw(framebuffer.pixel_format() as u8);
+            out.set_mask(framebuffer.mask);
             out
         }
 
@@ -261,15 +261,15 @@ pub mod tag {
     impl SetZBuffer1 {
         pub fn new(z_buffer: &draw::ZBuffer) -> Self {
             let mut out = Self(0);
-            out.set_shifted_base_address(z_buffer.get_address() / 2048);
-            out.set_format_raw(match z_buffer.get_zsm() {
+            out.set_shifted_base_address(z_buffer.start_address() / 2048);
+            out.set_format_raw(match z_buffer.pixel_format() {
                 PixelStorageMethod::PsmZ32 => 0x00,
                 PixelStorageMethod::PsmZ24 => 0x01,
                 PixelStorageMethod::PsmZ16 => 0x02,
                 PixelStorageMethod::PsmZ16S => 0x0A,
                 format => panic!("Pixel format `{format:?}` invalid for Z Buffer"),
             });
-            out.set_masked(z_buffer.get_masked());
+            out.set_masked(z_buffer.mask);
             out
         }
 

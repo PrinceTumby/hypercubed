@@ -1,118 +1,115 @@
-use super::{display, gs};
+use super::gs::DepthTestMethod;
+use super::display::{vram, PixelStorageMethod};
+
+// TODO: Merge this into `display`
 
 #[derive(Debug)]
 pub struct Framebuffer {
-    address: u32,
-    width: u32,
-    height: u32,
-    psm: display::PixelStorageMethod,
-    mask: u32,
+    texture: vram::Texture,
+    pub mask: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FramebufferInitArgs {
     pub width: u32,
     pub height: u32,
-    pub psm: display::PixelStorageMethod,
+    pub pixel_format: PixelStorageMethod,
     pub mask: u32,
+    pub placement_preference: vram::Placement,
 }
 
 impl Framebuffer {
-    #[expect(clippy::missing_safety_doc)]
-    pub unsafe fn new(args: FramebufferInitArgs) -> Result<Self, display::vram::OutOfMemoryError> {
+    pub fn new(args: FramebufferInitArgs) -> Result<Self, vram::OutOfMemoryError> {
+        let texture = vram::Texture::new(
+            args.width,
+            args.height,
+            args.pixel_format,
+            args.placement_preference,
+        )?;
         Ok(Self {
-            address: unsafe {
-                display::vram::allocate(
-                    args.width,
-                    args.height,
-                    args.psm,
-                    display::vram::PAGE_ALIGNMENT,
-                )?
-            },
-            width: args.width,
-            height: args.height,
-            psm: args.psm,
+            texture,
             mask: args.mask,
         })
     }
 
-    pub fn get_address(&self) -> u32 {
-        self.address
+    pub fn get_texture<'a>(&'a self) -> &'a vram::Texture {
+        &self.texture
     }
 
-    pub fn get_width(&self) -> u32 {
-        self.width
+    pub fn width(&self) -> u32 {
+        self.texture.width()
     }
 
-    pub fn get_height(&self) -> u32 {
-        self.height
+    pub fn height(&self) -> u32 {
+        self.texture.height()
     }
 
-    pub fn get_psm(&self) -> display::PixelStorageMethod {
-        self.psm
+    pub fn pixel_format(&self) -> PixelStorageMethod {
+        self.texture.pixel_format()
     }
 
-    pub fn get_mask(&self) -> u32 {
-        self.mask
+    pub fn start_address(&self) -> u32 {
+        self.texture.start_address()
+    }
+
+    pub fn buffer_size(&self) -> u32 {
+        self.texture.buffer_size()
     }
 }
 
 #[derive(Debug)]
 pub struct ZBuffer {
-    address: u32,
-    width: u32,
-    height: u32,
-    zsm: display::PixelStorageMethod,
-    pub depth_test_method: gs::DepthTestMethod,
-    mask: bool,
+    texture: vram::Texture,
+    pub depth_test_method: DepthTestMethod,
+    pub mask: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ZBufferInitArgs {
     pub width: u32,
     pub height: u32,
-    pub zsm: display::PixelStorageMethod,
-    pub depth_test_method: gs::DepthTestMethod,
+    pub pixel_format: PixelStorageMethod,
+    pub depth_test_method: DepthTestMethod,
     pub mask: bool,
+    pub placement_preference: vram::Placement,
 }
 
 impl ZBuffer {
-    #[expect(clippy::missing_safety_doc)]
-    pub unsafe fn new(args: ZBufferInitArgs) -> Result<Self, display::vram::OutOfMemoryError> {
+    pub fn new(args: ZBufferInitArgs) -> Result<Self, vram::OutOfMemoryError> {
+        let texture = vram::Texture::new(
+            args.width,
+            args.height,
+            args.pixel_format,
+            args.placement_preference,
+        )?;
         Ok(Self {
-            address: unsafe {
-                display::vram::allocate(
-                    args.width,
-                    args.height,
-                    args.zsm,
-                    display::vram::PAGE_ALIGNMENT,
-                )?
-            },
-            width: args.width,
-            height: args.height,
-            zsm: args.zsm,
+            texture,
             depth_test_method: args.depth_test_method,
             mask: args.mask,
         })
     }
 
-    pub fn get_address(&self) -> u32 {
-        self.address
+    pub fn get_texture<'a>(&'a self) -> &'a vram::Texture {
+        &self.texture
     }
 
-    pub fn get_width(&self) -> u32 {
-        self.width
+    pub fn width(&self) -> u32 {
+        self.texture.width()
     }
 
-    pub fn get_height(&self) -> u32 {
-        self.height
+    pub fn height(&self) -> u32 {
+        self.texture.height()
     }
 
-    pub fn get_zsm(&self) -> display::PixelStorageMethod {
-        self.zsm
+    pub fn pixel_format(&self) -> PixelStorageMethod {
+        self.texture.pixel_format()
     }
 
-    pub fn get_masked(&self) -> bool {
-        self.mask
+    pub fn start_address(&self) -> u32 {
+        self.texture.start_address()
+    }
+
+    pub fn buffer_size(&self) -> u32 {
+        self.texture.buffer_size()
     }
 }

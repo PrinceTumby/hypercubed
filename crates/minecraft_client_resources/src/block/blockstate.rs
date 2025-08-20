@@ -12,8 +12,8 @@ use crate::aabb::AABB;
 use std_imports::*;
 #[cfg(feature = "std")]
 mod std_imports {
-    pub use super::super::super::texture;
-    pub use super::super::model::{RawCompositeModelPart, ModelRegistryBuilder};
+    pub use crate::texture;
+    pub use crate::block::model::{RawCompositeModelPart, ModelRegistryBuilder};
     pub use crate::manager::{ResourceType, get_resource_file};
     pub use indexmap::IndexMap;
 }

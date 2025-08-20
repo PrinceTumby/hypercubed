@@ -182,16 +182,19 @@ static ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator {
     list_head: UnsafeCell::new(None),
 };
 
-/// Initialises an area of memory for use as heap space.
+/// Initialises the PS2 heap for the main thread.
 ///
 /// # Safety
 /// The caller guarantees this function is only called once.
-pub unsafe fn init_heap(start_address: usize, length: usize) {
+pub unsafe fn init() {
     unsafe {
+        let start_address = &raw const syscalls::HEAP_START as usize;
+        // Giving -1 as the heap size makes the heap end at the start of stack space.
+        let end_address = syscalls::init_thread_heap(start_address, -1);
         let new_block_addr = start_address.next_multiple_of(align_of::<Block>());
         let new_block_ptr = new_block_addr as *mut Block;
         new_block_ptr.write(Block::new(
-            (start_address + length) - new_block_addr - size_of::<Block>(),
+            end_address - new_block_addr - size_of::<Block>(),
             false,
             false,
         ));
@@ -215,5 +218,17 @@ pub unsafe fn get_allocation_size(search_addr: usize) -> Option<usize> {
             }
         }
         None
+    }
+}
+
+mod syscalls {
+    use super::*;
+
+    unsafe extern "C" {
+        #[link_name = "__heap_start"]
+        pub static HEAP_START: u8;
+
+        #[link_name = "syscall_init_heap"]
+        pub unsafe fn init_thread_heap(start: usize, size: i32) -> usize;
     }
 }

@@ -66,10 +66,12 @@ pub unsafe fn get_current_instant_clock_timestamp() -> u64 {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct Instant {
     timestamp: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct Duration {
     nanoseconds: u64,
 }

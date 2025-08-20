@@ -143,21 +143,38 @@ pub const SUBCHUNK_AXIS_LEN_I32: i32 = SUBCHUNK_AXIS_LEN as i32;
 pub const MIN_HEIGHT_I32: i32 = -64;
 pub const MAX_HEIGHT_I32: i32 = 319;
 
-#[cfg(feature = "std")]
+#[cfg(not(feature = "std"))]
+pub struct WindowRunEmbeddedArgs {
+    pub event_loop: EventLoop,
+    pub window: &'static winit::window::Window,
+    pub graphics_state: GraphicsState,
+}
+
 pub async fn window_run(
     server_connection: Arc<PlayConnection>,
     clientbound_rx: mpsc::Receiver<ClientboundPacket>,
     clientbound_tx: mpsc::Sender<ClientboundPacket>,
+    #[cfg(not(feature = "std"))]
+    WindowRunEmbeddedArgs {
+        event_loop,
+        window,
+        mut graphics_state,
+    }: WindowRunEmbeddedArgs,
 ) -> anyhow::Result<()> {
     use input::PlayControlState;
+    #[cfg(feature = "std")]
     let event_loop = EventLoop::new()?;
     // TODO: Change this to an `Arc`
+    #[cfg(feature = "std")]
     let window = Box::leak(Box::new(WindowBuilder::new().build(&event_loop)?));
     window.set_title("Rust Minecraft Client");
     let window_id = window.id();
     let mut scale_factor = window.scale_factor();
-    let mut graphics_state =
-        GraphicsState::new(window, resources::block::register_vanilla_blocks).await?;
+    #[cfg(feature = "std")]
+    let mut graphics_state = GraphicsState::new(
+        window,
+        resources::block::register_vanilla_blocks,
+    ).await?;
     let mut input_state = PlayControlState::default();
     let egui_ctx = egui::Context::default();
     let mut play_state = ClientPlayState {
@@ -309,6 +326,13 @@ pub async fn window_run(
                             &debug_state,
                         )
                         .unwrap();
+                    } else if #[cfg(feature = "platform_ps2")] {
+                        debug_output = graphics_state.render(
+                            &play_state.subchunks,
+                            &play_state.visible_chunks,
+                            &debug_state,
+                        )
+                        .unwrap();
                     }
                 }
                 // Gameplay events and updates
@@ -437,8 +461,8 @@ pub async fn window_run(
                             }
                             events.push(egui::Event::PointerGone);
                         } else {
-                            // Releasing the cursor never fails.
-                            window.set_cursor_grab(CursorGrabMode::None).unwrap();
+                            // Releasing the cursor shouldn't ever fail.
+                            _ = window.set_cursor_grab(CursorGrabMode::None);
                             window.set_cursor_visible(true);
                             events.push(egui::Event::PointerMoved(last_mouse_pos));
                         }

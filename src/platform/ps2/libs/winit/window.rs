@@ -1,7 +1,8 @@
 // Much of this code is adapted from the `winit` source code.
 
-use crate::platform::ps2::libs::winit::dpi::PhysicalPosition;
+use crate::platform::ps2::display;
 
+use super::dpi::{PhysicalPosition, PhysicalSize};
 use super::event_loop::EventLoop;
 use super::error::{ExternalError, OsError};
 

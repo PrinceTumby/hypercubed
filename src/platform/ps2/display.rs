@@ -9,7 +9,6 @@ pub enum PixelStorageMethod {
     Psm24 = 0x01,
     Psm16 = 0x02,
     Psm16S = 0x0A,
-    PsmPs24 = 0x12,
     Psm8 = 0x13,
     Psm4 = 0x14,
     Psm8H = 0x1B,
@@ -30,7 +29,6 @@ pub enum Region {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModeId {
-    Auto = 0x00,
     /// NTSC-NI
     Ntsc = 0x02,
     /// PAL-NI
@@ -87,12 +85,6 @@ pub struct ModeInfo {
 impl ModeId {
     pub fn get_info(&self) -> ModeInfo {
         match *self {
-            Self::Auto => ModeInfo {
-                x: 0,
-                y: 0,
-                width: 0,
-                height: 0,
-            },
             Self::Ntsc => ModeInfo {
                 x: 652,
                 y: 26,
@@ -144,7 +136,7 @@ static mut CURRENT_WIDTH: u32 = 0;
 static mut CURRENT_HEIGHT: u32 = 0;
 // static mut CURRENT_ASPECT_RATIO: f32 = 0.0;
 static mut CURRENT_FLICKER_FILTER: bool = false;
-static mut CURRENT_MODE_ID: ModeId = ModeId::Auto;
+static mut CURRENT_MODE_ID: Option<ModeId> = None;
 static mut CURRENT_INTERLACED: bool = false;
 static mut CURRENT_FRAME_MODE: FrameMode = FrameMode::Field;
 static mut CURRENT_X: u32 = 0;
@@ -166,14 +158,14 @@ pub unsafe fn initialise(framebuffer: &draw::Framebuffer, x: u32, y: u32, flicke
             flicker_filter,
         });
         // Screen setup
-        set_screen(0, 0, framebuffer.get_width(), framebuffer.get_height());
+        set_screen(0, 0, framebuffer.width(), framebuffer.height());
         // Set black background
         gs::background_colour::set(0, 0, 0);
         // Final setup
         set_framebuffer_filtered(SetFramebufferFilteredArgs {
-            vram_framebuffer_address: framebuffer.get_address(),
-            width: framebuffer.get_width(),
-            psm: framebuffer.get_psm(),
+            vram_framebuffer_address: framebuffer.start_address(),
+            width: framebuffer.width(),
+            psm: framebuffer.pixel_format(),
             x,
             y,
         });
@@ -209,7 +201,7 @@ pub unsafe fn set_mode(args: SetModeArgs) {
         let interlaced = args.interlaced || args.mode_id == ModeId::Hd1080i;
         let flicker_filter = args.flicker_filter && interlaced;
         // Save mode, interlacing, and frame mode information
-        CURRENT_MODE_ID = args.mode_id;
+        CURRENT_MODE_ID = Some(args.mode_id);
         CURRENT_INTERLACED = interlaced;
         CURRENT_FRAME_MODE = args.frame_mode;
         CURRENT_FLICKER_FILTER = flicker_filter;
@@ -220,12 +212,11 @@ pub unsafe fn set_mode(args: SetModeArgs) {
 
 unsafe fn set_screen(x: u32, y: u32, width: u32, height: u32) {
     unsafe {
-        assert!(CURRENT_MODE_ID != ModeId::Auto);
         CURRENT_X = x;
         CURRENT_Y = y;
         CURRENT_WIDTH = width;
         CURRENT_HEIGHT = height;
-        let mode_id = CURRENT_MODE_ID;
+        let mode_id = (*&raw const CURRENT_MODE_ID).unwrap();
         let mode_info = mode_id.get_info();
         // Add X adjustment to default X offset
         let dx = mode_info.x + CURRENT_X;
@@ -541,66 +532,308 @@ pub mod gs {
     }
 }
 
+#[allow(static_mut_refs)]
 pub mod vram {
     use super::*;
 
-    // Each word is 1 32-bit pixel
-    pub const MAX_WORDS: u32 = 1048576;
-    pub const PAGE_ALIGNMENT: u32 = 2048;
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum Placement {
+        /// Place the allocation at the lowest VRAM address that will fit the buffer.
+        #[default]
+        PreferLowest,
+        /// Place the allocation at the highest VRAM address that will fit the buffer.
+        PreferHighest,
+    }
 
-    static mut CURRENT_WORD_ADDRESS: u32 = 0;
+    impl Placement {
+        pub const ANY: Self = Self::PreferLowest;
+    }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct OutOfMemoryError;
+    #[derive(Debug)]
+    pub struct Buffer {
+        start_page: u16,
+        num_pages: u16,
+    }
 
-    #[expect(clippy::missing_safety_doc)]
-    pub unsafe fn allocate(
-        width: u32,
-        height: u32,
-        psm: PixelStorageMethod,
-        alignment: u32,
-    ) -> Result<u32, OutOfMemoryError> {
-        unsafe {
-            // Calculate size and increment pointer
-            let size = get_current_size(width, height, psm, alignment);
-            // Check if we've overflowed VRAM
-            if CURRENT_WORD_ADDRESS + size > MAX_WORDS {
-                return Err(OutOfMemoryError);
+    impl Drop for Buffer {
+        fn drop(&mut self) {
+            unsafe {
+                remove_allocation(self.as_allocation_info());
             }
-            let address = CURRENT_WORD_ADDRESS;
-            CURRENT_WORD_ADDRESS += size;
-            Ok(address)
         }
     }
 
-    #[expect(clippy::missing_safety_doc)]
-    pub unsafe fn get_current_size(
+    impl Buffer {
+        pub fn new(
+            num_pages: u16,
+            placement_preference: Placement,
+        ) -> Result<Self, OutOfMemoryError>
+        {
+            unsafe {
+                match placement_preference {
+                    Placement::PreferLowest => {
+                        // Check gap before first allocation (may be zero sized).
+                        let beginning_gap_range = if NUM_ALLOCATIONS == 0 {
+                            0..VRAM_NUM_PAGES
+                        } else {
+                            0..ALLOCATIONS[0].start_page
+                        };
+                        if beginning_gap_range.len() as u16 >= num_pages {
+                            let allocation = Allocation {
+                                start_page: beginning_gap_range.start,
+                                num_pages,
+                            };
+                            insert_allocation(allocation, 0);
+                            return Ok(Self::from_allocation_info(&allocation));
+                        }
+                        // Check gaps between allocations (may be zero sized).
+                        for w in ALLOCATIONS[0..NUM_ALLOCATIONS].windows(2).enumerate() {
+                            let (a_i, &[a, b]) = w else { unreachable!() };
+                            let b_i = a_i + 1;
+                            let a_end_page = a.start_page + a.num_pages;
+                            let gap_range = a_end_page..b.start_page;
+                            if gap_range.len() as u16 >= num_pages {
+                                let allocation = Allocation {
+                                    start_page: gap_range.start,
+                                    num_pages,
+                                };
+                                insert_allocation(allocation, b_i);
+                                return Ok(Self::from_allocation_info(&allocation));
+                            }
+                        }
+                        // Check gap after last allocation (may be zero sized).
+                        let ending_gap_range = if NUM_ALLOCATIONS == 0 {
+                            0..VRAM_NUM_PAGES
+                        } else {
+                            let last_allocation = ALLOCATIONS[NUM_ALLOCATIONS - 1];
+                            (last_allocation.start_page + last_allocation.num_pages)..VRAM_NUM_PAGES
+                        };
+                        if ending_gap_range.len() as u16 >= num_pages {
+                            let allocation = Allocation {
+                                start_page: ending_gap_range.start,
+                                num_pages,
+                            };
+                            insert_allocation(allocation, NUM_ALLOCATIONS);
+                            return Ok(Self::from_allocation_info(&allocation));
+                        }
+                        // Return an error if we couldn't find a gap big enough.
+                        return Err(OutOfMemoryError);
+                    }
+                    Placement::PreferHighest => {
+                        // Check gap after last allocation (may be zero sized).
+                        let ending_gap_range = if NUM_ALLOCATIONS == 0 {
+                            0..VRAM_NUM_PAGES
+                        } else {
+                            let last_allocation = ALLOCATIONS[NUM_ALLOCATIONS - 1];
+                            (last_allocation.start_page + last_allocation.num_pages)..VRAM_NUM_PAGES
+                        };
+                        if ending_gap_range.len() as u16 >= num_pages {
+                            let allocation = Allocation {
+                                start_page: ending_gap_range.end - num_pages,
+                                num_pages,
+                            };
+                            insert_allocation(allocation, NUM_ALLOCATIONS);
+                            return Ok(Self::from_allocation_info(&allocation));
+                        }
+                        // Check gaps between allocations (may be zero sized).
+                        for w in ALLOCATIONS[0..NUM_ALLOCATIONS].windows(2).enumerate().rev() {
+                            let (a_i, &[a, b]) = w else { unreachable!() };
+                            let b_i = a_i + 1;
+                            let a_end_page = a.start_page + a.num_pages;
+                            let gap_range = a_end_page..b.start_page;
+                            if gap_range.len() as u16 >= num_pages {
+                                let allocation = Allocation {
+                                    start_page: gap_range.end - num_pages,
+                                    num_pages,
+                                };
+                                insert_allocation(allocation, b_i);
+                                return Ok(Self::from_allocation_info(&allocation));
+                            }
+                        }
+                        // Check gap before first allocation (may be zero sized).
+                        let beginning_gap_range = if NUM_ALLOCATIONS == 0 {
+                            0..VRAM_NUM_PAGES
+                        } else {
+                            0..ALLOCATIONS[0].start_page
+                        };
+                        if beginning_gap_range.len() as u16 >= num_pages {
+                            let allocation = Allocation {
+                                start_page: beginning_gap_range.end - num_pages,
+                                num_pages,
+                            };
+                            insert_allocation(allocation, 0);
+                            return Ok(Self::from_allocation_info(&allocation));
+                        }
+                        // Return an error if we couldn't find a gap big enough.
+                        return Err(OutOfMemoryError);
+                    }
+                }
+            }
+        }
+
+        pub fn start_address(&self) -> u32 {
+            self.start_page as u32 * PAGE_SIZE
+        }
+
+        pub fn size(&self) -> u32 {
+            self.num_pages as u32 * PAGE_SIZE
+        }
+    }
+
+    impl Buffer {
+        unsafe fn from_allocation_info(allocation: &Allocation) -> Self {
+            Self {
+                start_page: allocation.start_page,
+                num_pages: allocation.num_pages,
+            }
+        }
+
+        fn as_allocation_info(&self) -> Allocation {
+            Allocation {
+                start_page: self.start_page,
+                num_pages: self.num_pages,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Texture {
+        buffer: Buffer,
         width: u32,
         height: u32,
-        psm: PixelStorageMethod,
-        alignment: u32,
-    ) -> u32 {
-        use PixelStorageMethod::*;
-        // First correct the buffer width to be a multiple of 64 or 128.
-        // If width <= 16, then it's a palette.
-        let width = if width > 16 {
-            match psm {
-                Psm8 | Psm4 | Psm8H | Psm4HL | Psm4HH => 0xFFFF_FF80 & (width + 127),
-                _ => 0xFFFF_FFC0 & (width + 63),
+        pixel_format: PixelStorageMethod
+    }
+
+    impl Texture {
+        pub fn new(
+            width: u32,
+            height: u32,
+            pixel_format: PixelStorageMethod,
+            placement_preference: Placement,
+        ) -> Result<Texture, OutOfMemoryError> {
+            // Calculate size and increment pointer
+            let size = Texture::calculate_size(width, height, pixel_format, PAGE_SIZE);
+            let num_pages: u16 = size.div_ceil(PAGE_SIZE).try_into().unwrap();
+            let buffer = Buffer::new(num_pages, placement_preference)?;
+            Ok(Texture {
+                buffer,
+                width,
+                height,
+                pixel_format,
+            })
+        }
+
+        pub fn calculate_size(
+            width: u32,
+            height: u32,
+            pixel_format: PixelStorageMethod,
+            alignment: u32,
+        ) -> u32 {
+            use PixelStorageMethod::*;
+            // First correct the buffer width to be a multiple of 64 or 128.
+            // If width <= 16, then it's a palette.
+            let width = if width > 16 {
+                match pixel_format {
+                    Psm8 | Psm4 | Psm8H | Psm4HL | Psm4HH => 0xFFFF_FF80 & (width + 127),
+                    _ => 0xFFFF_FFC0 & (width + 63),
+                }
+            } else {
+                width
+            };
+            // Texture storage size is in pixels/word
+            let num_words = match pixel_format {
+                Psm4 => (width * height) / 2,
+                Psm8 => width * height,
+                Psm24 | Psm32 | Psm8H | Psm4HL | Psm4HH | PsmZ24 | PsmZ32 => width * height * 4,
+                Psm16 | Psm16S | PsmZ16 | PsmZ16S => width * height * 2,
+            };
+            // Buffer size is dependent on alignment
+            0u32.wrapping_sub(alignment) & (num_words + (alignment - 1))
+        }
+
+        pub fn get_buffer<'a>(&'a self) -> &'a Buffer {
+            &self.buffer
+        }
+
+        pub fn start_address(&self) -> u32 {
+            self.buffer.start_address()
+        }
+
+        pub fn buffer_size(&self) -> u32 {
+            self.buffer.size()
+        }
+
+        pub fn width(&self) -> u32 {
+            self.width
+        }
+
+        pub fn height(&self) -> u32 {
+            self.height
+        }
+
+        pub fn pixel_format(&self) -> PixelStorageMethod {
+            self.pixel_format
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct OutOfMemoryError;
+    
+    impl core::fmt::Display for OutOfMemoryError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            "out of video memory".fmt(f)
+        }
+    }
+    
+    impl core::error::Error for OutOfMemoryError {}
+
+    pub const VRAM_NUM_PAGES: u16 = 512;
+    pub const PAGE_SIZE: u32 = 8192;
+
+    #[derive(Clone, Copy, Debug)]
+    struct Allocation {
+        pub start_page: u16,
+        pub num_pages: u16,
+    }
+
+    const DUMMY_ALLOCATION: Allocation = Allocation {
+        start_page: 0,
+        num_pages: 0,
+    };
+
+    static mut ALLOCATIONS: [Allocation; 8] = [DUMMY_ALLOCATION; 8];
+    static mut NUM_ALLOCATIONS: usize = 0;
+
+    unsafe fn insert_allocation(allocation: Allocation, new_index: usize) {
+        unsafe {
+            assert!(NUM_ALLOCATIONS < ALLOCATIONS.len());
+            assert!(new_index <= NUM_ALLOCATIONS);
+            // Shift up and expand valid allocations array.
+            if new_index < NUM_ALLOCATIONS {
+                for i in (new_index..NUM_ALLOCATIONS).rev() {
+                    ALLOCATIONS[i + 1] = ALLOCATIONS[i];
+                }
             }
-        } else {
-            width
-        };
-        // Texture storage size is in pixels/word
-        let size = match psm {
-            Psm4 => width * (height >> 3),
-            Psm8 => width * (height >> 2),
-            Psm24 | Psm32 | Psm8H | Psm4HL | Psm4HH | PsmZ24 | PsmZ32 => width * height,
-            Psm16 | Psm16S | PsmZ16 | PsmZ16S => width * (height >> 1),
-            _ => return 0,
-        };
-        // Buffer size is dependent on alignment
-        0u32.wrapping_sub(alignment) & (size + (alignment - 1))
+            ALLOCATIONS[new_index] = allocation;
+            NUM_ALLOCATIONS += 1;
+        }
+    }
+
+    unsafe fn remove_allocation(allocation: Allocation) {
+        unsafe {
+            // Find allocation.
+            let allocation_i = ALLOCATIONS[0..NUM_ALLOCATIONS]
+                .iter()
+                .position(|a| a.start_page == allocation.start_page)
+                .unwrap();
+            // Shrink and shift down valid allocations array.
+            NUM_ALLOCATIONS -= 1;
+            if allocation_i < NUM_ALLOCATIONS {
+                for i in allocation_i..NUM_ALLOCATIONS {
+                    ALLOCATIONS[i] = ALLOCATIONS[i + 1];
+                }
+            }
+        }
     }
 }
 

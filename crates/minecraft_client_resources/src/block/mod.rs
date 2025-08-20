@@ -888,36 +888,6 @@ pub fn generate_vanilla_embedded_cache() -> anyhow::Result<EmbeddedCache> {
     let mut model_cache = ModelRegistryBuilder::new();
     let mut block_registry = Registry::new();
     register_vanilla_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
-    // XXX: DEBUG
-    {
-        let atlas = atlas_builder.clone().finish();
-        let path = format!(
-            "{}/texture_atlas.png",
-            std::env::var("OUT_DIR").unwrap(),
-        );
-        atlas.texture.save(&path).unwrap();
-        println!("cargo::warning=Texture Atlas Output: {path}");
-    }
-    // XXX: DEBUG
-    {
-        let mut other_count: usize = 0;
-        for model in &model_cache.model_list {
-            if let model::ModelType::Other(info) = model {
-                other_count += 1;
-            }
-        }
-        let mut model_count: usize = 0;
-        for ((identifier, _rotation), model_idx) in &model_cache.completed_models {
-            let model = &model_cache[*model_idx];
-            if let model::ModelType::Other(info) = model {
-                model_count += 1;
-            }
-        }
-        println!("cargo::warning=Other count: {other_count}");
-        println!("cargo::warning=Other model count: {model_count}");
-        assert!(model_cache.model_identifiers.len() == model_cache.model_list.len());
-        println!("cargo::warning=Combined model count: {}", model_cache.completed_model_combinations.len());
-    }
     let atlas = atlas_builder.finish().into_raw();
     Ok(EmbeddedCache {
         block_registry,
