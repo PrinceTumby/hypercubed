@@ -1,8 +1,8 @@
 // Much of this code is adapted from the `winit` source code.
 
 use super::dpi::{PhysicalPosition, PhysicalSize};
-use super::window::WindowId;
 use super::keyboard::{KeyCode, PhysicalKey};
+use super::window::WindowId;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -52,9 +52,7 @@ pub enum WindowEvent {
 pub enum DeviceEvent {
     Added,
     Removed,
-    MouseMotion {
-        delta: (f64, f64),
-    },
+    MouseMotion { delta: (f64, f64) },
     Key(RawKeyEvent),
 }
 

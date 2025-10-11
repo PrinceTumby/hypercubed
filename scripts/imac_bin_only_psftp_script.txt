@@ -1,0 +1,3 @@
+cd Documents/minecraft_client_build_2
+put target/i686-apple-darwin8/debug/minecraft_client
+chmod a+x minecraft_client

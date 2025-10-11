@@ -4,11 +4,11 @@ use crate::client::graphics::debug::point::Vertex as DebugPoint;
 use crate::client::graphics::debug::triangle::Instance as DebugTriangle;
 use crate::client::graphics::{self, Camera, DebugVisualisationDrawMethod, GraphicsState};
 use crate::client::{ClientPlayState, MIN_HEIGHT_I32};
-use portable_std::VecDeque;
 use crate::portable_prelude::*;
 use crate::protocol::PlayConnection;
 use crate::protocol::play::GameMode;
 use nalgebra::Point3;
+use portable_std::VecDeque;
 use threadpool::ThreadPool;
 
 pub struct DebugRenderOutput {
@@ -20,7 +20,7 @@ pub struct DebugRenderOutput {
 
 #[expect(clippy::too_many_arguments)]
 pub fn render_debug_ui(
-    thread_pool: &ThreadPool,
+    #[cfg(feature = "full_std")] thread_pool: &ThreadPool,
     server_connection: &PlayConnection,
     play_state: &mut ClientPlayState,
     graphics_state: &mut GraphicsState,
@@ -37,17 +37,13 @@ pub fn render_debug_ui(
     let subchunks = &play_state.subchunks;
     let raw_input = egui::RawInput {
         viewport_id: egui::viewport::ViewportId::ROOT,
-        viewports: {
-            let mut map = egui::viewport::ViewportIdMap::default();
-            map.insert(
-                egui::viewport::ViewportId::ROOT,
-                egui::ViewportInfo {
-                    native_pixels_per_point: Some(scale_factor as f32),
-                    ..Default::default()
-                },
-            );
-            map
-        },
+        viewports: egui::viewport::ViewportIdMap::from_iter([(
+            egui::viewport::ViewportId::ROOT,
+            egui::ViewportInfo {
+                native_pixels_per_point: Some(scale_factor as f32),
+                ..Default::default()
+            },
+        )]),
         screen_rect: Some(egui::Rect {
             min: egui::Pos2::ZERO,
             max: egui::Pos2::new(
@@ -604,6 +600,7 @@ pub fn render_debug_ui(
             // }
             use nalgebra::{Point3, Vector3};
             let mut tris: Vec<DebugTriangle> = Vec::new();
+            #[cfg(feature = "graphics_backend_vulkan")]
             if let Some(tree) = &graphics_state.radiance_cascades.debug_light_tree {
                 let current_level = debug_state.radiance_cascades_light_tree_level;
                 struct TreeNode {
@@ -696,6 +693,7 @@ pub fn render_debug_ui(
             }
             debug_triangles.extend(tris);
         }
+        #[cfg(feature = "graphics_backend_vulkan")]
         if debug_state.radiance_cascades_areaquad_visualiser {
             use nalgebra::Point3;
             // let probe_pos = Point3::new(16.28125, 155.0, -16.21875);
@@ -779,6 +777,7 @@ pub fn render_debug_ui(
                 });
             }
         }
+        #[cfg(feature = "graphics_backend_vulkan")]
         if debug_state.radiance_cascades_ray_visualiser {
             use nalgebra::{Point3, Vector3};
             let graphics_camera = &graphics_state.camera;

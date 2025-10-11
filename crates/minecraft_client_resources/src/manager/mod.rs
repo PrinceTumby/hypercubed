@@ -1,10 +1,10 @@
 mod internal_overlay;
 
 use super::Identifier;
-use portable_std::{Arc, Cow};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{anyhow, bail};
 use lazy_static::lazy_static;
+use portable_std::{Arc, Cow};
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
 #[cfg(feature = "std")]

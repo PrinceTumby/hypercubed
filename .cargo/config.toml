@@ -1,6 +1,12 @@
 [build]
-target = "targets/mipsel-sony-ps2.json"
+target = "targets/i686-apple-darwin8.json"
 
 [unstable]
 build-std = [ "core", "compiler_builtins", "alloc" ]
-build-std-features = [ "compiler-builtins-mem", "no-f16-f128", "compiler-builtins-no-f16-f128" ]
+build-std-features = [ "compiler-builtins-mem" ]
+
+[target.wasm32be-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="custom"']
+
+[target.'cfg(target_arch = "x86", target_os = "macos")']
+rustflags = ['--cfg', 'getrandom_backend="custom"']

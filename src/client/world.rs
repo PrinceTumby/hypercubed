@@ -9,20 +9,20 @@ use crate::client::{
 };
 #[cfg(feature = "graphics_backend_vulkan")]
 use crate::client::{RayTracedQuadInfo, RayTracedQuadPackedFields};
-use resources::identifier;
 use crate::portable_prelude::*;
-use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
-use portable_std::sync::mpsc;
 use crate::protocol::chunk::{
     self as protocol_chunk, ChunkSection, ChunkSectionLightChannelInfoMut, LightType,
 };
-use resources::block::blockstate::{self, BlockOpacity, SkyLightOpacity};
-use resources::block::model::{ModelType, Tint};
-use resources::block::{GlobalPaletteIndex, RightAngleRotation};
 use ahash::AHasher;
 use core::hash::Hasher;
 use fixedbitset::FixedBitSet;
 use ordered_float::NotNan;
+use portable_std::sync::mpsc;
+use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
+use resources::block::blockstate::{self, BlockOpacity, SkyLightOpacity};
+use resources::block::model::{ModelType, Tint};
+use resources::block::{GlobalPaletteIndex, RightAngleRotation};
+use resources::identifier;
 use smallvec::SmallVec;
 
 #[cfg(feature = "graphics_backend_software")]
@@ -111,8 +111,8 @@ pub fn process_subchunks(
             uv_rotation: resources::block::RightAngleRotation,
             tint_colour: Option<[u8; 4]>,
         ) {
-            use resources::block::RightAngleRotation;
             use nalgebra::Vector3;
+            use resources::block::RightAngleRotation;
             assert!(dir_i < 6);
             let global_pos_vec = Vector3::from(global_pos) + Vector3::repeat(0.5);
             let base_positions: [Vector3<f32>; 4] = [
@@ -510,9 +510,8 @@ pub fn process_subchunks(
                                         info.indices[local_index_i + 4] as usize,
                                         info.indices[local_index_i + 5] as usize,
                                     ];
-                                    let quad_model_vertices = quad_model_indices.map(|i| {
-                                        &info.faces[i / 4][i % 4]
-                                    });
+                                    let quad_model_vertices =
+                                        quad_model_indices.map(|i| &info.faces[i / 4][i % 4]);
                                     let quad_indices = quad_model_vertices.map(|v| {
                                         let global_pos = v.local_pos + block_global_pos_vec;
                                         let global_pos_f32s = <[f32; 3]>::from(global_pos);

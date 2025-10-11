@@ -1,10 +1,10 @@
 use super::{Filesystem, ResourceType};
-use crate::identifier;
-use portable_std::Cow;
 use crate::Identifier;
+use crate::identifier;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use lazy_static::lazy_static;
+use portable_std::Cow;
 
 macro_rules! make_entry_macro {
     ($map:ident, $subpath:expr, $extension:expr) => {

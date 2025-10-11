@@ -5,14 +5,21 @@ pub mod prelude {
 
 pub mod io;
 
-pub mod sync;
+cfg_if::cfg_if! {
+    if #[cfg(all(target_arch = "mips", target_vendor = "sony", target_os = "ps2"))] {
+        pub mod sync_ps2;
+        pub use sync_ps2 as sync;
+    } else {
+        pub mod sync;
+    }
+}
 
 pub use alloc::borrow::{Cow, ToOwned};
 pub use alloc::boxed::Box;
 pub use alloc::collections::VecDeque;
 pub use alloc::string::{String, ToString};
-pub use alloc::sync::Arc;
 pub use alloc::vec::Vec;
+pub use sync::Arc;
 
 #[macro_export]
 macro_rules! format {

@@ -1,18 +1,18 @@
 use super::graphics::Camera;
 use nalgebra::Vector3;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "full_std")]
 use std_imports::*;
-#[cfg(feature = "std")]
+#[cfg(feature = "full_std")]
 mod std_imports {
     pub use winit::event::ElementState;
     pub use winit::keyboard::{KeyCode, PhysicalKey};
 }
 
-#[cfg(not(feature = "std"))]
-use ps2_imports::*;
-#[cfg(not(feature = "std"))]
-mod ps2_imports {
+#[cfg(not(feature = "full_std"))]
+use no_std_imports::*;
+#[cfg(not(feature = "full_std"))]
+mod no_std_imports {
     pub use crate::platform::libs::winit;
     pub use winit::event::ElementState;
     pub use winit::keyboard::{KeyCode, PhysicalKey};

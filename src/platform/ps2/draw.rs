@@ -1,5 +1,5 @@
+use super::display::{PixelStorageMethod, vram};
 use super::gs::DepthTestMethod;
-use super::display::{vram, PixelStorageMethod};
 
 // TODO: Merge this into `display`
 

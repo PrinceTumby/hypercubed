@@ -407,7 +407,7 @@ impl Renderer {
         let descriptor_set_allocator = &graphics_resources.descriptor_set_allocator;
         let width = physical_size.width as f32;
         let height = physical_size.height as f32;
-        // Write screen size
+        // Write screen size and update textures
         {
             command_buffer
                 .update_buffer(

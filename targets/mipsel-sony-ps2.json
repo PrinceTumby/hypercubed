@@ -1,21 +1,21 @@
 {
   "arch": "mips",
-  "cpu": "mips2",
+  "cpu": "r5900",
   "llvm-target": "mipsel-unknown-none-n32",
-  "features": "+noabicalls,+soft-float",
+  "features": "+noabicalls,+soft-float,+short-loop-bug",
   "metadata": {
     "description": "MIPS (LE) Sony PlayStation 2 (PS2)",
     "host_tools": false,
     "std": false,
-    "tier": 3
+    "tier": 4
   },
   "data-layout": "e-m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64",
   "no-builtins": true,
   "vendor": "sony",
   "target-endian": "little",
   "target-pointer-width": "32",
+  "max-atomic-width": 32,
   "os": "ps2",
-  "singlethread": true,
   "env": "",
   "dynamic-linking": false,
   "relocation-model": "static",

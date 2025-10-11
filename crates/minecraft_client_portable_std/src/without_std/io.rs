@@ -13,19 +13,14 @@ pub trait Read {
         loop {
             match self.read(&mut intermediate_buffer) {
                 Ok(0) => return Ok(buf.len() - start_len),
-                Ok(bytes_read) => {
-                    buf.extend_from_slice(&intermediate_buffer[0..bytes_read])
-                }
+                Ok(bytes_read) => buf.extend_from_slice(&intermediate_buffer[0..bytes_read]),
                 Err(err) if err.is_interrupted() => continue,
                 Err(err) => return Err(err),
             }
         }
     }
 
-    fn read_exact(
-        &mut self,
-        buf: &mut [u8],
-    ) -> core::result::Result<(), ReadExactError<Error>> {
+    fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), ReadExactError<Error>> {
         let mut buf = buf;
         while !buf.is_empty() {
             match self.read(buf) {
@@ -59,10 +54,7 @@ impl<R: Read + ?Sized> Read for &mut R {
         (**self).read_to_end(buf)
     }
 
-    fn read_exact(
-        &mut self,
-        buf: &mut [u8],
-    ) -> core::result::Result<(), ReadExactError<Error>> {
+    fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), ReadExactError<Error>> {
         (**self).read_exact(buf)
     }
 }
@@ -76,10 +68,7 @@ impl<R: Read + ?Sized> Read for super::Box<R> {
         (**self).read_to_end(buf)
     }
 
-    fn read_exact(
-        &mut self,
-        buf: &mut [u8],
-    ) -> core::result::Result<(), ReadExactError<Error>> {
+    fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), ReadExactError<Error>> {
         (**self).read_exact(buf)
     }
 }
@@ -238,10 +227,7 @@ impl Error {
         Self::_new(ErrorKind::Other, error.into())
     }
 
-    fn _new(
-        kind: ErrorKind,
-        error: super::Box<dyn core::error::Error + Send + Sync>,
-    ) -> Self {
+    fn _new(kind: ErrorKind, error: super::Box<dyn core::error::Error + Send + Sync>) -> Self {
         Self(ErrorRepr::Custom(CustomError { kind, error }))
     }
 

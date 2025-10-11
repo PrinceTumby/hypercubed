@@ -1,7 +1,5 @@
 use super::prelude::*;
 use crate::portable_prelude::*;
-#[cfg_attr(not(feature = "std"), expect(unused))]
-use portable_std::{FastHashMap, HashMap, io};
 use core::mem::MaybeUninit;
 use core::num::NonZeroU32;
 use nom::bytes::complete::{take, take_while, take_while1};
@@ -10,6 +8,8 @@ use nom::error::ParseError;
 use nom::multi::{length_count, length_data, length_value};
 use nom::sequence::pair;
 use nom::{Input, Parser};
+#[cfg_attr(not(feature = "mini_std"), expect(unused))]
+use portable_std::{FastHashMap, HashMap, io};
 use protocol_derive::Deserialize;
 
 // Helper macros
@@ -539,8 +539,8 @@ impl Serialize for Identifier {
 mod identifier_tests {
     use super::super::ByteView;
     use super::{InputSpan, Serialize};
-    use resources::identifier;
     use io::Cursor;
+    use resources::identifier;
 
     #[test]
     fn serialize() {
@@ -694,7 +694,7 @@ where
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "mini_std")]
 impl<K, V> Deserialize for FastHashMap<K, V>
 where
     K: Deserialize + core::hash::Hash + Eq,

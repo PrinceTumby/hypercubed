@@ -60,7 +60,7 @@ mod syscalls {
             );
             match code {
                 -1 => Err(()),
-                _ => Ok(HandlerId(code))
+                _ => Ok(HandlerId(code)),
             }
         }
     }

@@ -2,9 +2,9 @@ pub mod asm_helpers;
 pub mod compiler_builtins;
 pub mod dma;
 // TODO: Merge `draw` into `display`
+pub mod display;
 pub mod draw;
 pub mod gif;
-pub mod display;
 pub mod gs;
 pub mod heap;
 pub mod interrupts;
@@ -13,13 +13,13 @@ pub mod net;
 pub mod time;
 pub mod unwinding;
 
-use portable_std::*;
 use crate::client::graphics as ps2_graphics;
+use portable_std::*;
 
 pub mod exports {
-    pub use super::{net, libs, time};
     #[allow(unused)]
-    pub(crate) use super::{dbg, print, println, eprintln};
+    pub(crate) use super::{dbg, eprintln, print, println};
+    pub use super::{libs, net, time};
 }
 
 #[expect(unused)]
@@ -64,7 +64,7 @@ macro_rules! dbg {
         }
     };
     ($($val:expr),+ $(,)?) => {
-        ($($crate::dbg!($val)),+,)
+        ($($crate::platform::ps2::dbg!($val)),+,)
     };
 }
 
@@ -110,6 +110,26 @@ impl core::fmt::Write for SyscallWriter {
             }
         }
         Ok(())
+    }
+}
+
+struct Ps2CriticalSection;
+critical_section::set_impl!(Ps2CriticalSection);
+
+// `critical_section::RawRestoreState` is `bool` here.
+unsafe impl critical_section::Impl for Ps2CriticalSection {
+    /// Returned token represents whether interrupts were previously enabled.
+    unsafe fn acquire() -> critical_section::RawRestoreState {
+        unsafe { interrupts::disable() }
+    }
+
+    /// Provided token represents whether interrupts were enabled at acquire time.
+    unsafe fn release(token: critical_section::RawRestoreState) {
+        if token {
+            unsafe {
+                _ = interrupts::enable();
+            }
+        }
     }
 }
 
@@ -167,6 +187,8 @@ pub unsafe extern "C" fn ps2_entrypoint() -> ! {
     unsafe {
         // Initialise heap
         heap::init();
+        // Initialise clock
+        time::init_instant_clock();
         // Initialise GIF DMA channel
         dma::initialise_channel(dma::Channel::Gif, None, dma::ChannelFlags::default());
         // Initialise GS, framebuffer, and Z buffer
@@ -224,7 +246,7 @@ pub unsafe extern "C" fn ps2_entrypoint() -> ! {
             println!("Setup GS!");
         }
         // block_on(render_triangle(&framebuffer, &z_buffer));
-        block_on(run_client_main(&framebuffer, &z_buffer)).unwrap();
+        block_on(run_client_main(framebuffer, z_buffer)).unwrap();
         println!("Finished!");
         loop {
             core::arch::asm!("nop", "nop", "nop", "nop", "nop", "nop");
@@ -236,15 +258,17 @@ const SERVER_ADDRESS: &str = "192.168.68.121";
 const SERVER_PORT: u16 = 25565;
 
 pub async fn run_client_main(
-    framebuffer: &draw::Framebuffer,
-    z_buffer: &draw::ZBuffer,
+    framebuffer: draw::Framebuffer,
+    z_buffer: draw::ZBuffer,
 ) -> anyhow::Result<()> {
-    use crate::protocol::{self, configuration};
     use crate::protocol::prelude::*;
-    println!(
-        "{}",
-        request_status(PROTOCOL_VERSION, SERVER_ADDRESS, SERVER_PORT)?
-    );
+    use crate::protocol::{self, configuration};
+    dbg!();
+    // println!(
+    //     "{}",
+    //     request_status(PROTOCOL_VERSION, SERVER_ADDRESS, SERVER_PORT)?
+    // );
+    dbg!();
     let (server_connection, login_success_packet) = protocol::login::login(
         SERVER_ADDRESS,
         SERVER_PORT,
@@ -262,14 +286,18 @@ pub async fn run_client_main(
         None,
     )
     .await?;
+    dbg!();
     println!("{login_success_packet:?}");
+    dbg!();
     // TODO: Refactor this:
     // - Change PlayConnection to have an internal thread sending packets on a channel
     // - Make read_packet pull from the internal channel receiver
     // Then we no longer need an Arc<PlayConnection> with a confusing read_packet method, and we
     // can more easily make a try_read_packet method
     let server_connection = portable_std::Arc::new(server_connection);
+    dbg!();
     let (clientbound_tx, clientbound_rx) = portable_std::sync::mpsc::channel();
+    dbg!();
     let connection_task = {
         let clientbound_tx = clientbound_tx.clone();
         let server_connection = server_connection.clone();
@@ -288,14 +316,18 @@ pub async fn run_client_main(
             }
         }
     };
+    dbg!();
     let event_loop = libs::winit::event_loop::EventLoop::new()?;
+    dbg!();
     let window = &libs::winit::window::Window {};
-    let graphics_state = ps2_graphics::GraphicsState::new(window).await?;
+    dbg!();
+    let graphics_state = ps2_graphics::GraphicsState::new(framebuffer, z_buffer).await?;
+    dbg!();
     let (run_result, ()) = futures::join!(
         crate::client::window_run(
-            todo!(),
-            todo!(),
-            todo!(),
+            server_connection,
+            clientbound_rx,
+            clientbound_tx,
             crate::client::WindowRunEmbeddedArgs {
                 event_loop,
                 window,

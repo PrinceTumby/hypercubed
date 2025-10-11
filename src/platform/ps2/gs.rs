@@ -1,6 +1,6 @@
+use super::display::PixelStorageMethod;
 use super::draw;
 use super::gif::GsRegisterPacketData;
-use super::display::PixelStorageMethod;
 use bitfield::bitfield;
 
 /// Fixed point 12.4 number.

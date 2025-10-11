@@ -9,18 +9,18 @@
     reason = "the types in `crate::prelude` can be used for portability"
 )]
 #![deny(clippy::alloc_instead_of_core)]
-#![cfg_attr(all(not(test), not(feature = "std")), no_std)]
+#![cfg_attr(not(feature = "mini_std"), no_std)]
 #![cfg_attr(feature = "platform_ps2", feature(asm_experimental_arch))]
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(any(feature = "mini_std", test)))]
 #[macro_use]
 extern crate alloc;
 
 pub mod portable_prelude {
     pub use portable_std::prelude::*;
-    
+
     cfg_if::cfg_if! {
-        if #[cfg(not(feature = "std"))] {
+        if #[cfg(not(feature = "full_std"))] {
             #[allow(unused)]
             pub(crate) use crate::platform::{dbg, println, eprintln};
             pub use nalgebra::{ComplexField, RealField};
@@ -36,7 +36,7 @@ pub mod protocol;
 pub mod world;
 
 #[cfg(all(
-    feature = "std",
+    feature = "full_std",
     any(
         target_os = "windows",
         target_os = "macos",

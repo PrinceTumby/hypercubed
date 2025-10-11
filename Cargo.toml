@@ -4,29 +4,40 @@ members = [
     "crates/vulkan_prelude",
     "crates/minecraft_client_resources",
     "crates/minecraft_client_portable_std",
+    "crates/minecraft_client_w2c2_binding_generator",
 ]
 exclude = [
     "crates/minecraft_client_vk_shaders",
     "crates/minecraft_client_vk_shaders/builder",
     "crates/bimap-rs",
+    "crates/cesu8-rs",
     "crates/CrabNBT",
+    "crates/egui",
+    "crates/egui_plot",
+    "crates/foldhash",
+    "crates/hashbrown",
+    "crates/portable-atomic",
 ]
 
 [workspace.dependencies]
 ahash = { version = "0", default-features = false }
 anyhow = { version = "1", default-features = false }
+bimap = { version = "0.6", default-features = false, features = ["serde"] }
 bincode = { version = "2", default-features = false, features = ["alloc", "derive", "serde"] }
 bitfield = "0"
+bitflags = "2"
 bytemuck = { version = "1", features = ["derive"] }
 cfg-if = "1"
+critical-section = "1"
 embedded-io = { version = "0", features = ["alloc"] }
 embedded-io-async = { version = "0", features = ["alloc"] }
 foldhash = { version = "0", default-features = false }
-image = { version = "0" }
+hashbrown = { version = "0", features = ["serde"] }
 indexmap = { version = "2", default-features = false }
 lazy_static = "1"
 log = "0"
 miniz_oxide = "0"
+once_cell = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 # If updating, also update in "crates/minecraft_client_vk_shaders/Cargo.toml"
@@ -35,12 +46,12 @@ vulkan_prelude = { path = "crates/vulkan_prelude" }
 smallstr = { version = "0", features = ["serde"] }
 spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
-zip = "4"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
-[workspace.dependencies.bimap]
-path = "crates/bimap-rs"
+[workspace.dependencies.image]
+version = "0"
 default-features = false
-features = ["serde"]
+features = ["jpeg", "png"]
 
 [workspace.dependencies.nalgebra]
 version = "0.34"
@@ -50,6 +61,24 @@ features = ["libm", "macros", "serde", "serde-serialize-no-std"]
 [workspace.dependencies.smallvec]
 version = "1"
 features = ["bincode", "const_generics", "const_new", "serde", "union"]
+
+[workspace.dependencies.spin]
+version = "0.9"
+default-features = false
+features = ["mutex", "spin_mutex", "portable_atomic"]
+
+# Patched dependencies
+
+[patch.crates-io]
+bimap = { path = "crates/bimap-rs" }
+crab_nbt = { path = "crates/CrabNBT" }
+egui = { path = "crates/egui/crates/egui" }
+egui_plot = { path = "crates/egui_plot/egui_plot" }
+foldhash = { path = "crates/foldhash" }
+hashbrown = { path = "crates/hashbrown" }
+objc = { path = "crates/rust-objc" }
+
+# Package
 
 [package]
 name = "minecraft_client"
@@ -63,23 +92,26 @@ bench = false
 
 [[bin]]
 name = "minecraft_client"
-required-features = ["std"]
 
 [features]
-# default = ["std", "graphics_backend_vulkan"]
-default = ["platform_ps2", "embed_vanilla_cache"]
-std = [
+# default = ["graphics_backend_vulkan"]
+# default = ["platform_ps2", "embed_vanilla_cache"]
+# default = ["platform_w2c2_opengl_mac", "embed_vanilla_cache"]
+default = ["platform_opengl_mac_tiger", "embed_vanilla_cache"]
+full_std = [
+    "mini_std",
+    "dep:winit",
+]
+mini_std = [
     # Dependencies
     "dep:egui",
     "dep:egui_plot",
     "dep:env_logger",
     "dep:image",
-    "dep:mimalloc",
     "dep:petgraph",
     "dep:pollster",
     "dep:reqwest",
     "dep:threadpool",
-    "dep:winit",
     # Dependency features
     "ahash/default",
     "ahash/serde",
@@ -88,6 +120,7 @@ std = [
     "crab_nbt/default",
     "foldhash/default",
     "indexmap/default",
+    "once_cell/default",
     "nalgebra/serde-serialize",
     "nom/default",
     "nom_locate/default",
@@ -100,24 +133,29 @@ std = [
     "uuid/default",
     "uuid/v4",
 ]
-protocol_verbose = ["std"]
+mimalloc = ["dep:mimalloc"]
+protocol_verbose = ["full_std"]
 tracy = ["dep:tracing-tracy"]
 
 # Data embedding
+
 use_embedded_cache = ["resources/use_embedded_cache"]
 embed_vanilla_cache = ["use_embedded_cache"]
 
 # Graphics backends
-graphics_backend_wgpu = ["std", "dep:wgpu"]
+
+graphics_backend_wgpu = ["full_std", "mimalloc", "dep:wgpu"]
 graphics_backend_vulkan = [
-    "std",
+    "full_std",
+    "mimalloc",
     "dep:vulkano",
     "dep:vulkan_prelude",
     "dep:minecraft_client_vk_shaders",
     "resources/luma_textures",
 ]
 graphics_backend_software = [
-    "std",
+    "full_std",
+    "mimalloc",
     "dep:multiversion",
     "dep:pixels",
     "dep:wide",
@@ -125,13 +163,46 @@ graphics_backend_software = [
 ]
 
 # Alternative platforms
+
 platform_ps2 = [
+    # Other features
     "use_embedded_cache",
+    # Dependencies
+    "dep:critical-section",
+    "dep:embedded-alloc",
     "dep:embedded-io",
     "dep:embedded-io-async",
     "dep:embedded-nal-async",
     "dep:reqwless",
 ]
+platform_opengl_mac_tiger = [
+    # Other features
+    "use_embedded_cache",
+    # Dependencies
+    "dep:critical-section",
+    "dep:embedded-io",
+    "dep:embedded-io-async",
+    "dep:embedded-nal-async",
+    "dep:objc",
+    "dep:reqwless",
+    # Dependency features
+    "resources/no_std",
+]
+platform_w2c2_opengl_mac = [
+    # Other features
+    "mini_std",
+    "use_embedded_cache",
+    # Dependencies
+    "dep:embedded-io",
+    "dep:embedded-io-async",
+    "dep:embedded-nal-async",
+    "dep:reqwless",
+    # Dependency features
+    "embedded-io/std",
+    "embedded-io-async/std",
+    "uuid/rng-rand",
+]
+subplatform_w2c2_opengl_mac_ppc = ["platform_w2c2_opengl_mac"]
 
 [build-dependencies]
 anyhow.workspace = true
@@ -143,20 +214,26 @@ package = "minecraft_client_resources"
 path = "crates/minecraft_client_resources"
 features = ["std"]
 
+[build-dependencies.w2c2_binding_generator]
+package = "minecraft_client_w2c2_binding_generator"
+path = "crates/minecraft_client_w2c2_binding_generator"
+
 [dependencies]
 aes = "0.8"
 ahash = { workspace = true }
 anyhow = { version = "1", default-features = false }
 bimap.workspace = true
 bincode.workspace = true
-bitfield = { workspace = true }
+bitfield.workspace = true
+bitflags.workspace = true
 bytebuffer = { version = "2", optional = true }
-bytemuck = { workspace = true }
+bytemuck.workspace = true
 bytes = { version = "1", default-features = false }
 cfb8 = { version = "0.8" }
 cfg-if.workspace = true
-egui = { version = "0.31", features = ["bytemuck"], optional = true }
-egui_plot = { version = "0.31", optional = true }
+crab_nbt = { version = "0.2", default-features = false, features = ["serde"] }
+critical-section = { workspace = true, features = ["restore-state-bool"], optional = true }
+embedded-alloc = { version = "0.6", optional = true }
 embedded-io = { workspace = true, optional = true }
 embedded-io-async = { workspace = true, optional = true }
 embedded-nal-async = { version = "0", optional = true }
@@ -174,14 +251,15 @@ multiversion = { version = "0.8", optional = true }
 nalgebra.workspace = true
 nom = { version = "8", default-features = false, features = ["alloc"] }
 nom_locate = { version = "5", default-features = false, features = ["alloc"] }
+objc = { version = "0.2", optional = true }
+once_cell.workspace = true
 ordered-float = { version = "4.5", default-features = false }
 petgraph = { version = "0.6", optional = true }
 pixels = { version = "0.15", optional = true }
 pollster = { version = "0.3", optional = true }
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
-rand = { version = "0.8", default-features = false, features = ["min_const_gen", "std_rng"] }
+rand = { version = "0.9", default-features = false, features = ["std_rng"] }
 reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
-rsa = { version = "0.9", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha1 = { version = "0.10", default-features = false }
@@ -191,23 +269,34 @@ threadpool = { version = "1.8", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["alloc"] }
 tracing-tracy = { version = "0.11", optional = true }
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
-uuid = { version = "1.4", default-features = false, features = ["serde", "v3"] }
+uuid = { version = "1", default-features = false, features = ["serde", "v3"] }
 vulkan_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
 wgpu = { version = "24.0.3", optional = true }
 wide = { version = "0.7", optional = true }
 winit = { version = "0.29", features = ["rwh_05"], optional = true }
 
-[dependencies.crab_nbt]
-path = "crates/CrabNBT"
+[dependencies.egui]
+version = "0.33"
 default-features = false
-features = ["serde"]
+features = ["bytemuck", "default_fonts"]
+optional = true
+
+[dependencies.egui_plot]
+version = "0.34"
+default-features = false
+optional = true
 
 [dependencies.reqwless]
 version = "0.13"
 default-features = false
 features = ["alloc"]
 optional = true
+
+[dependencies.rsa]
+version = "0.10.0-rc.6"
+default-features = false
+features = ["encoding"]
 
 [dependencies.minecraft_client_vk_shaders]
 path = "crates/minecraft_client_vk_shaders"
@@ -224,6 +313,8 @@ package = "minecraft_client_resources"
 path = "crates/minecraft_client_resources"
 default-features = false
 
+# Profiles
+
 [profile.dev]
 opt-level = 1
 panic = "abort"
@@ -233,12 +324,12 @@ opt-level = 1
 
 [profile.dev-ps2]
 inherits = "dev"
-opt-level = 2
+opt-level = "s"
 panic = "abort"
-debug = false
+# debug = false
 
 [profile.dev-ps2.build-override]
-opt-level = 2
+opt-level = 1
 
 [profile.dev-no-opt]
 inherits = "dev"

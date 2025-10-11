@@ -32,3 +32,15 @@ pub fn sync_d_cache<T>(range: core::ops::Range<*const T>) {
         }
     }
 }
+
+#[inline]
+pub fn with_interrupts_disabled<T>(f: impl FnOnce() -> T) -> T {
+    unsafe {
+        let interrupts_previously_enabled = disable_interrupts();
+        let val = f();
+        if interrupts_previously_enabled {
+            enable_interrupts();
+        }
+        val
+    }
+}

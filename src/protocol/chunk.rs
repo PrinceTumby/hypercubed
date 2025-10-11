@@ -1,11 +1,11 @@
 use super::prelude::*;
-use portable_std::FastHashSet;
 use crate::portable_prelude::*;
-use resources::block::GlobalPaletteIndex;
 use nom::Parser;
 use nom::bytes::tag;
 use nom::sequence::pair;
+use portable_std::FastHashSet;
 use protocol_derive::Deserialize;
+use resources::block::GlobalPaletteIndex;
 
 #[derive(Clone, Deserialize)]
 pub struct ChunkSection {

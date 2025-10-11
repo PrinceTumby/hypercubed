@@ -1,0 +1,60 @@
+{
+  "arch": "x86",
+  "archive-format": "darwin",
+  "binary-format": "mach-o",
+  "cpu": "yonah",
+  "rustc-abi": "x86-sse2",
+  "crt-objects-fallback": "false",
+  "data-layout": "e-m:o-p:32:32-p270:32:32-p271:32:32-p272:64:64-i128:128-f64:32:64-f80:128-n8:16:32-S128",
+  "debuginfo-kind": "dwarf-dsym",
+  "dll-suffix": ".dylib",
+  "dynamic-linking": true,
+  "eh-frame-header": false,
+  "emit-debug-gdb-scripts": false,
+  "frame-pointer": "always",
+  "function-sections": false,
+  "has-rpath": true,
+  "has-thread-local": true,
+  "is-like-darwin": true,
+  "llvm-floatabi": "hard",
+  "llvm-target": "i686-apple-macosx10.4",
+  "target-pointer-width": 32,
+  "max-atomic-width": 64,
+  "abi-return-struct-as-int": true,
+  "metadata": {
+    "description": "x86 Apple Mac OS X (10.4+, Tiger+)",
+    "host_tools": false,
+    "std": false,
+    "tier": 3
+  },
+  "os": "macos",
+  "split-debuginfo": "packed",
+  "stack-probes": {
+    "kind": "inline"
+  },
+  "supported-sanitizers": [
+    "address",
+    "leak",
+    "thread",
+    "cfi"
+  ],
+  "supported-split-debuginfo": [
+    "packed",
+    "unpacked",
+    "off"
+  ],
+  "link-env": ["ZERO_AR_DATE=1"],
+  "link-env-remove": [
+    "IPHONEOS_DEPLOYMENT_TARGET",
+    "TVOS_DEPLOYMENT_TARGET",
+    "XROS_DEPLOYMENT_TARGET"
+  ],
+  "linker": "i386-apple-darwin8-ld",
+  "linker-flavor": "darwin",
+  "post-link-args": {
+    "darwin": ["/usr/local/osxcross-10-4/SDK/MacOSX10.4u.sdk/usr/lib/crt1.o"]
+  },
+  "target-family": ["unix"],
+  "target-mcount": "\u0001mcount",
+  "vendor": "apple"
+}

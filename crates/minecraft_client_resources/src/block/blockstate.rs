@@ -1,20 +1,20 @@
-use portable_std::prelude::*;
-use portable_std::{Atom, Cow, FastHashMap, FastHashSet};
 use anyhow::{Context, anyhow, bail, ensure};
 use core::fmt::Write;
+use portable_std::prelude::*;
+use portable_std::{Atom, Cow, FastHashMap, FastHashSet};
 use serde::Deserialize;
 
-use super::{Identifier, RightAngleRotation, RegistryIndex};
-use super::model::{ModelRotationInfo, ModelIndex};
+use super::model::{ModelIndex, ModelRotationInfo};
+use super::{Identifier, RegistryIndex, RightAngleRotation};
 use crate::aabb::AABB;
 
 #[cfg(feature = "std")]
 use std_imports::*;
 #[cfg(feature = "std")]
 mod std_imports {
-    pub use crate::texture;
-    pub use crate::block::model::{RawCompositeModelPart, ModelRegistryBuilder};
+    pub use crate::block::model::{ModelRegistryBuilder, RawCompositeModelPart};
     pub use crate::manager::{ResourceType, get_resource_file};
+    pub use crate::texture;
     pub use indexmap::IndexMap;
 }
 

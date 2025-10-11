@@ -14,6 +14,11 @@ __start:
     sw $zero, 0($t0)
     addi $t0, $t0, 4
     addi $t1, $t1, -4
+    nop
+    nop
+    nop
+    nop
+    nop
     bgtz $t1, 1b
     nop
 
@@ -22,8 +27,10 @@ __start:
     move $gp, $4
     # Place stack at end of RDRAM.
     li $a1, -1
-    # 128KiB Stack
-    li $a2, 128 * 1024
+    # # 128KiB Stack
+    # li $a2, 128 * 1024
+    # 16MiB stack
+    li $a2, 16 * 1024 * 1024
     # System arguments static pointer, defined in `mod.rs`.
     dla $a3, SYS_ARGS
     dla $a4, syscall_exit_thread

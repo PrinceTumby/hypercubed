@@ -3,29 +3,28 @@ use crate::client::input::PlayControlState;
 use crate::client::{
     ClientPlayState, ClientPlayStateUpdate, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32, world,
 };
-use resources::identifier;
 use crate::physics;
-use crate::portable_prelude::*;
-use portable_std::{Arc, FastHashMap, FastHashSet, IndexMap, sync};
+use crate::portable_prelude::{println, *};
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{
     self as protocol_play, Clientbound as ClientboundPacket, GameEventType, GameMode,
     serverbound as serverbound_packets,
 };
 use crate::protocol::prelude::*;
-use resources::block::GlobalPaletteIndex;
 #[cfg(feature = "graphics_backend_vulkan")]
 use anyhow::Context;
 use nalgebra::Vector3;
-#[cfg(feature = "std")]
+use portable_std::{Arc, FastHashMap, FastHashSet, IndexMap, sync};
+use resources::block::GlobalPaletteIndex;
+use resources::identifier;
+#[cfg(feature = "full_std")]
 use threadpool::ThreadPool;
 #[cfg(feature = "graphics_backend_vulkan")]
 use vulkan_prelude::*;
 
 #[expect(clippy::too_many_arguments)]
 pub fn process_game_events(
-    #[cfg(feature = "std")]
-    thread_pool: &ThreadPool,
+    #[cfg(feature = "full_std")] thread_pool: &ThreadPool,
     play_state: &mut ClientPlayState,
     graphics_state: &mut GraphicsState,
     debug_state: &mut graphics::DebugState,
@@ -478,7 +477,7 @@ pub fn process_game_events(
             _ => {}
         }
     }
-    #[cfg(feature = "std")]
+    #[cfg(feature = "full_std")]
     if thread_pool.panic_count() > 0 {
         panic!("Thread pool panic");
     }
@@ -496,7 +495,7 @@ pub fn process_game_events(
         }
         subchunk_update_groups.sort_unstable_keys();
         cfg_if::cfg_if! {
-            if #[cfg(feature = "std")] {
+            if #[cfg(feature = "full_std")] {
                 for (update_id, subchunks) in subchunk_update_groups {
                     let graphics_resources = graphics_state.resources.clone();
                     let raw_chunks = play_state.raw_chunks.clone();

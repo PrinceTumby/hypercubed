@@ -567,8 +567,7 @@ pub mod vram {
         pub fn new(
             num_pages: u16,
             placement_preference: Placement,
-        ) -> Result<Self, OutOfMemoryError>
-        {
+        ) -> Result<Self, OutOfMemoryError> {
             unsafe {
                 match placement_preference {
                     Placement::PreferLowest => {
@@ -701,7 +700,7 @@ pub mod vram {
         buffer: Buffer,
         width: u32,
         height: u32,
-        pixel_format: PixelStorageMethod
+        pixel_format: PixelStorageMethod,
     }
 
     impl Texture {
@@ -778,13 +777,13 @@ pub mod vram {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct OutOfMemoryError;
-    
+
     impl core::fmt::Display for OutOfMemoryError {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             "out of video memory".fmt(f)
         }
     }
-    
+
     impl core::error::Error for OutOfMemoryError {}
 
     pub const VRAM_NUM_PAGES: u16 = 512;

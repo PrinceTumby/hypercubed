@@ -1,90 +1,35 @@
 ENTRY(__start);
 
+PROGRAM_BASE = 0x00100000;
+
 PHDRS {
-    text PT_LOAD;
+    text PT_LOAD FLAGS(0x5); /* Read and Execute */
+    data PT_LOAD;
+    rodata PT_LOAD FLAGS(0x4); /* Read only */
+    bss PT_LOAD;
 }
 
 SECTIONS {
-    .text 0x00100000: {
-        _ftext = . ;
-        *(.text)
-        *(.text.*)
-        *(.gnu.linkonce.t*)
-        KEEP(*(.init))
-        KEEP(*(.fini))
-        QUAD(0)
+    . = PROGRAM_BASE;
+    .text : {
+        *(.text*)
     } :text
-
-    PROVIDE(_etext = .);
-    PROVIDE(etext = .);
-
-    .reginfo : { *(.reginfo) }
-
-    /* Global/static constructors and deconstructors. */
-    .ctors ALIGN(16): {
-        KEEP(*crtbegin*.o(.ctors))
-        KEEP(*(EXCLUDE_FILE(*crtend*.o) .ctors))
-        KEEP(*(SORT(.ctors.*)))
-        KEEP(*(.ctors))
-    }
-    .dtors ALIGN(16): {
-        KEEP(*crtbegin*.o(.dtors))
-        KEEP(*(EXCLUDE_FILE(*crtend*.o) .dtors))
-        KEEP(*(SORT(.dtors.*)))
-        KEEP(*(.dtors))
-    }
-
-    /* Static data.  */
-    .rodata ALIGN(128): {
-        *(.rodata)
-        *(.rodata.*)
-        *(.gnu.linkonce.r*)
-    }
-
-    .data ALIGN(128): {
-        _fdata = . ;
-        *(.data)
-        *(.data.*)
-        *(.gnu.linkonce.d*)
-        SORT(CONSTRUCTORS)
-    }
-
-    .rdata ALIGN(128): { *(.rdata) }
-    .gcc_except_table ALIGN(128): { *(.gcc_except_table) }
-
-    _gp = ALIGN(128) + 0x7ff0;
-    .lit4 ALIGN(128): { *(.lit4) }
-    .lit8 ALIGN(128): { *(.lit8) }
-
-    .sdata ALIGN(128): {
-        *(.sdata)
-        *(.sdata.*)
-        *(.gnu.linkonce.s*)
-    }
-
-    _edata = .;
-    PROVIDE(edata = .);
-
-    /* Uninitialized data.  */
-    .sbss ALIGN(128) : {
-        _fbss = . ;
-        *(.sbss)
-        *(.sbss.*)
-        *(.gnu.linkonce.sb*)
-        *(.scommon)
-    }
-
-    .bss ALIGN(128) : {
-        PROVIDE(__bss_start = .);
-        *(.bss)
-        *(.bss.*)
-        *(.gnu.linkonce.b*)
+    .data ALIGN(4K) : {
+        *(.data*)
+    } :data
+    .rodata ALIGN(4K) : {
+        *(.rodata*)
+    } :rodata
+    .bss ALIGN(4K) : {
+        *(.bss*)
         *(COMMON)
-        PROVIDE(__bss_end = .);
+    } :bss
+    PROVIDE(HEAP_START = .);
+
+    /DISCARD/ : {
+        *(.comment*)
+        *(.eh_frame*)
+        *(.gcc_except_table*)
+        *(.note*)
     }
-    _end_bss = .;
-
-    _end = . ;
-
-    PROVIDE(__heap_start = .);
 }

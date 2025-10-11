@@ -7,3 +7,18 @@
 [submodule "crates/bimap-rs"]
 	path = crates/bimap-rs
 	url = https://github.com/billyrieger/bimap-rs/
+[submodule "crates/foldhash"]
+	path = crates/foldhash
+	url = https://github.com/orlp/foldhash
+[submodule "crates/hashbrown"]
+	path = crates/hashbrown
+	url = https://github.com/rust-lang/hashbrown
+[submodule "crates/egui"]
+	path = crates/egui
+	url = https://github.com/emilk/egui
+[submodule "crates/egui_plot"]
+	path = crates/egui_plot
+	url = https://github.com/emilk/egui_plot
+[submodule "crates/rust-objc"]
+	path = crates/rust-objc
+	url = https://github.com/PrinceTumby/rust-objc

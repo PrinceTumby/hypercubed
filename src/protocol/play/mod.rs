@@ -7,13 +7,13 @@ use super::chunk::RawChunkLightInfo;
 pub use super::configuration::{ChatMode, MainHand};
 use super::prelude::*;
 use crate::portable_prelude::*;
-use resources::block::GlobalPaletteIndex;
 use nom::Parser;
 use nom::bytes::complete::take;
 use nom::combinator::{cond, verify};
 use nom::multi::length_count;
 use nom::sequence::pair;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
+use resources::block::GlobalPaletteIndex;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize, PacketRead)]

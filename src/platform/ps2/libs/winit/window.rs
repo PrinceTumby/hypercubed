@@ -3,8 +3,8 @@
 use crate::platform::ps2::display;
 
 use super::dpi::{PhysicalPosition, PhysicalSize};
-use super::event_loop::EventLoop;
 use super::error::{ExternalError, OsError};
+use super::event_loop::EventLoop;
 
 #[derive(Clone, Debug, Default)]
 pub struct WindowBuilder {}
@@ -39,7 +39,10 @@ impl Window {
         Err(ExternalError::NotSupported)
     }
 
-    pub fn set_cursor_position(&self, _position: PhysicalPosition<i32>) -> Result<(), ExternalError> {
+    pub fn set_cursor_position(
+        &self,
+        _position: PhysicalPosition<i32>,
+    ) -> Result<(), ExternalError> {
         Err(ExternalError::NotSupported)
     }
 

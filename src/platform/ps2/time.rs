@@ -1,6 +1,6 @@
 use super::interrupts;
-use core::sync::atomic::{AtomicU32, AtomicBool};
 use core::sync::atomic::Ordering::Relaxed as RelaxedOrdering;
+use core::sync::atomic::{AtomicBool, AtomicU32};
 
 #[expect(unused)]
 const NS_PER_BUS_CLOCK: u64 = 6_781_684;
@@ -79,7 +79,9 @@ pub struct Duration {
 impl Instant {
     pub fn now() -> Self {
         unsafe {
-            Self { timestamp: get_current_instant_clock_timestamp() }
+            Self {
+                timestamp: get_current_instant_clock_timestamp(),
+            }
         }
     }
 }
@@ -89,7 +91,9 @@ impl core::ops::Sub for Instant {
 
     fn sub(self, rhs: Self) -> Duration {
         let timestamp_diff = self.timestamp.saturating_sub(rhs.timestamp);
-        Duration { nanoseconds: timestamp_diff * NS_PER_INSTANT_CLOCK_TICK }
+        Duration {
+            nanoseconds: timestamp_diff * NS_PER_INSTANT_CLOCK_TICK,
+        }
     }
 }
 

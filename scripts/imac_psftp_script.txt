@@ -1,0 +1,9 @@
+cd Documents/minecraft_client_build
+put target/wasm32-wasip1/debug/minecraft_client.c
+put target/wasm32-wasip1/debug/minecraft_client.h
+put target/wasm32-wasip1/debug/datasegments
+del s*.c
+del s*.o
+mput target/wasm32-wasip1/debug/s*.c
+mput target/wasm32-wasip1/debug/w2c2_generated_bindings/*
+mput src/platform/w2c2_opengl_mac/objc_native_support/*

@@ -1,0 +1,459 @@
+header {
+    module-name "w2c2_gl"
+    enum-int-type rust="u32" c-ffi="U32" c="GLenum"
+    bitflags-int-type rust="u32" c-ffi="U32" c="GLbitfield"
+}
+
+include-c """
+#include <OpenGL/gl.h>
+"""
+
+extern-type BufferHandle rust="BufferHandle" c-ffi="U32" c="GLuint"
+extern-type RawBufferHandle rust="HostU32" c-ffi="U32" c="GLuint"
+extern-ptr-type mut RawBufferHandleMutPtr rust="HostU32" c="GLuint"
+
+extern-type GLint rust="u32" c-ffi="U32" c="GLint"
+extern-type GLsizei rust="usize" c-ffi="U32" c="GLsizei"
+extern-type GLsizeiptr rust="usize" c-ffi="U32" c="GLsizeiptr"
+extern-type GLfloat rust="f32" c-ffi="F32" c="GLfloat"
+extern-type GLclampf rust="f32" c-ffi="F32" c="GLclampf"
+extern-ptr-type const GLDataConstPtr rust="u8" c="GLvoid"
+
+enum ShapeMode {
+    - Points c="GL_POINTS"
+    - Lines c="GL_LINES"
+    - LineLoop c="GL_LINE_LOOP"
+    - LineStrip c="GL_LINE_STRIP"
+    - Triangles c="GL_TRIANGLES"
+    - TriangleStrip c="GL_TRIANGLE_STRIP"
+    - TriangleFan c="GL_TRIANGLE_FAN"
+    - Quads c="GL_QUADS"
+    - QuadStrip c="GL_QUAD_STRIP"
+    - Polygon c="GL_POLYGON"
+}
+
+enum BufferType {
+    - ArrayBuffer c="GL_ARRAY_BUFFER"
+}
+
+enum DataUsageHint {
+    - StaticDraw c="GL_STATIC_DRAW"
+}
+
+bitflags ClearBufferBits {
+    - DEPTH c="GL_DEPTH_BUFFER_BIT"
+    - COLOR c="GL_COLOR_BUFFER_BIT"
+    - STENCIL c="GL_STENCIL_BUFFER_BIT"
+    - ACCUMULATION c="GL_ACCUM_BUFFER_BIT"
+}
+
+bind-c-fn bind_buffer c="glBindBuffer" {
+    args buffer_type=BufferType buffer=BufferHandle
+}
+
+bind-c-fn buffer_data c="glBufferData" {
+    args buffer_type=BufferType num_bytes=GLsizei data=GLDataConstPtr usage_hint=DataUsageHint
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION(buffer_type: BufferType, data: &[u8], usage_hint: DataUsageHint) {
+            unsafe {
+                $WRAPPED_FUNCTION(
+                    buffer_type,
+                    data.len(),
+                    data.as_ptr(),
+                    usage_hint,
+                )
+            }
+        }
+        """
+}
+
+bind-c-fn clear c="glClear" {
+    args buffer_bits=ClearBufferBits
+}
+
+bind-c-fn clear_color c="glClearColor" {
+    args r=GLclampf g=GLclampf b=GLclampf a=GLclampf
+}
+
+enum EnableComponent {
+    - DepthTest c="GL_DEPTH_TEST"
+    - Texture2d c="GL_TEXTURE_2D"
+    - ScissorTest c="GL_SCISSOR_TEST"
+    - Blending c="GL_BLEND"
+}
+
+bind-c-fn enable c="glEnable" {
+    args component=EnableComponent
+}
+
+bind-c-fn disable c="glDisable" {
+    args component=EnableComponent
+}
+
+enum ClientArrayType {
+    - VertexArray c="GL_VERTEX_ARRAY"
+    - NormalArray c="GL_NORMAL_ARRAY"
+    - ColorArray c="GL_COLOR_ARRAY"
+    - IndexArray c="GL_INDEX_ARRAY"
+    - TextureCoordArray c="GL_TEXTURE_COORD_ARRAY"
+    - EdgeFlagArray c="GL_EDGE_FLAG_ARRAY"
+}
+
+bind-c-fn enable_client_state c="glEnableClientState" {
+    args component=ClientArrayType
+}
+
+bind-c-fn disable_client_state c="glDisableClientState" {
+    args component=ClientArrayType
+}
+
+bind-c-fn flush c="glFlush" {
+    args
+}
+
+bind-c-fn finish c="glFinish" {
+    args
+}
+
+bind-c-fn gen_buffers c="glGenBuffers" {
+    args num_out_buffers=GLsizeiptr out_buffers=RawBufferHandleMutPtr
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION<const N: usize>() -> [BufferHandle; N] {
+            let mut raw_buffers: [HostU32; N] = [HostU32::new(0); N];
+            unsafe {
+                $WRAPPED_FUNCTION(
+                    raw_buffers.len(),
+                    raw_buffers.as_mut_ptr(),
+                );
+            }
+            raw_buffers.map(BufferHandle::from_raw)
+        }
+        """
+}
+
+bind-c-fn viewport c="glViewport" {
+    args x=GLint y=GLint width=GLsizei height=GLsizei
+}
+
+// Array drawing
+
+enum ColorPointerType {
+    - I8 c="GL_BYTE"
+    - U8 c="GL_UNSIGNED_BYTE"
+    - I16 c="GL_SHORT"
+    - U16 c="GL_UNSIGNED_SHORT"
+    - I32 c="GL_INT"
+    - U32 c="GL_UNSIGNED_INT"
+    - F32 c="GL_FLOAT"
+    - F64 c="GL_DOUBLE"
+}
+
+bind-c-fn color_pointer c="glColorPointer" {
+    args size=GLint color_type=ColorPointerType stride=GLsizei ptr=GLDataConstPtr
+}
+
+enum ColorIndexPointerType {
+    - I16 c="GL_SHORT"
+    - I32 c="GL_INT"
+    - F32 c="GL_FLOAT"
+    - F64 c="GL_DOUBLE"
+}
+
+bind-c-fn color_index_pointer c="glIndexPointer" {
+    args index_type=ColorIndexPointerType stride=GLsizei ptr=GLDataConstPtr
+}
+
+enum TextureCoordPointerType {
+    - I16 c="GL_SHORT"
+    - I32 c="GL_INT"
+    - F32 c="GL_FLOAT"
+    - F64 c="GL_DOUBLE"
+}
+
+bind-c-fn texture_coord_pointer c="glTexCoordPointer" {
+    args size=GLint tex_coord_type=TextureCoordPointerType stride=GLsizei ptr=GLDataConstPtr
+}
+
+enum VertexPointerType {
+    - I16 c="GL_SHORT"
+    - I32 c="GL_INT"
+    - F32 c="GL_FLOAT"
+    - F64 c="GL_DOUBLE"
+}
+
+bind-c-fn vertex_pointer c="glVertexPointer" {
+    args size=GLint vertex_type=VertexPointerType stride=GLsizei ptr=GLDataConstPtr
+}
+
+bind-c-fn client_active_texture c="glClientActiveTexture" {
+    args texture_index=GLint
+}
+
+bind-c-fn draw_arrays c="glDrawArrays" {
+    args mode=ShapeMode first=GLint element_count=GLsizei
+}
+
+enum IndexType {
+    - U8 c="GL_UNSIGNED_BYTE"
+    - U16 c="GL_UNSIGNED_SHORT"
+    - U32 c="GL_UNSIGNED_INT"
+}
+
+bind-c-fn draw_elements c="glDrawElements" {
+    args mode=ShapeMode indices_count=GLsizei index_type=IndexType indices_ptr=GLDataConstPtr
+}
+
+// Textures
+
+enum TextureDataType {
+    - I8 c="GL_BYTE"
+    - U8 c="GL_UNSIGNED_BYTE"
+    - I16 c="GL_SHORT"
+    - U16 c="GL_UNSIGNED_SHORT"
+    - I32 c="GL_INT"
+    - U32 c="GL_UNSIGNED_INT"
+    - F32 c="GL_FLOAT"
+}
+
+enum TextureInternalFormat {
+    // Symbolic formats
+    - Alpha c="GL_ALPHA"
+    - Luminance c="GL_LUMINANCE"
+    - LuminanceAlpha c="GL_LUMINANCE_ALPHA"
+    - Intensity c="GL_INTENSITY"
+    - Rgb c="GL_RGB"
+    - Rgba c="GL_RGBA"
+    // Sized formats
+    - R3G3B2 c="GL_R3_G3_B2"
+    - Rgb4 c="GL_RGB4"
+    - Rgb5 c="GL_RGB5"
+    - Rgb8 c="GL_RGB8"
+    - Rgba4 c="GL_RGBA4"
+    - Rgb5A1 c="GL_RGB5_A1"
+    - Rgba8 c="GL_RGBA8"
+    - Rgb10A2 c="GL_RGB10_A2"
+}
+
+enum Texture2dTarget {
+    - Texture c="GL_TEXTURE_2D"
+}
+
+enum Texture2dFormat {
+    - ColorIndex c="GL_COLOR_INDEX"
+    - R c="GL_RED"
+    - G c="GL_GREEN"
+    - B c="GL_BLUE"
+    - A c="GL_ALPHA"
+    - Rgb c="GL_RGB"
+    - Rgba c="GL_RGBA"
+    - Bgr c="GL_BGR"
+    - Bgra c="GL_BGRA"
+    - Luminance c="GL_LUMINANCE"
+    - LuminanceAlpha c="GL_LUMINANCE_ALPHA"
+}
+
+bind-c-fn tex_image_2d c="glTexImage2D" {
+    args \
+        target=Texture2dTarget \
+        level=GLint \
+        internal_format=TextureInternalFormat \
+        width=GLsizei \
+        height=GLsizei \
+        border=GLint \
+        format=Texture2dFormat \
+        data_type=TextureDataType \
+        pixels=GLDataConstPtr
+}
+
+enum TexEnvTarget {
+    - TextureEnv c="GL_TEXTURE_ENV"
+}
+
+enum TexEnvParam {
+    - Mode c="GL_TEXTURE_ENV_MODE"
+}
+
+enum TexEnvMode {
+    - Replace c="GL_REPLACE"
+    - Modulate c="GL_MODULATE"
+    - Decal c="GL_DECAL"
+}
+
+bind-c-fn tex_env_mode c="glTexEnvf" {
+    args target=TexEnvTarget param_name=TexEnvParam param_value=TexEnvMode
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION(target: TexEnvTarget, mode: TexEnvMode) {
+            unsafe {
+                $WRAPPED_FUNCTION(
+                    target,
+                    TexEnvParam::Mode,
+                    mode,
+                )
+            }
+        }
+        """
+}
+
+bind-c-fn tex_env_i32 c="glTexEnvi" {
+    args target=TexEnvTarget param_name=TexEnvParam param_value=GLint
+}
+
+bind-c-fn tex_env_f32 c="glTexEnvf" {
+    args target=TexEnvTarget param_name=TexEnvParam param_value=GLfloat
+}
+
+enum TexTarget {
+    - Texture2d c="GL_TEXTURE_2D"
+}
+
+enum TexParam {
+    - WrapS c="GL_TEXTURE_WRAP_S"
+    - WrapT c="GL_TEXTURE_WRAP_T"
+    - MagFilter c="GL_TEXTURE_MAG_FILTER"
+    - MinFilter c="GL_TEXTURE_MIN_FILTER"
+}
+
+enum TexWrapMode {
+    - Clamp c="GL_CLAMP"
+    - Repeat c="GL_REPEAT"
+    - ClampToEdge c="GL_CLAMP_TO_EDGE"
+    - MirroredRepeat c="GL_MIRRORED_REPEAT"
+}
+
+bind-c-fn tex_wrap_s c="glTexParameteri" {
+    args target=TexTarget param_name=TexParam param_value=TexWrapMode
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION(target: TexTarget, mode: TexWrapMode) {
+            unsafe {
+                $WRAPPED_FUNCTION(
+                    target,
+                    TexParam::WrapS,
+                    mode,
+                )
+            }
+        }
+        """
+}
+
+bind-c-fn tex_wrap_t c="glTexParameteri" {
+    args target=TexTarget param_name=TexParam param_value=TexWrapMode
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION(target: TexTarget, mode: TexWrapMode) {
+            unsafe {
+                $WRAPPED_FUNCTION(
+                    target,
+                    TexParam::WrapT,
+                    mode,
+                )
+            }
+        }
+        """
+}
+
+enum TexFilterMode {
+    - Nearest c="GL_NEAREST"
+    - Linear c="GL_LINEAR"
+}
+
+bind-c-fn tex_mag_filter c="glTexParameteri" {
+    args target=TexTarget param_name=TexParam param_value=TexFilterMode
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION(target: TexTarget, mode: TexFilterMode) {
+            unsafe {
+                $WRAPPED_FUNCTION(
+                    target,
+                    TexParam::MagFilter,
+                    mode,
+                )
+            }
+        }
+        """
+}
+
+bind-c-fn tex_min_filter c="glTexParameteri" {
+    args target=TexTarget param_name=TexParam param_value=TexFilterMode
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION(target: TexTarget, mode: TexFilterMode) {
+            unsafe {
+                $WRAPPED_FUNCTION(
+                    target,
+                    TexParam::MinFilter,
+                    mode,
+                )
+            }
+        }
+        """
+}
+
+enum PixelStoreParam {
+    - UnpackAlignment c="GL_UNPACK_ALIGNMENT"
+}
+
+bind-c-fn pixel_store_i32 c="glPixelStorei" {
+    args param_name=PixelStoreParam param_value=GLint
+}
+
+// Matrices
+
+extern-ptr-type const Matrix4ConstPtr rust="[[HostF32; 4]; 4]" c="GLfloat"
+
+enum MatrixMode {
+    - ModelView c="GL_MODELVIEW"
+    - Projection c="GL_PROJECTION"
+    - Texture c="GL_TEXTURE"
+}
+
+bind-c-fn matrix_mode c="glMatrixMode" {
+    args mode=MatrixMode
+}
+
+bind-c-fn load_identity_matrix c="glLoadIdentity" {
+    args
+}
+
+bind-c-fn load_matrix_f32 c="glLoadMatrixf" {
+    args matrix=Matrix4ConstPtr
+
+    rust-wrapper """
+        pub unsafe fn $FUNCTION(matrix: &[[f32; 4]; 4]) {
+            let matrix = to_host_f32_2d_array(*matrix);
+            unsafe {
+                $WRAPPED_FUNCTION(&raw const matrix)
+            }
+        }
+        """
+}
+
+// Fragment operations
+
+bind-c-fn scissor c="glScissor" {
+    args left=GLint bottom=GLint width=GLsizei height=GLsizei
+}
+
+enum BlendEquationFunc {
+    - Add c="GL_FUNC_ADD"
+}
+
+bind-c-fn blend_equation c="glBlendEquation" {
+    args equation=BlendEquationFunc
+}
+
+enum BlendFactor {
+    - Zero c="GL_ZERO"
+    - One c="GL_ONE"
+    - SrcAlpha c="GL_SRC_ALPHA"
+    - OneMinusSrcAlpha c="GL_ONE_MINUS_SRC_ALPHA"
+    - DstAlpha c="GL_DST_ALPHA"
+    - OneMinusDstAlpha c="GL_ONE_MINUS_DST_ALPHA"
+}
+
+bind-c-fn blend_function c="glBlendFunc" {
+    args src=BlendFactor dst=BlendFactor
+}

@@ -1,11 +1,10 @@
-pub use portable_std::prelude::*;
 pub use portable_std::Atom;
+pub use portable_std::prelude::*;
 
 use smallvec::SmallVec;
 use thiserror::Error;
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Identifier {
     pub namespace: Atom,
@@ -42,7 +41,7 @@ impl core::fmt::Display for Identifier {
 
 impl TryFrom<&str> for Identifier {
     type Error = ParseIdentifierError;
-    
+
     fn try_from(value: &str) -> Result<Self, ParseIdentifierError> {
         Self::parse(value)
     }
@@ -50,7 +49,7 @@ impl TryFrom<&str> for Identifier {
 
 impl TryFrom<String> for Identifier {
     type Error = ParseIdentifierError;
-    
+
     fn try_from(value: String) -> Result<Self, ParseIdentifierError> {
         Self::parse(&value)
     }

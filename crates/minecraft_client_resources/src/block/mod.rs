@@ -2,11 +2,11 @@ pub mod blockstate;
 pub mod model;
 
 use super::{Identifier, RegistryData, RegistryIndex};
+use anyhow::{Context, anyhow};
+use blockstate::{BlockOpacity, BlockstateInfo, CollisionInfo};
 use model::ModelRegistry;
 use portable_std::prelude::*;
 use portable_std::{Atom, FastHashSet};
-use anyhow::{Context, anyhow};
-use blockstate::{BlockOpacity, BlockstateInfo, CollisionInfo};
 use serde::Deserialize;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -30,9 +30,18 @@ pub struct Registry {
 }
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Hash,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub struct GlobalPaletteIndex(u16);
 
 impl GlobalPaletteIndex {
@@ -442,9 +451,19 @@ impl Default for Properties {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
-#[derive(Serialize_repr, Deserialize_repr)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Hash,
+    PartialEq,
+    Eq,
+    Serialize_repr,
+    Deserialize_repr,
+    bincode::Encode,
+    bincode::Decode,
+)]
 #[repr(u16)]
 pub enum RightAngleRotation {
     #[default]
@@ -883,8 +902,7 @@ pub struct EmbeddedCache {
 pub fn generate_vanilla_embedded_cache() -> anyhow::Result<EmbeddedCache> {
     let size = [512, 1024];
     let square_length = 16;
-    let mut atlas_builder =
-        crate::texture::AtlasBuilder::new(size[0], size[1], square_length);
+    let mut atlas_builder = crate::texture::AtlasBuilder::new(size[0], size[1], square_length);
     let mut model_cache = ModelRegistryBuilder::new();
     let mut block_registry = Registry::new();
     register_vanilla_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;

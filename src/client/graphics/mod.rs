@@ -11,6 +11,12 @@ cfg_if::cfg_if! {
     } else if #[cfg(feature = "platform_ps2")] {
         mod backend_ps2;
         pub use backend_ps2::*;
+    } else if #[cfg(feature = "platform_opengl_mac_tiger")] {
+        mod backend_opengl_mac_tiger;
+        pub use backend_opengl_mac_tiger::*;
+    } else if #[cfg(feature = "platform_w2c2_opengl_mac")] {
+        mod backend_w2c2_opengl_mac;
+        pub use backend_w2c2_opengl_mac::*;
     } else {
         compile_error!("A graphics backend feature must be enabled.");
     }
@@ -49,6 +55,10 @@ impl Camera {
             .to_matrix();
         let rotate = self.get_rot().inverse().to_homogeneous();
         self.proj_matrix.as_matrix() * rotate * translate
+    }
+
+    pub fn generate_view_matrix_slice(&self) -> [[f32; 4]; 4] {
+        *self.generate_view_matrix().as_ref()
     }
 
     pub fn generate_reversed_depth_view_matrix(&self) -> Matrix4<f32> {

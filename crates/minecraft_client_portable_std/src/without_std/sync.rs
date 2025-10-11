@@ -1,5 +1,9 @@
 use core::convert::Infallible;
 
+pub use core::sync::atomic;
+
+pub use alloc::sync::Arc;
+
 #[repr(transparent)]
 pub struct Mutex<T: ?Sized>(spin::Mutex<T>);
 
@@ -7,7 +11,6 @@ impl<T> Mutex<T> {
     pub const fn new(value: T) -> Self {
         Self(spin::Mutex::new(value))
     }
-
 }
 
 impl<T: ?Sized> Mutex<T> {
@@ -17,8 +20,8 @@ impl<T: ?Sized> Mutex<T> {
 }
 
 pub mod mpsc {
-    use super::{Infallible, Mutex};
     use super::super::{Arc, VecDeque};
+    use super::{Infallible, Mutex};
 
     pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -33,12 +36,12 @@ pub mod mpsc {
             Ok(())
         }
     }
-    
+
     impl<T> Clone for Sender<T> {
         fn clone(&self) -> Self {
             Self(self.0.clone())
         }
-        
+
         fn clone_from(&mut self, source: &Self) {
             self.0.clone_from(&source.0)
         }
@@ -48,7 +51,11 @@ pub mod mpsc {
 
     impl<T> Receiver<T> {
         pub fn try_recv(&self) -> Result<T, TryRecvError> {
-            self.0.lock().unwrap().pop_front().ok_or(TryRecvError::Empty)
+            self.0
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(TryRecvError::Empty)
         }
     }
 

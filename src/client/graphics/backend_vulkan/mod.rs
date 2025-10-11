@@ -1,7 +1,6 @@
 #![allow(clippy::std_instead_of_alloc)]
 #![allow(clippy::std_instead_of_core)]
-
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "full_std"))]
 compile_error!("The Vulkan backend requires use of `std`");
 
 pub mod chunk_no_rc;
@@ -15,8 +14,6 @@ pub use chunk_rc as chunk;
 
 use crate::basic_types::AxisDirection;
 use crate::client::{MIN_HEIGHT_I32, RawChunk, RayTracedQuadInfo, SUBCHUNK_AXIS_LEN_I32};
-use resources::aabb::AABB;
-use resources::block::model::{ModelRegistry, Tint};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, anyhow};
 use chunk::{
@@ -29,6 +26,8 @@ use debug::point::Vertex as DebugPointVertex;
 use debug::triangle::Instance as DebugTriangleInstance;
 use nalgebra::{Perspective3, Point3, Vector3};
 use ordered_float::NotNan;
+use resources::aabb::AABB;
+use resources::block::model::{ModelRegistry, Tint};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
@@ -482,15 +481,20 @@ impl GraphicsState {
                     allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
                     ..Default::default()
                 },
-                model_cache.custom_block_faces
+                model_cache
+                    .custom_block_faces
                     .iter()
                     // NOTE: RADIANCE CASCADES
-                    .map(|face| face.map(|v| chunk::custom_block::Vertex::new(
-                            *v.local_pos.coords.as_ref(),
-                            v.uvs,
-                            *v.normal.as_ref(),
-                            matches!(v.tint, Some(Tint::Biome)),
-                    ))),
+                    .map(|face| {
+                        face.map(|v| {
+                            chunk::custom_block::Vertex::new(
+                                *v.local_pos.coords.as_ref(),
+                                v.uvs,
+                                *v.normal.as_ref(),
+                                matches!(v.tint, Some(Tint::Biome)),
+                            )
+                        })
+                    }),
                 // .map(|face| face.map(|v| GraphicsCustomBlockVertex {
                 //     pos: *v.local_pos.coords.as_ref(),
                 //     uvs: v.uvs,

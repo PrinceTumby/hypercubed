@@ -1,8 +1,8 @@
-use portable_std::prelude::*;
-use portable_std::{Arc, FastHashMap};
 use anyhow::{Context, anyhow, bail, ensure};
 use bitfield::bitfield;
 use nalgebra::{Matrix4, Point3, Rotation3, Vector3, point};
+use portable_std::prelude::*;
+use portable_std::{Arc, FastHashMap};
 
 use super::{Identifier, RightAngleRotation};
 
@@ -15,9 +15,18 @@ mod std_imports {
 }
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Hash,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 #[serde(transparent)]
 pub struct ModelIndex(u32);
 
@@ -33,7 +42,7 @@ pub struct ModelRegistry {
 
 impl core::ops::Index<ModelIndex> for ModelRegistry {
     type Output = ModelType;
-    
+
     fn index<'a>(&'a self, index: ModelIndex) -> &'a ModelType {
         &self.model_list[usize::try_from(index.0).unwrap()]
     }
@@ -52,15 +61,25 @@ pub struct ModelRegistryBuilder {
 #[cfg(feature = "std")]
 impl core::ops::Index<ModelIndex> for ModelRegistryBuilder {
     type Output = ModelType;
-    
+
     fn index<'a>(&'a self, index: ModelIndex) -> &'a ModelType {
         &self.model_list[usize::try_from(index.0).unwrap()]
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Hash,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub struct ModelRotationInfo {
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
@@ -203,7 +222,8 @@ impl ModelRegistryBuilder {
         }
         let completed_model = ModelType::Composite(converted_parts.into());
         let completed_model_idx = self.register_model(completed_model);
-        self.completed_model_combinations.insert(owned_parts, completed_model_idx);
+        self.completed_model_combinations
+            .insert(owned_parts, completed_model_idx);
         Ok(completed_model_idx)
     }
 
@@ -397,12 +417,8 @@ impl ModelRegistryBuilder {
         };
         // If template is complete, then we convert it to a finished model
         if !skip_finalising_model && complete {
-            let completed_model = self.finalise_model(
-                model_template,
-                rotation,
-                texture_atlas,
-                Some(location),
-            )?;
+            let completed_model =
+                self.finalise_model(model_template, rotation, texture_atlas, Some(location))?;
             let completed_model_idx = self.register_model(completed_model);
             assert!(
                 self.completed_models
@@ -1261,9 +1277,7 @@ pub enum ModelState {
     Pending,
 }
 
-#[derive(Clone, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
 pub enum ModelType {
     /// Model with no elements. Example: Air
     None,
@@ -1285,9 +1299,9 @@ pub enum ModelType {
     Composite(Box<[CompositeModelPart]>),
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct BlockInfo {
     pub flags: BlockFlags,
     /// In order of top, bottom, north, south, east and west.
@@ -1304,17 +1318,15 @@ bitfield! {
     pub ambient_occlusion, set_ambient_occlusion: 0;
 }
 
-#[derive(Clone, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
 pub struct OverlayedBlockInfo {
     pub flags: BlockFlags,
     pub faces: Vec<OverlayedBlockFace>,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct OverlayedBlockFace {
     pub face_i: u8,
     pub tint: Option<Tint>,
@@ -1323,30 +1335,46 @@ pub struct OverlayedBlockFace {
     pub uv_rotation: RightAngleRotation,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct CrossInfo {
     pub cross_atlas_start_uvs: [u16; 4],
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct LiquidInfo {
     pub uvs: [u16; 4],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub struct OtherInfo {
     pub start_face_and_len: [u32; 2],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub struct CompositeModelPart {
     pub model_idx: ModelIndex,
     pub x_rotation: RightAngleRotation,
@@ -1354,9 +1382,9 @@ pub struct CompositeModelPart {
     pub uv_lock: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct ModelVertex {
     #[bincode(with_serde)]
     pub local_pos: Point3<f32>,
@@ -1433,16 +1461,23 @@ struct ModelElementFace {
 //     pub west: Option<ModelElementFace>,
 // }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub enum Tint {
     Biome,
 }
 
-#[derive(Clone, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
 pub struct Template {
     pub parent: Option<String>,
     #[serde(default = "bool_true", rename = "ambientocclusion")]
@@ -1497,9 +1532,9 @@ impl Template {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct ModelDisplay {
     pub thirdperson_righthand: Option<ModelDisplayPosition>,
     pub thirdperson_lefthand: Option<ModelDisplayPosition>,
@@ -1511,9 +1546,9 @@ pub struct ModelDisplay {
     pub fixed: Option<ModelDisplayPosition>,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct ModelDisplayPosition {
     #[bincode(with_serde)]
     #[serde(default)]
@@ -1526,9 +1561,7 @@ pub struct ModelDisplayPosition {
     pub scale: Vector3<f32>,
 }
 
-#[derive(Clone, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
 pub struct TemplateElement {
     #[bincode(with_serde)]
     #[serde(rename = "from")]
@@ -1545,18 +1578,25 @@ pub struct TemplateElement {
 
 /// Variant information taken from parent blockstate.
 /// Passed through template elements as templates may be multiple models combined.
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct TemplateElementBlockstateRotation {
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
     pub uv_lock: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub struct ModelElementRotation {
     #[bincode(with_serde)]
     pub origin: Point3<f32>,
@@ -1566,9 +1606,17 @@ pub struct ModelElementRotation {
     pub rescale: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum RotationAxis {
     X,
@@ -1576,9 +1624,9 @@ pub enum RotationAxis {
     Z,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct TemplateElementFaces {
     #[serde(rename = "up")]
     pub top: Option<TemplateElementFace>,
@@ -1678,9 +1726,9 @@ impl<T> Iterator for TemplateElementFacesIterator<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct TemplateElementFace {
     #[serde(rename = "uv")]
     pub uvs: Option<[f32; 4]>,
@@ -1715,9 +1763,17 @@ impl TemplateElementFace {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 #[repr(u8)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockFace {

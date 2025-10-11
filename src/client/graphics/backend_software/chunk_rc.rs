@@ -1,7 +1,7 @@
 pub use super::chunk::SubchunkConnectivity;
-use resources::block::RightAngleRotation;
 use bitfield::bitfield;
 use nalgebra::Rotation3;
+use resources::block::RightAngleRotation;
 
 pub struct Subchunk {
     pub start_coords: [i32; 3],

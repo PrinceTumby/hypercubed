@@ -3,11 +3,11 @@ use super::{
     Aes128Cfb8Dec, Aes128Cfb8Enc, EncryptedTcpStreamReader, EncryptedTcpStreamWriter,
     OFFLINE_PLAYER_NAMESPACE, PlayConnection, configuration,
 };
-use resources::identifier;
-use portable_std::io;
-use crate::portable_prelude::*;
 use crate::platform::net::TcpStream;
+use crate::portable_prelude::*;
+use portable_std::io;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
+use resources::identifier;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, PacketRead)]
@@ -132,7 +132,7 @@ pub async fn login(
                 let mut rng = crate::platform::new_strong_rng();
                 let pub_key = rsa::RsaPublicKey::from_public_key_der(&request_info.public_key)
                     .map_err(|err| io::Error::other(format!("{err}")))?;
-                let shared_secret: [u8; 16] = rng.r#gen();
+                let shared_secret: [u8; 16] = rng.random();
                 // Send session information to session server
                 if request_info.should_authenticate {
                     let (access_token, player_uuid) = session_information
@@ -162,7 +162,7 @@ pub async fn login(
                     let session_server_url =
                         "https://sessionserver.mojang.com/session/minecraft/join";
                     cfg_if::cfg_if! {
-                        if #[cfg(feature = "std")] {
+                        if #[cfg(feature = "full_std")] {{
                             let auth_response = reqwest::blocking::Client::new()
                                 .post(session_server_url)
                                 .json(&join_info)
@@ -175,7 +175,7 @@ pub async fn login(
                                     auth_response.text().unwrap_or_default(),
                                 )));
                             }
-                        } else {{
+                        }} else {{
                             use reqwless::request::{RequestBuilder, Method};
                             use reqwless::client::HttpClient;
                             use reqwless::headers::ContentType;

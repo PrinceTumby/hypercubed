@@ -1,10 +1,10 @@
-use portable_std::FastHashMap;
 use crate::portable_prelude::*;
 use crate::protocol::configuration::Property as GameProfileProperty;
 use crate::protocol::prelude::*;
 use nom::Parser;
 use nom::multi::count;
 use nom::sequence::pair;
+use portable_std::FastHashMap;
 use protocol_derive::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]

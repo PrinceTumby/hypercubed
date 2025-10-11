@@ -1,11 +1,17 @@
+#![cfg_attr(not(feature = "full_std"), no_main)]
+#![cfg_attr(not(feature = "mini_std"), no_std)]
+
 use minecraft_client::client;
 use minecraft_client::protocol;
 use minecraft_client::protocol::prelude::*;
 use portable_std::Arc;
 
+#[cfg(feature = "full_std")]
 const SERVER_ADDRESS: &str = "localhost";
+#[cfg(feature = "full_std")]
 const SERVER_PORT: u16 = 25565;
 
+#[cfg(feature = "full_std")]
 fn main() -> anyhow::Result<()> {
     use protocol::configuration;
     env_logger::init();

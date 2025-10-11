@@ -1,5 +1,5 @@
-use crate::portable_prelude::*;
 use super::{QuadWord, asm_helpers, interrupts};
+use crate::portable_prelude::*;
 use core::arch::asm;
 use core::task::Poll;
 

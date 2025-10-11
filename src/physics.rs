@@ -1,11 +1,11 @@
 use crate::client::{MIN_HEIGHT_I32, Player, RawChunk, SUBCHUNK_AXIS_LEN_I32};
 use crate::portable_prelude::*;
-use portable_std::{Arc, FastHashMap};
 use crate::protocol::chunk::ChunkSection;
-use resources::block::blockstate::CollisionInfo;
-use resources::block::Registry as BlockRegistry;
-use resources::aabb::AABB;
 use nalgebra::{Point3, Vector3};
+use portable_std::{Arc, FastHashMap};
+use resources::aabb::AABB;
+use resources::block::Registry as BlockRegistry;
+use resources::block::blockstate::CollisionInfo;
 
 // Most of this implementation was ported from PrismarineJS's physics implementation.
 

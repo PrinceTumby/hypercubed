@@ -8,16 +8,17 @@ use std_imports::*;
 #[cfg(feature = "std")]
 mod std_imports {
     pub use crate::manager::{ResourceType, get_resource_file};
-    pub use image::error::ImageError;
-    pub use image::{GenericImage, GenericImageView, ImageFormat, RgbaImage};
     #[cfg(feature = "luma_textures")]
     pub use image::GrayImage;
+    pub use image::error::ImageError;
+    pub use image::{GenericImage, GenericImageView, ImageFormat, RgbaImage};
 }
 
 #[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
 pub struct RawAtlas {
     pub width: u32,
     pub height: u32,
+    /// RGBA8 format.
     pub texture_bytes: Box<[u8]>,
     #[cfg(feature = "luma_textures")]
     pub luma_texture_bytes: Box<[u8]>,
@@ -64,8 +65,7 @@ pub struct AtlasBuilder {
     stored_textures: FastHashMap<Identifier, TextureInfo>,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TextureInfo {
     pub uvs: [u16; 4],
     pub space_dims: [u16; 2],
@@ -123,7 +123,9 @@ impl AtlasBuilder {
             #[cfg(feature = "luma_textures")]
             let texture_info = {
                 let luma_texture = get_resource_file(&ResourceType::TextureLuma, location)
-                    .with_context(|| format!("Failed to read raw image luma texture for {location:?}"))
+                    .with_context(|| {
+                        format!("Failed to read raw image luma texture for {location:?}")
+                    })
                     .and_then(|bytes| {
                         image::load_from_memory_with_format(&bytes, ImageFormat::Png)
                             .context("Failed to parse image luma texture")
@@ -188,19 +190,14 @@ impl AtlasBuilder {
     }
 
     /// Stitches a texture into the atlas, returning UV fractions `[1/U, 1/V]`
-    fn stitch_in
-    <
+    fn stitch_in<
         O: GenericImageView<Pixel = <RgbaImage as GenericImageView>::Pixel>,
-        #[cfg(feature = "luma_textures")]
-        L: GenericImageView<Pixel = <GrayImage as GenericImageView>::Pixel>,
-    >
-    (
+        #[cfg(feature = "luma_textures")] L: GenericImageView<Pixel = <GrayImage as GenericImageView>::Pixel>,
+    >(
         &mut self,
         texture: &O,
-        #[cfg(feature = "luma_textures")]
-        luma_texture: Option<&L>,
-    ) -> Result<TextureInfo, StitchError>
-    {
+        #[cfg(feature = "luma_textures")] luma_texture: Option<&L>,
+    ) -> Result<TextureInfo, StitchError> {
         let texture_width: u16 = texture.width().try_into().unwrap();
         let texture_height: u16 = texture.height().try_into().unwrap();
         if texture.width() > self.texture.width()
@@ -234,7 +231,7 @@ impl AtlasBuilder {
             space_dims: [space_width, space_height],
         })
     }
-    
+
     pub fn finish(self) -> Atlas {
         Atlas {
             texture: self.texture,

@@ -2,12 +2,13 @@ set shell := ["bash", "-uc"]
 set windows-shell := ["cmd.exe", "/c"]
 
 set ignore-comments
+set dotenv-load
 
 os := os()
 os_family := os_family()
 
 # Command replacements
-wsl := if os_family == "windows" { "wsl -d Ubuntu" } else { "" }
+wsl := if os_family == "windows" { "wsl -d Ubuntu" } else { "wsl.exe -d Ubuntu" }
 wsl24 := if os_family == "windows" { "wsl -d Ubuntu-24.04" } else { "" }
 rm := if os_family == "windows" { "del" } else { "rm" }
 rmdir := if os_family == "windows" { "rmdir /s /q" } else { "rm -r" }
@@ -16,6 +17,9 @@ copydir := if os_family == "windows" { "1>NUL xcopy /c /q /e /i" } else { "cp -r
 mkdir_create_parents := if os_family == "windows" { "mkdir" } else { "mkdir -p" }
 silence_stderr := if os_family == "windows" { "2>NUL" } else { "2>/dev/null" }
 ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
+
+@_default:
+    just --list
 
 @build-with-vk-shaders *BUILD_FLAGS:
     echo - Compiling Vulkan shaders...
@@ -46,7 +50,7 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
 
 @build-ps2:
     echo - Compiling...
-    cargo build \
+    cargo +nightly-custom build \
         --lib \
         --target targets/mipsel-sony-ps2.json \
         --no-default-features \
@@ -64,15 +68,20 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         -mabi=64 \
         -Wl,--no-warn-mismatch \
         -T targets/ps2.ld \
-        -o target/mipsel-sony-ps2/dev-ps2/minecraft_client.elf \
+        -o target/mipsel-sony-ps2/dev-ps2/minecraft_client_unstripped.elf \
         -ffreestanding \
         -nostdlib \
         -lgcc \
         -O2
+    {{wsl}} \
+        /usr/local/ps2dev/ee/bin/mips64r5900el-ps2-elf-strip \
+        --strip-debug \
+        target/mipsel-sony-ps2/dev-ps2/minecraft_client_unstripped.elf \
+        -o target/mipsel-sony-ps2/dev-ps2/minecraft_client.elf
 
 @build-release-ps2:
     echo - Compiling...
-    cargo build \
+    cargo +nightly-custom build \
         --lib \
         --target targets/mipsel-sony-ps2.json \
         --no-default-features \
@@ -106,3 +115,101 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
 
 @run-pcsx2: build-ps2 run-pcsx2-no-reset
     printf '\033\143'
+
+# iMac Core Duo
+
+@check-imac-tiger:
+    echo - Compiling...
+    cargo +nightly-custom check \
+        --bin minecraft_client \
+        --target targets/i686-apple-darwin8.json \
+        --no-default-features \
+        --features=platform_opengl_mac_tiger,embed_vanilla_cache \
+        -Zbuild-std=core,compiler_builtins,alloc \
+        -Zbuild-std-features=compiler-builtins-mem
+
+@build-imac-tiger:
+    echo - Compiling...
+    cargo +nightly-custom build \
+        --bin minecraft_client \
+        --target targets/i686-apple-darwin8.json \
+        --no-default-features \
+        --features=platform_opengl_mac_tiger,embed_vanilla_cache \
+        -Zbuild-std=core,compiler_builtins,alloc \
+        -Zbuild-std-features=compiler-builtins-mem
+
+@build-imac-tiger-transfer-remote: build-imac-tiger
+    echo - Copying to remote...
+    {{join("scripts", "imac_run_psftp_bin_only.bat")}} {{env("IMAC_PASSWORD")}}
+
+@check-imac-w2c2:
+    cargo +nightly-2025-08-25 check \
+        --target targets/ppc_mac/wasm32-wasip1.json \
+        --no-default-features \
+        --features=platform_w2c2_opengl_mac,embed_vanilla_cache \
+        -Zbuild-std=core,compiler_builtins,alloc,std,panic_abort \
+        -Zbuild-std-features=compiler-builtins-mem
+
+@build-imac-w2c2-wasm:
+    echo - Compiling...
+    cargo +nightly-2025-08-25 rustc \
+        --bin minecraft_client \
+        --target targets/ppc_mac/wasm32-wasip1.json \
+        --no-default-features \
+        --features=platform_w2c2_opengl_mac,embed_vanilla_cache \
+        -Zbuild-std=core,compiler_builtins,alloc,std,panic_abort \
+        -Zbuild-std-features=compiler-builtins-mem \
+        -- \
+        -Zwasi-exec-model=reactor \
+
+@build-imac-w2c2-remote: build-imac-w2c2-wasm
+    echo - Compiling WASM to C...
+    cd {{join("target", "wasm32-wasip1", "debug")}} && \
+        {{rm}} *.c *.h \
+        {{silence_stderr}} {{ignore_error}}
+    cd {{join("target", "wasm32-wasip1", "debug")}} && w2c2 \
+        -d sectcreate2 \
+        -f 500 \
+        minecraft_client.wasm \
+        minecraft_client.c
+    echo - Copying files to remote...
+    imac_run_psftp.bat {{env("IMAC_PASSWORD")}}
+    echo - Compiling C on remote...
+    imac_run_plink.bat {{env("IMAC_PASSWORD")}}
+
+# iBook G3
+
+@check-ibook:
+    cargo +nightly-2025-08-25 check \
+        --target targets/ppc_mac/wasm32-wasip1.json \
+        --no-default-features \
+        --features=platform_w2c2_opengl_mac,embed_vanilla_cache \
+        -Zbuild-std=core,compiler_builtins,alloc,std,panic_abort \
+        -Zbuild-std-features=compiler-builtins-mem
+
+@build-ibook-wasm:
+    echo - Compiling...
+    cargo +nightly-2025-08-25 rustc \
+        --bin minecraft_client \
+        --target targets/ppc_mac/wasm32-wasip1.json \
+        --no-default-features \
+        --features=platform_w2c2_opengl_mac,embed_vanilla_cache \
+        -Zbuild-std=core,compiler_builtins,alloc,std,panic_abort \
+        -Zbuild-std-features=compiler-builtins-mem \
+        -- \
+        -Zwasi-exec-model=reactor \
+
+@build-ibook-w2c2-remote: build-ibook-wasm
+    echo - Compiling WASM to C...
+    cd {{join("target", "wasm32-wasip1", "debug")}} && \
+        {{rm}} *.c *.h \
+        {{silence_stderr}} {{ignore_error}}
+    w2c2 \
+        -d sectcreate2 \
+        -f 500 \
+        target/wasm32-wasip1/debug/minecraft_client.wasm \
+        target/wasm32-wasip1/debug/minecraft_client.c
+    echo - Copying files to remote...
+    ibook_run_psftp.bat {{env("IBOOK_PASSWORD")}}
+    echo - Compiling C on remote...
+    ibook_run_plink.bat {{env("IBOOK_PASSWORD")}}

@@ -23,28 +23,14 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             0 => {}
             1 => DISABLE_TRACE_LOGGING = true,
             _ => loop {
-                asm!(
-                    "nop",
-                    "nop",
-                    "nop",
-                    "nop",
-                    "nop",
-                    "nop",
-                );
+                asm!("nop", "nop", "nop", "nop", "nop", "nop",);
             },
         }
         if !DISABLE_TRACE_LOGGING {
             print_stack_trace();
         }
         loop {
-            asm!(
-                "nop",
-                "nop",
-                "nop",
-                "nop",
-                "nop",
-                "nop",
-            );
+            asm!("nop", "nop", "nop", "nop", "nop", "nop",);
         }
     }
 }

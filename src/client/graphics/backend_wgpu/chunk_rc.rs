@@ -1,6 +1,6 @@
 use super::Texture;
-use resources::block::RightAngleRotation;
 use nalgebra::{Matrix3, Rotation3};
+use resources::block::RightAngleRotation;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use wgpu::{

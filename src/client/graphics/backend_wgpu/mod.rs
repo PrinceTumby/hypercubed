@@ -6,9 +6,9 @@ pub mod egui_renderer;
 pub use super::Camera;
 
 use crate::basic_types::AxisDirection;
-use resources;
 use ahash::{AHashMap, AHashSet};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
+use resources;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt as _;

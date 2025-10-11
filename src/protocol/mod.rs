@@ -31,8 +31,8 @@ pub mod prelude {
 
     #[cfg(feature = "protocol_verbose")]
     mod parsing {
-        use portable_std::Vec;
         use nom_supreme::error::GenericErrorTree;
+        use portable_std::Vec;
         use std::error::Error;
 
         pub type InputSpan<'a> = nom_locate::LocatedSpan<&'a [u8]>;
@@ -56,16 +56,16 @@ pub mod prelude {
 pub const PROTOCOL_VERSION: i32 = 767;
 pub const OFFLINE_PLAYER_NAMESPACE: Uuid = uuid!("071e6668-28ee-39de-8f51-f257ec5f77a9");
 
-use portable_std::VecDeque;
-use portable_std::io::{self, prelude::*};
-use crate::portable_prelude::*;
 use crate::platform::net::TcpStream;
-use portable_std::sync::Mutex;
+use crate::portable_prelude::{eprintln, *};
 use cfb8::cipher::{BlockDecryptMut, BlockEncryptMut};
 use miniz_oxide::deflate::{CompressionLevel, compress_to_vec_zlib};
 use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 #[cfg(feature = "protocol_verbose")]
 use nom_supreme::final_parser::final_parser;
+use portable_std::VecDeque;
+use portable_std::io::{self, prelude::*};
+use portable_std::sync::Mutex;
 use prelude::*;
 use uuid::{Uuid, uuid};
 
@@ -174,7 +174,7 @@ pub trait PacketRead: Deserialize + core::fmt::Debug {
         {
             let (data_left, packet) =
                 Self::deserialize(InputSpan::new(&raw_packet)).map_err(|err| {
-                    #[cfg(feature = "std")]
+                    #[cfg(feature = "full_std")]
                     if let Err(err) = std::fs::write("packet.bin", &raw_packet) {
                         eprintln!("Failed to write packet to file: {err}");
                     }
@@ -222,7 +222,7 @@ pub trait PacketRead: Deserialize + core::fmt::Debug {
         {
             let (data_left, packet) = Self::deserialize(InputSpan::new(&uncompressed_packet))
                 .map_err(|err| {
-                    #[cfg(feature = "std")]
+                    #[cfg(feature = "full_std")]
                     if let Err(err) = std::fs::write("packet.bin", &uncompressed_packet) {
                         eprintln!("Failed to write packet to file: {err}");
                     }

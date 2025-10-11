@@ -1,7 +1,7 @@
 use super::Texture;
 use crate::basic_types::AxisDirection;
-use resources::block::RightAngleRotation;
 use nalgebra::{Matrix3, Rotation3};
+use resources::block::RightAngleRotation;
 use std::marker::PhantomData;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{

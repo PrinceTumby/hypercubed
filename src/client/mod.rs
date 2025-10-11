@@ -1,4 +1,4 @@
-#[cfg(feature = "std")]
+#[cfg(feature = "mini_std")]
 pub mod debug;
 pub mod game;
 pub mod graphics;
@@ -7,19 +7,19 @@ pub mod world;
 
 use crate::physics::PlayerPhysicsState;
 use crate::portable_prelude::*;
-#[allow(unused)]
-use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
-use portable_std::sync::mpsc;
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode};
 use crate::protocol::prelude::*;
 use graphics::GraphicsState;
 use nalgebra::Point3;
+use portable_std::sync::mpsc;
+#[allow(unused)]
+use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 
-#[cfg(feature = "std")]
-use std_imports::*;
-#[cfg(feature = "std")]
-mod std_imports {
+#[cfg(feature = "full_std")]
+use full_std_imports::*;
+#[cfg(feature = "full_std")]
+mod full_std_imports {
     pub use std::time::Instant;
     pub use threadpool::ThreadPool;
     pub use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
@@ -27,10 +27,21 @@ mod std_imports {
     pub use winit::window::{Fullscreen, WindowBuilder};
 }
 
-#[cfg(not(feature = "std"))]
-use ps2_imports::*;
-#[cfg(not(feature = "std"))]
-mod ps2_imports {
+#[cfg(all(feature = "mini_std", not(feature = "full_std")))]
+use mini_std_imports::*;
+#[cfg(all(feature = "mini_std", not(feature = "full_std")))]
+mod mini_std_imports {
+    pub use crate::platform::libs::winit;
+    pub use crate::platform::time::Instant;
+    pub use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
+    pub use winit::event_loop::{ControlFlow, EventLoop};
+    pub use winit::window::{Fullscreen, WindowBuilder};
+}
+
+#[cfg(not(any(feature = "full_std", feature = "mini_std")))]
+use no_std_imports::*;
+#[cfg(not(any(feature = "full_std", feature = "mini_std")))]
+mod no_std_imports {
     pub use crate::platform::libs::{egui, winit};
     pub use crate::platform::time::Instant;
     pub use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
@@ -91,8 +102,7 @@ pub struct RawSubchunk {
     pub block_face_quads: [Option<[graphics::chunk::block_face::Vertex; 4]>; 6],
     pub block_face_instance_groups: [Vec<graphics::chunk::block_face::Instance>; 6],
     pub tinted_block_face_quads: [Option<[graphics::chunk::tinted_block_face::Vertex; 4]>; 6],
-    pub tinted_block_face_instance_groups:
-        [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
+    pub tinted_block_face_instance_groups: [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
     pub custom_block_groups: Vec<RawCustomBlockGroup>,
     pub connected_faces: graphics::chunk::SubchunkConnectivity,
     #[cfg(feature = "graphics_backend_vulkan")]
@@ -143,7 +153,7 @@ pub const SUBCHUNK_AXIS_LEN_I32: i32 = SUBCHUNK_AXIS_LEN as i32;
 pub const MIN_HEIGHT_I32: i32 = -64;
 pub const MAX_HEIGHT_I32: i32 = 319;
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "full_std"))]
 pub struct WindowRunEmbeddedArgs {
     pub event_loop: EventLoop,
     pub window: &'static winit::window::Window,
@@ -154,27 +164,24 @@ pub async fn window_run(
     server_connection: Arc<PlayConnection>,
     clientbound_rx: mpsc::Receiver<ClientboundPacket>,
     clientbound_tx: mpsc::Sender<ClientboundPacket>,
-    #[cfg(not(feature = "std"))]
-    WindowRunEmbeddedArgs {
+    #[cfg(not(feature = "full_std"))] WindowRunEmbeddedArgs {
         event_loop,
         window,
         mut graphics_state,
     }: WindowRunEmbeddedArgs,
 ) -> anyhow::Result<()> {
     use input::PlayControlState;
-    #[cfg(feature = "std")]
+    #[cfg(feature = "full_std")]
     let event_loop = EventLoop::new()?;
     // TODO: Change this to an `Arc`
-    #[cfg(feature = "std")]
+    #[cfg(feature = "full_std")]
     let window = Box::leak(Box::new(WindowBuilder::new().build(&event_loop)?));
     window.set_title("Rust Minecraft Client");
     let window_id = window.id();
     let mut scale_factor = window.scale_factor();
-    #[cfg(feature = "std")]
-    let mut graphics_state = GraphicsState::new(
-        window,
-        resources::block::register_vanilla_blocks,
-    ).await?;
+    #[cfg(feature = "full_std")]
+    let mut graphics_state =
+        GraphicsState::new(window, resources::block::register_vanilla_blocks).await?;
     let mut input_state = PlayControlState::default();
     let egui_ctx = egui::Context::default();
     let mut play_state = ClientPlayState {
@@ -207,7 +214,7 @@ pub async fn window_run(
         subchunks_culled: 0,
         subchunk_traversal_graph: Vec::new(),
     };
-    #[cfg(feature = "std")]
+    #[cfg(feature = "full_std")]
     let thread_pool = ThreadPool::new(
         std::thread::available_parallelism()
             .map(|num_threads_non_zero| num_threads_non_zero.get())
@@ -222,7 +229,7 @@ pub async fn window_run(
     let window = &window;
     #[allow(unused)]
     let mut debug_frame_i: usize = 0;
-    event_loop.run(move |event, window_target| {
+    let _loop = event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
         match event {
             Event::NewEvents(StartCause::Poll) => {
@@ -237,13 +244,14 @@ pub async fn window_run(
                 current_time_s += delta_time_f64;
                 let delta_time = delta_time_f64 as f32;
                 // Debug GUI
-                #[cfg(feature = "std")]
+                #[cfg(feature = "mini_std")]
                 let debug::DebugRenderOutput {
                     egui_output,
                     debug_points,
                     debug_lines,
                     debug_triangles,
                 } = debug::render_debug_ui(
+                    #[cfg(feature = "full_std")]
                     &thread_pool,
                     &server_connection,
                     &mut play_state,
@@ -333,11 +341,23 @@ pub async fn window_run(
                             &debug_state,
                         )
                         .unwrap();
+                    } else if #[cfg(feature = "platform_w2c2_opengl_mac")] {
+                        debug_output = graphics_state.render(
+                            &play_state.subchunks,
+                            &play_state.visible_chunks,
+                            &egui_ctx,
+                            egui_output,
+                            &debug_state,
+                            &debug_points,
+                            &debug_lines,
+                            &debug_triangles,
+                        )
+                        .unwrap();
                     }
                 }
                 // Gameplay events and updates
                 game::process_game_events(
-                    #[cfg(feature = "std")]
+                    #[cfg(feature = "full_std")]
                     &thread_pool,
                     &mut play_state,
                     &mut graphics_state,
@@ -479,6 +499,13 @@ pub async fn window_run(
             },
             _ => {}
         }
-    })?;
+    });
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "platform_w2c2_opengl_mac")] {
+            _loop.await?;
+        } else {
+            _loop?;
+        }
+    }
     Ok(())
 }

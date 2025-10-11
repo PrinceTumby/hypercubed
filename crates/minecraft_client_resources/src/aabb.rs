@@ -1,11 +1,19 @@
-use nalgebra::{Point3, Rotation3, Vector3};
 use crate::block::RightAngleRotation;
 #[cfg(not(feature = "std"))]
 use nalgebra::ComplexField;
+use nalgebra::{Point3, Rotation3, Vector3};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub struct AABB {
     #[bincode(with_serde)]
     pub corner_1: Point3<f32>,

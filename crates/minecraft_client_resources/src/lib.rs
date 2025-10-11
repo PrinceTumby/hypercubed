@@ -1,5 +1,4 @@
 #![cfg_attr(not(feature = "std"), allow(unused))]
-
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod aabb;
@@ -11,13 +10,24 @@ pub mod texture;
 
 pub use identifier::{Atom as IdentifierAtom, Identifier, ParseIdentifierError};
 
-use portable_std::prelude::*;
 use bimap::BiMap;
+use portable_std::prelude::*;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(bincode::Encode, bincode::Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    bincode::Encode,
+    bincode::Decode,
+)]
 pub struct RegistryIndex(u16);
 
 #[derive(Default, bincode::Encode, bincode::Decode)]

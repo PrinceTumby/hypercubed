@@ -1,0 +1,2 @@
+cd Documents/minecraft_client_build
+make

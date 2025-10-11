@@ -20,7 +20,7 @@ vulkano = ["dep:vulkano"]
 
 [dependencies]
 cfg-if = { workspace = true }
-spirv-std = { workspace = true }
+spirv-std = { workspace = true, optional = true }
 bitfield = { workspace = true }
 vulkano = { workspace = true, optional = true }
 vulkan_prelude = { path = "../vulkan_prelude" }
