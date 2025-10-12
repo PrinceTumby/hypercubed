@@ -52,7 +52,15 @@
   "linker": "i386-apple-darwin8-ld",
   "linker-flavor": "darwin",
   "post-link-args": {
-    "darwin": ["/usr/local/osxcross-10-4/SDK/MacOSX10.4u.sdk/usr/lib/crt1.o"]
+    "darwin": [
+      "/usr/local/osxcross-10-4/SDK/MacOSX10.4u.sdk/usr/lib/crt1.o",
+      "-framework",
+      "Foundation",
+      "-framework",
+      "OpenGL",
+      "-framework",
+      "Quartz"
+    ]
   },
   "target-family": ["unix"],
   "target-mcount": "\u0001mcount",

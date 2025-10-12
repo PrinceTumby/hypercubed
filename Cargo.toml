@@ -29,8 +29,8 @@ bitflags = "2"
 bytemuck = { version = "1", features = ["derive"] }
 cfg-if = "1"
 critical-section = "1"
-embedded-io = { version = "0", features = ["alloc"] }
-embedded-io-async = { version = "0", features = ["alloc"] }
+embedded-io = { version = "0.6", features = ["alloc"] }
+embedded-io-async = { version = "0.6", features = ["alloc"] }
 foldhash = { version = "0", default-features = false }
 hashbrown = { version = "0", features = ["serde"] }
 indexmap = { version = "2", default-features = false }
@@ -236,7 +236,7 @@ critical-section = { workspace = true, features = ["restore-state-bool"], option
 embedded-alloc = { version = "0.6", optional = true }
 embedded-io = { workspace = true, optional = true }
 embedded-io-async = { workspace = true, optional = true }
-embedded-nal-async = { version = "0", optional = true }
+embedded-nal-async = { version = "0.8", optional = true }
 env_logger = { version = "0.10", optional = true }
 fast-srgb8 = { version = "1.0", optional = true }
 fixedbitset = "0.5"

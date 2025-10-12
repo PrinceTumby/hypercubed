@@ -121,7 +121,7 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
 @check-imac-tiger:
     echo - Compiling...
     cargo +nightly-custom check \
-        --bin minecraft_client \
+        --lib \
         --target targets/i686-apple-darwin8.json \
         --no-default-features \
         --features=platform_opengl_mac_tiger,embed_vanilla_cache \
@@ -131,7 +131,7 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
 @build-imac-tiger:
     echo - Compiling...
     cargo +nightly-custom build \
-        --bin minecraft_client \
+        --lib \
         --target targets/i686-apple-darwin8.json \
         --no-default-features \
         --features=platform_opengl_mac_tiger,embed_vanilla_cache \
@@ -140,7 +140,8 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
 
 @build-imac-tiger-transfer-remote: build-imac-tiger
     echo - Copying to remote...
-    {{join("scripts", "imac_run_psftp_bin_only.bat")}} {{env("IMAC_PASSWORD")}}
+    {{join("scripts", "imac_run_psftp_link_only.bat")}} {{env("IMAC_PASSWORD")}}
+    {{join("scripts", "imac_run_plink_link_only.bat")}} {{env("IMAC_PASSWORD")}}
 
 @check-imac-w2c2:
     cargo +nightly-2025-08-25 check \
@@ -173,9 +174,9 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         minecraft_client.wasm \
         minecraft_client.c
     echo - Copying files to remote...
-    imac_run_psftp.bat {{env("IMAC_PASSWORD")}}
+    {{join("scripts", "imac_run_psftp.bat")}} {{env("IMAC_PASSWORD")}}
     echo - Compiling C on remote...
-    imac_run_plink.bat {{env("IMAC_PASSWORD")}}
+    {{join("scripts", "imac_run_plink.bat")}} {{env("IMAC_PASSWORD")}}
 
 # iBook G3
 

@@ -191,8 +191,7 @@ static CVReturn GlobalDisplayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, 
 }
 
 
-- (void) prepareOpenGL
-{
+- (void) prepareOpenGL {
     [super prepareOpenGL];
 
     // Synchronize buffer swaps with vertical refresh rate
@@ -228,8 +227,7 @@ static CVReturn GlobalDisplayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, 
     CVDisplayLinkStart(displayLink);
 }
 
-- (void) drawView
-{
+- (void) drawView {
     [appLock lock];
     CGLLockContext([[self openGLContext] CGLContextObj]);
     [[self openGLContext] makeCurrentContext];
@@ -244,8 +242,7 @@ static CVReturn GlobalDisplayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, 
     [appLock unlock];
 }
 
-- (void) reshape
-{
+- (void) reshape {
     printf("View::reshape\n");
     [super reshape];
 
@@ -275,28 +272,23 @@ static CVReturn GlobalDisplayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, 
     CGLUnlockContext([[self openGLContext] CGLContextObj]);
 }
 
-- (void) drawRect:(NSRect) dirtyRect
-{
+- (void) drawRect:(NSRect) dirtyRect {
     [self drawView];
 }
 
-- (BOOL) acceptsFirstResponder
-{
+- (BOOL) acceptsFirstResponder {
     return YES;
 }
 
-- (void) mouseDown:(NSEvent *) event
-{
+- (void) mouseDown:(NSEvent *) event {
     printf("View::mouseDown\n");
 }
 
-- (void) mouseDragged:(NSEvent *) event
-{
+- (void) mouseDragged:(NSEvent *) event {
     printf("View::mouseDragged\n");
 }
 
-- (void) keyDown:(NSEvent *) event
-{
+- (void) keyDown:(NSEvent *) event {
     if (next_external_event_ptr == NULL) return;
     // Send raw scancode to client.
     next_external_event_ptr->event_type = DeviceEvent;
@@ -351,8 +343,7 @@ static CVReturn GlobalDisplayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, 
     [NSApp terminate:self];
 }
 
-- (void) dealloc
-{
+- (void) dealloc {
     [appLock release];
     [super dealloc];
 }

@@ -4,4 +4,4 @@ plink ^
     -load "iMac Core Duo" ^
     -pw "%*" ^
     -batch ^
-    -m imac_plink_script.txt
+    -m %~dp0\imac_plink_script.txt

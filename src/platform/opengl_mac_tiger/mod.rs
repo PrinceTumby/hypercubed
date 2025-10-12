@@ -14,7 +14,6 @@ pub mod exports {
     pub use super::{libs, net, time};
 }
 
-#[link(name = "c", kind = "dylib")]
 unsafe extern "C" {
     pub unsafe fn printf(fmt: *const core::ffi::c_char, ...);
     pub unsafe fn abort() -> !;
