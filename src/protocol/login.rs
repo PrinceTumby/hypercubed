@@ -234,7 +234,7 @@ pub fn login(
             }
             Response::PluginMessage(message) => match &message.channel {
                 chan if chan == &identifier!("minecraft:brand") => {
-                    const CLIENT_BRAND: &str = "rust_minecraft_client";
+                    const CLIENT_BRAND: &str = "hypercubed";
                     let (extra_data, server_brand) =
                         String::deserialize(InputSpan::new(&message.data))
                             .map_err(|err| std::io::Error::other(format!("{err}")))?;

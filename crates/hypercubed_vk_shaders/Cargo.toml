@@ -2,7 +2,7 @@
 # See `Cargo-RustGPU.toml`, which is used when building the actual shader.
 
 [package]
-name = "minecraft_client_vk_shaders"
+name = "hypercubed_vk_shaders"
 version = "0.1.0"
 edition = "2024"
 

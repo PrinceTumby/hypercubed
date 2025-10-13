@@ -1681,6 +1681,84 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercubed"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "ahash",
+ "anyhow",
+ "bimap",
+ "bitfield",
+ "bytebuffer",
+ "bytemuck",
+ "cfb8",
+ "cfg-if",
+ "egui",
+ "egui_plot",
+ "env_logger",
+ "fast-srgb8",
+ "fixedbitset 0.5.7",
+ "flate2",
+ "foldhash",
+ "hypercubed_vk_shaders",
+ "image",
+ "indexmap",
+ "lazy_static",
+ "log",
+ "mimalloc",
+ "multiversion",
+ "nalgebra",
+ "nickel-lang-core",
+ "nom",
+ "nom-supreme",
+ "nom_locate",
+ "num-bigint",
+ "ordered-float",
+ "petgraph 0.6.5",
+ "pixels",
+ "pollster",
+ "protocol_derive",
+ "quartz_nbt",
+ "rand",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "sha1",
+ "smallvec",
+ "string_cache",
+ "thiserror 1.0.64",
+ "threadpool",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tracy",
+ "uuid",
+ "vulkan_prelude",
+ "vulkano",
+ "wgpu 24.0.3",
+ "wide",
+ "winit",
+ "zip",
+]
+
+[[package]]
+name = "hypercubed_vk_shaders"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bitfield",
+ "bytemuck",
+ "cfg-if",
+ "foldhash",
+ "lazy_static",
+ "spirv-std",
+ "vulkan_prelude",
+ "vulkano",
+]
+
+[[package]]
 name = "icrate"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2325,84 +2403,6 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
-
-[[package]]
-name = "minecraft_client"
-version = "0.1.0"
-dependencies = [
- "aes",
- "ahash",
- "anyhow",
- "bimap",
- "bitfield",
- "bytebuffer",
- "bytemuck",
- "cfb8",
- "cfg-if",
- "egui",
- "egui_plot",
- "env_logger",
- "fast-srgb8",
- "fixedbitset 0.5.7",
- "flate2",
- "foldhash",
- "image",
- "indexmap",
- "lazy_static",
- "log",
- "mimalloc",
- "minecraft_client_vk_shaders",
- "multiversion",
- "nalgebra",
- "nickel-lang-core",
- "nom",
- "nom-supreme",
- "nom_locate",
- "num-bigint",
- "ordered-float",
- "petgraph 0.6.5",
- "pixels",
- "pollster",
- "protocol_derive",
- "quartz_nbt",
- "rand",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "serde_repr",
- "sha1",
- "smallvec",
- "string_cache",
- "thiserror 1.0.64",
- "threadpool",
- "tracing",
- "tracing-subscriber",
- "tracing-tracy",
- "uuid",
- "vulkan_prelude",
- "vulkano",
- "wgpu 24.0.3",
- "wide",
- "winit",
- "zip",
-]
-
-[[package]]
-name = "minecraft_client_vk_shaders"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "anyhow",
- "bitfield",
- "bytemuck",
- "cfg-if",
- "foldhash",
- "lazy_static",
- "spirv-std",
- "vulkan_prelude",
- "vulkano",
-]
 
 [[package]]
 name = "minimal-lexical"
