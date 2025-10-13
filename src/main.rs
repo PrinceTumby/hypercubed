@@ -1,6 +1,6 @@
-use minecraft_client::client;
-use minecraft_client::protocol;
-use minecraft_client::protocol::prelude::*;
+use hypercubed::client;
+use hypercubed::protocol;
+use hypercubed::protocol::prelude::*;
 use portable_std::Arc;
 
 const SERVER_ADDRESS: &str = "localhost";

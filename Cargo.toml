@@ -2,12 +2,12 @@
 members = [
     "crates/protocol_derive",
     "crates/vulkan_prelude",
-    "crates/minecraft_client_resources",
-    "crates/minecraft_client_portable_std",
+    "crates/hypercubed_resources",
+    "crates/hypercubed_portable_std",
 ]
 exclude = [
-    "crates/minecraft_client_vk_shaders",
-    "crates/minecraft_client_vk_shaders/builder",
+    "crates/hypercubed_vk_shaders",
+    "crates/hypercubed_vk_shaders/builder",
     "crates/bimap-rs",
     "crates/CrabNBT",
 ]
@@ -29,7 +29,7 @@ log = "0"
 miniz_oxide = "0"
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-# If updating, also update in "crates/minecraft_client_vk_shaders/Cargo.toml"
+# If updating, also update in "crates/hypercubed_vk_shaders/Cargo.toml"
 vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "99ccf3c" }
 vulkan_prelude = { path = "crates/vulkan_prelude" }
 smallstr = { version = "0", features = ["serde"] }
@@ -52,7 +52,7 @@ version = "1"
 features = ["bincode", "const_generics", "const_new", "serde", "union"]
 
 [package]
-name = "minecraft_client"
+name = "hypercubed"
 version = "0.1.0"
 edition = "2024"
 
@@ -62,7 +62,7 @@ test = false
 bench = false
 
 [[bin]]
-name = "minecraft_client"
+name = "hypercubed"
 required-features = ["std"]
 
 [features]
@@ -113,7 +113,7 @@ graphics_backend_vulkan = [
     "std",
     "dep:vulkano",
     "dep:vulkan_prelude",
-    "dep:minecraft_client_vk_shaders",
+    "dep:hypercubed_vk_shaders",
     "resources/luma_textures",
 ]
 graphics_backend_software = [
@@ -139,8 +139,8 @@ bincode.workspace = true
 miniz_oxide.workspace = true
 
 [build-dependencies.resources]
-package = "minecraft_client_resources"
-path = "crates/minecraft_client_resources"
+package = "hypercubed_resources"
+path = "crates/hypercubed_resources"
 features = ["std"]
 
 [dependencies]
@@ -209,19 +209,19 @@ default-features = false
 features = ["alloc"]
 optional = true
 
-[dependencies.minecraft_client_vk_shaders]
-path = "crates/minecraft_client_vk_shaders"
+[dependencies.hypercubed_vk_shaders]
+path = "crates/hypercubed_vk_shaders"
 features = ["vulkano"]
 optional = true
 
 [dependencies.portable_std]
-package = "minecraft_client_portable_std"
-path = "crates/minecraft_client_portable_std"
+package = "hypercubed_portable_std"
+path = "crates/hypercubed_portable_std"
 default-features = false
 
 [dependencies.resources]
-package = "minecraft_client_resources"
-path = "crates/minecraft_client_resources"
+package = "hypercubed_resources"
+path = "crates/hypercubed_resources"
 default-features = false
 
 [profile.dev]

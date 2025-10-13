@@ -9,7 +9,7 @@ spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" 
 vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "99ccf3c" }
 
 [package]
-name = "minecraft_client_vk_shaders"
+name = "hypercubed_vk_shaders"
 version = "0.1.0"
 edition = "2024"
 

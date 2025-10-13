@@ -1,5 +1,5 @@
 [package]
-name = "minecraft_client_vk_shaders_builder"
+name = "hypercubed_vk_shaders_builder"
 version = "0.1.0"
 edition = "2024"
 

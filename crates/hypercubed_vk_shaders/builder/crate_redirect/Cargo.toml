@@ -1,12 +1,12 @@
 [package]
-name = "minecraft_client_vk_shaders_redirect"
+name = "hypercubed_vk_shaders_redirect"
 version = "0.1.0"
 edition = "2024"
 
 [features]
 default = [ "shader_code" ]
 shader_code = []
-# `vulkano` dependency crates are in the main "minecraft_client_vk_shaders/Cargo.toml"
+# `vulkano` dependency crates are in the main "hypercubed_vk_shaders/Cargo.toml"
 vulkano = []
 
 [lib]

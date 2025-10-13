@@ -19,7 +19,7 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
 
 @build-with-vk-shaders *BUILD_FLAGS:
     echo - Compiling Vulkan shaders...
-    cd crates/minecraft_client_vk_shaders/builder && cargo build
+    cd crates/hypercubed_vk_shaders/builder && cargo build
     echo - Compiling client...
     cargo build {{BUILD_FLAGS}}
 
@@ -27,8 +27,8 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
 # Playstation 2
 
 _ps2_out_dir := join("target", "mipsel-sony-ps2", "dev-ps2")
-_ps2_unstripped_bin := join(_ps2_out_dir, "minecraft_client_unstripped")
-_ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
+_ps2_unstripped_bin := join(_ps2_out_dir, "hypercubed_unstripped")
+_ps2_elf := join(_ps2_out_dir, "hypercubed.elf")
 
 @check-ps2:
     cargo check \
@@ -60,11 +60,11 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         src/platform/ps2/syscalls.s \
         src/platform/ps2/asm_helpers.s \
         -Wl,--gc-sections \
-        target/mipsel-sony-ps2/dev-ps2/libminecraft_client.a \
+        target/mipsel-sony-ps2/dev-ps2/libhypercubed.a \
         -mabi=64 \
         -Wl,--no-warn-mismatch \
         -T targets/ps2.ld \
-        -o target/mipsel-sony-ps2/dev-ps2/minecraft_client.elf \
+        -o target/mipsel-sony-ps2/dev-ps2/hypercubed.elf \
         -ffreestanding \
         -nostdlib \
         -lgcc \
@@ -86,11 +86,11 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         src/platform/ps2/syscalls.s \
         src/platform/ps2/asm_helpers.s \
         -Wl,--gc-sections \
-        target/mipsel-sony-ps2/release-ps2/libminecraft_client.a \
+        target/mipsel-sony-ps2/release-ps2/libhypercubed.a \
         -mabi=64 \
         -Wl,--no-warn-mismatch \
         -T targets/ps2.ld \
-        -o target/mipsel-sony-ps2/release-ps2/minecraft_client.elf \
+        -o target/mipsel-sony-ps2/release-ps2/hypercubed.elf \
         -ffreestanding \
         -nostdlib \
         -lgcc \

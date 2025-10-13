@@ -366,6 +366,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercubed_vk_shaders"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bitfield",
+ "bytemuck",
+ "cfg-if",
+ "foldhash",
+ "lazy_static",
+ "spirv-std",
+ "vulkan_prelude",
+ "vulkano",
+]
+
+[[package]]
+name = "hypercubed_vk_shaders_builder"
+version = "0.1.0"
+dependencies = [
+ "spirv-builder",
+]
+
+[[package]]
+name = "hypercubed_vk_shaders_redirect"
+version = "0.1.0"
+dependencies = [
+ "bitfield",
+ "cfg-if",
+ "spirv-std",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -476,38 +508,6 @@ name = "memchr"
 version = "2.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
-
-[[package]]
-name = "minecraft_client_vk_shaders"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "anyhow",
- "bitfield",
- "bytemuck",
- "cfg-if",
- "foldhash",
- "lazy_static",
- "spirv-std",
- "vulkan_prelude",
- "vulkano",
-]
-
-[[package]]
-name = "minecraft_client_vk_shaders_builder"
-version = "0.1.0"
-dependencies = [
- "spirv-builder",
-]
-
-[[package]]
-name = "minecraft_client_vk_shaders_redirect"
-version = "0.1.0"
-dependencies = [
- "bitfield",
- "cfg-if",
- "spirv-std",
-]
 
 [[package]]
 name = "miniz_oxide"
