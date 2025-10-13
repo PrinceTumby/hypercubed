@@ -1,11 +1,10 @@
 #[expect(unused)]
-use super::rc_compute::{rgba_10_10_10_2_to_vec4, hsv448_to_rgb};
 use super::types::BlockFaceInstanceFields;
 use spirv_std::glam::*;
 use spirv_std::image::Image2d;
 #[cfg(target_arch = "spirv")]
 use spirv_std::num_traits::Float;
-use spirv_std::{spirv, Sampler};
+use spirv_std::{Sampler, spirv};
 
 pub const BASE_NORMAL: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 
@@ -66,16 +65,14 @@ pub fn vertex(
     in_subchunk_start_coords: Vec3,
     in_face_matrix_index: u32,
     // Instance inputs
-    #[spirv(instance_index)] in_instance_index: u32,
+    // #[spirv(instance_index)] in_instance_index: u32,
     in_uvs: UVec4,
     in_packed_fields: BlockFaceInstanceFields,
     // Outputs
     #[spirv(invariant, position)] out_pos: &mut Vec4,
     out_normal: &mut Vec3,
     out_uvs: &mut Vec2,
-    // #[spirv(flat)] out_light_rgb: &mut Vec3,
-    out_face_xy: &mut Vec2,
-    #[spirv(flat)] out_instance_i: &mut u32,
+    #[spirv(flat)] out_light_rgb: &mut Vec3,
 ) {
     // Unpack instance data
     let xyz_offset = Vec3::new(
@@ -83,6 +80,8 @@ pub fn vertex(
         in_packed_fields.y_offset() as f32,
         in_packed_fields.z_offset() as f32,
     );
+    let sky_light_level = in_packed_fields.sky_light_level();
+    let block_light_level = in_packed_fields.block_light_level();
     // Position
     let base_pos = get_base_position(in_vertex_index);
     let face_matrix = face_matrices[in_face_matrix_index as usize];
@@ -101,13 +100,8 @@ pub fn vertex(
     );
     // Normal
     *out_normal = face_matrix * BASE_NORMAL;
-    // // Light RGB
-    // let sky_light_level = in_packed_fields.sky_light_level();
-    // let block_light_level = in_packed_fields.block_light_level();
-    // *out_light_rgb = calculate_light_rgb(sky_light_level, block_light_level);
-    // Radiance cascade info
-    *out_face_xy = get_face_xy(in_vertex_index);
-    *out_instance_i = in_instance_index;
+    // Light RGB
+    *out_light_rgb = calculate_light_rgb(sky_light_level, block_light_level);
 }
 
 #[spirv(fragment)]
@@ -115,32 +109,16 @@ pub fn fragment(
     // Bindings
     #[spirv(descriptor_set = 1, binding = 0)] block_item_atlas: &Image2d,
     #[spirv(descriptor_set = 1, binding = 1)] block_item_atlas_sampler: &Sampler,
-    // #[spirv(storage_buffer, descriptor_set = 3, binding = 0)] lightmap: &[[u32; 256]],
-    #[spirv(storage_buffer, descriptor_set = 3, binding = 0)] lightmap: &[[u16; 256]],
     // Inputs
     in_normal: Vec3,
     in_uvs: Vec2,
-    // #[spirv(flat)] in_light_rgb: Vec3,
-    in_face_xy: Vec2,
-    #[spirv(flat)] in_instance_i: u32,
+    #[spirv(flat)] in_light_rgb: Vec3,
     // Outputs
     out_colour: &mut Vec4,
 ) {
-    // let tex_sample = block_item_atlas.sample(*block_item_atlas_sampler, in_uvs);
-    // let light_source_dir = Vec3::new(2.0, 5.0, 1.0).normalize();
-    // let lighting = Vec3::dot(in_normal, light_source_dir);
-    // let light_coef = f32::mul_add(lighting, 0.3, 0.4);
-    // *out_colour = Vec4::from((tex_sample.xyz() * light_coef * in_light_rgb, 1.0));
     let tex_sample = block_item_atlas.sample(*block_item_atlas_sampler, in_uvs);
     let light_source_dir = Vec3::new(2.0, 5.0, 1.0).normalize();
     let lighting = Vec3::dot(in_normal, light_source_dir);
     let light_coef = f32::mul_add(lighting, 0.3, 0.4);
-    // Load lightmap pixel colour
-    let light_uv_coords = (Vec2::min(in_face_xy * 16.0, Vec2::splat(15.9))).floor();
-    let closest_probe_i = ((light_uv_coords.y as usize) << 4) | light_uv_coords.x as usize;
-    let probe_packed_hsv = lightmap[in_instance_i as usize][closest_probe_i];
-    let light_rgb = hsv448_to_rgb(probe_packed_hsv);
-    // let light_rgba_8888 = lightmap[in_instance_i as usize][closest_probe_i];
-    // let light_rgb = rgba_10_10_10_2_to_vec4(light_rgba_8888).xyz();
-    *out_colour = Vec4::from((tex_sample.xyz() * light_coef * light_rgb, 1.0));
+    *out_colour = Vec4::from((tex_sample.xyz() * light_coef * in_light_rgb, 1.0));
 }

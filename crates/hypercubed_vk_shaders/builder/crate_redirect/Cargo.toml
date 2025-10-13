@@ -13,6 +13,6 @@ vulkano = []
 crate-type = [ "dylib" ]
 
 [dependencies]
-cfg-if = { workspace = true }
-spirv-std = { workspace = true }
-bitfield = { workspace = true }
+cfg-if.workspace = true
+spirv-std.workspace = true
+bitfield.workspace = true

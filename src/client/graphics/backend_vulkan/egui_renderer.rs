@@ -251,12 +251,6 @@ impl Renderer {
                     assert_eq!(width * height, image.pixels.len());
                     std::borrow::Cow::Borrowed(&image.pixels)
                 }
-                egui::ImageData::Font(image) => {
-                    assert_eq!(width * height, image.pixels.len());
-                    std::borrow::Cow::Owned(
-                        image.srgba_pixels(None).collect::<Vec<egui::Color32>>(),
-                    )
-                }
             };
             let rgba_bytes: &[u8] = bytemuck::cast_slice(rgba_pixels.as_slice());
             if let Some(pos) = texture_data.pos {
@@ -291,7 +285,7 @@ impl Renderer {
                                 layer_count: 1,
                             },
                             image_offset: [origin[0], origin[1], 0],
-                            image_extent: [size[0], size[1], 0],
+                            image_extent: [size[0], size[1], 1],
                             ..Default::default()
                         }]
                         .into(),
@@ -352,11 +346,14 @@ impl Renderer {
                 let descriptor_set = VulkanDescriptorSet::new(
                     descriptor_set_allocator.clone(),
                     self.image_descriptor_set_layout.clone(),
-                    [
-                        VulkanWriteDescriptorSet::image_view_sampler(0, view, sampler),
-                        // VulkanWriteDescriptorSet::image_view(0, view.clone()),
-                        // VulkanWriteDescriptorSet::sampler(1, sampler.clone()),
-                    ],
+                    [VulkanWriteDescriptorSet::image(
+                        0,
+                        VulkanDescriptorImageInfo {
+                            sampler: Some(sampler.clone()),
+                            image_view: Some(view.clone()),
+                            ..Default::default()
+                        },
+                    )],
                     [],
                 )
                 .context("Error while creating egui image descriptor set")?;
@@ -414,14 +411,15 @@ impl Renderer {
                     self.screen_size_buffer.clone(),
                     Box::new(ScreenSize { width, height }),
                 )
-                .unwrap();
+                .context("Error while updating screen size buffer")?;
             self.update_textures(
                 device,
                 &(memory_allocator.clone() as Arc<_>),
                 &(descriptor_set_allocator.clone() as Arc<_>),
                 command_buffer,
                 texture_updates,
-            )?;
+            )
+            .context("Error while updating textures")?;
         }
         // Generate mesh data
         let mut vertices: Vec<Vertex> = Vec::new();
@@ -603,11 +601,14 @@ impl Renderer {
         let descriptor_set = VulkanDescriptorSet::new(
             descriptor_set_allocator.clone(),
             self.image_descriptor_set_layout.clone(),
-            [
-                VulkanWriteDescriptorSet::image_view_sampler(0, view, sampler),
-                // VulkanWriteDescriptorSet::image_view(0, view),
-                // VulkanWriteDescriptorSet::sampler(1, sampler),
-            ],
+            [VulkanWriteDescriptorSet::image(
+                0,
+                VulkanDescriptorImageInfo {
+                    sampler: Some(sampler),
+                    image_view: Some(view),
+                    ..Default::default()
+                },
+            )],
             [],
         )
         .context("Error while creating egui user image descriptor set")?;

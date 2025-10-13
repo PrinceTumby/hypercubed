@@ -4,9 +4,9 @@ members = ["builder", "builder/crate_redirect"]
 [workspace.dependencies]
 cfg-if = "1"
 bitfield = "0"
-spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
-vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "99ccf3c" }
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
+vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "432955a" }
 
 [package]
 name = "hypercubed_vk_shaders"
@@ -19,9 +19,9 @@ shader_code = []
 vulkano = ["dep:vulkano"]
 
 [dependencies]
-cfg-if = { workspace = true }
-spirv-std = { workspace = true, optional = true }
-bitfield = { workspace = true }
+cfg-if.workspace = true
+spirv-std.workspace = true
+bitfield.workspace = true
 vulkano = { workspace = true, optional = true }
 vulkan_prelude = { path = "../vulkan_prelude" }
 ahash = { version = "0", features = ["serde"] }

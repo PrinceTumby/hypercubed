@@ -125,7 +125,7 @@ cfg_if::cfg_if! {
 pub fn new_strong_rng() -> StrongRng {
     #[cfg(feature = "mini_std")]
     {
-        rand::thread_rng()
+        rand::rng()
     }
     #[cfg(not(feature = "mini_std"))]
     {

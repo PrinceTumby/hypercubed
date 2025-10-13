@@ -1,4 +1,8 @@
+use super::shader_exports::chunk::types::{self as shader_chunk_types, vertex_input_state};
+use super::shader_exports::shader_stage_from_entry_point;
 use crate::basic_types::AxisDirection;
+use anyhow::Context;
+use nalgebra::{Matrix3, Rotation3};
 use std::marker::{PhantomData, Send, Sync};
 use std::sync::Arc;
 use vulkan_prelude::*;
@@ -20,8 +24,7 @@ pub struct Subchunk {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CustomBlockGroup {
-    pub start_vertex: u32,
-    pub start_index_and_len: [u32; 2],
+    pub start_face_and_len: [u32; 2],
     pub start_instance_and_len: [u32; 2],
 }
 
@@ -521,4 +524,276 @@ impl<I: bytemuck::Pod + Send + Sync, const ITEMS_PER_CHUNK: usize, const NUM_CHU
     pub fn usage_fraction(&self) -> f64 {
         self.0.usage_fraction()
     }
+}
+
+pub mod block_face {
+    use super::*;
+
+    pub fn create_graphics_pipeline(
+        device: &Arc<VulkanDevice>,
+        layout: &Arc<VulkanPipelineLayout>,
+        subpass: &VulkanSubpass,
+        // config: &SurfaceConfiguration,
+        // layout: &PipelineLayout,
+    ) -> anyhow::Result<Arc<VulkanGraphicsPipeline>> {
+        VulkanGraphicsPipeline::new(
+            device,
+            None, // No pipeline cache
+            &VulkanGraphicsPipelineCreateInfo {
+                flags: VulkanPipelineCreateFlags::default(),
+                stages: &[
+                    shader_stage_from_entry_point(
+                        &mut None,
+                        device,
+                        "shader::chunk::block_face::vertex",
+                    ),
+                    shader_stage_from_entry_point(
+                        &mut None,
+                        device,
+                        "shader::chunk::block_face::fragment",
+                    ),
+                ],
+                vertex_input_state: Some(&vertex_input_state::block_face()),
+                input_assembly_state: Some(&VulkanInputAssemblyState {
+                    topology: VulkanPrimitiveTopology::TriangleStrip,
+                    primitive_restart_enable: false,
+                    ..Default::default()
+                }),
+                tessellation_state: None,
+                // We leave the viewport state as a single default viewport, as we use dynamic
+                // state to set the viewport at render time.
+                viewport_state: Some(&Default::default()),
+                rasterization_state: Some(&VulkanRasterizationState {
+                    cull_mode: VulkanCullMode::Back,
+                    ..Default::default()
+                }),
+                multisample_state: Some(&Default::default()),
+                depth_stencil_state: Some(&VulkanDepthStencilState {
+                    depth: Some(VulkanDepthState {
+                        write_enable: true,
+                        compare_op: VulkanCompareOp::GreaterOrEqual,
+                    }),
+                    ..Default::default()
+                }),
+                color_blend_state: Some(&VulkanColorBlendState {
+                    attachments: &[VulkanColorBlendAttachmentState::default()],
+                    ..Default::default()
+                }),
+                dynamic_state: &[VulkanDynamicState::Viewport],
+                layout,
+                subpass: Some(VulkanPipelineSubpassType::BeginRenderPass(subpass)),
+                base_pipeline: None,
+                discard_rectangle_state: None,
+                fragment_shading_rate_state: None,
+                _ne: vulkano_non_exhaustive(),
+            },
+        )
+        .context("Error while creating block face graphics pipeline")
+    }
+
+    pub mod face_matrices {
+        use super::*;
+
+        #[inline]
+        pub fn rotations() -> [Rotation3<f32>; 6] {
+            [
+                // Top
+                Rotation3::identity(),
+                // Bottom
+                Rotation3::from_euler_angles(std::f32::consts::PI, 0.0, 0.0),
+                // North
+                Rotation3::from_euler_angles(
+                    -std::f32::consts::FRAC_PI_2,
+                    0.0,
+                    std::f32::consts::PI,
+                ),
+                // South
+                Rotation3::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0),
+                // East
+                Rotation3::from_euler_angles(
+                    0.0,
+                    std::f32::consts::FRAC_PI_2,
+                    -std::f32::consts::FRAC_PI_2,
+                ),
+                // West
+                Rotation3::from_euler_angles(
+                    0.0,
+                    -std::f32::consts::FRAC_PI_2,
+                    std::f32::consts::FRAC_PI_2,
+                ),
+            ]
+        }
+
+        pub fn generate_array() -> [[[f32; 4]; 3]; 6] {
+            // Alignment of each row in a mat3x3 is same as vec4, so we pad up to size
+            rotations()
+                .map(Matrix3::from)
+                .map(|matrix| matrix.into())
+                .map(|matrix: [[f32; 3]; 3]| matrix.map(|[x, y, z]| [x, y, z, 0.0]))
+        }
+
+        pub mod indices {
+            pub const TOP: u8 = 0;
+            pub const BOTTOM: u8 = 1;
+            pub const NORTH: u8 = 2;
+            pub const SOUTH: u8 = 3;
+            pub const EAST: u8 = 4;
+            pub const WEST: u8 = 5;
+        }
+    }
+
+    pub use shader_chunk_types::BlockFaceVertex as Vertex;
+
+    pub use shader_chunk_types::BlockFaceInstance as Instance;
+
+    pub type BlockFaceVertexBufferManager = VertexBufferManager<Vertex, { 1 << 20 }>;
+    pub type BlockFaceInstanceBufferManager = InstanceBufferManager<Instance, 4, { 1 << 18 }>;
+}
+
+pub mod tinted_block_face {
+    use super::*;
+
+    pub fn create_graphics_pipeline(
+        device: &Arc<VulkanDevice>,
+        layout: &Arc<VulkanPipelineLayout>,
+        subpass: &VulkanSubpass,
+        // config: &SurfaceConfiguration,
+        // layout: &PipelineLayout,
+    ) -> anyhow::Result<Arc<VulkanGraphicsPipeline>> {
+        VulkanGraphicsPipeline::new(
+            device,
+            None, // No pipeline cache
+            &VulkanGraphicsPipelineCreateInfo {
+                flags: VulkanPipelineCreateFlags::default(),
+                stages: &[
+                    shader_stage_from_entry_point(
+                        &mut None,
+                        device,
+                        "shader::chunk::tinted_block_face::vertex",
+                    ),
+                    shader_stage_from_entry_point(
+                        &mut None,
+                        device,
+                        "shader::chunk::tinted_block_face::fragment",
+                    ),
+                ],
+                vertex_input_state: Some(&vertex_input_state::tinted_block_face()),
+                input_assembly_state: Some(&VulkanInputAssemblyState {
+                    topology: VulkanPrimitiveTopology::TriangleStrip,
+                    primitive_restart_enable: false,
+                    ..Default::default()
+                }),
+                tessellation_state: None,
+                // We leave the viewport state as a single default viewport, as we use dynamic
+                // state to set the viewport at render time.
+                viewport_state: Some(&Default::default()),
+                rasterization_state: Some(&VulkanRasterizationState {
+                    cull_mode: VulkanCullMode::Back,
+                    ..Default::default()
+                }),
+                multisample_state: Some(&Default::default()),
+                depth_stencil_state: Some(&VulkanDepthStencilState {
+                    depth: Some(VulkanDepthState {
+                        write_enable: true,
+                        compare_op: VulkanCompareOp::GreaterOrEqual,
+                    }),
+                    ..Default::default()
+                }),
+                color_blend_state: Some(&VulkanColorBlendState {
+                    attachments: &[VulkanColorBlendAttachmentState::default()],
+                    ..Default::default()
+                }),
+                dynamic_state: &[VulkanDynamicState::Viewport],
+                layout,
+                subpass: Some(VulkanPipelineSubpassType::BeginRenderPass(subpass)),
+                base_pipeline: None,
+                discard_rectangle_state: None,
+                fragment_shading_rate_state: None,
+                _ne: vulkano_non_exhaustive(),
+            },
+        )
+        .context("Error while creating block face graphics pipeline")
+    }
+
+    pub use super::block_face::Vertex;
+
+    pub use shader_chunk_types::TintedBlockFaceInstance as Instance;
+
+    pub type TintedBlockFaceVertexBufferManager = VertexBufferManager<Vertex, { 1 << 20 }>;
+    pub type TintedBlockFaceInstanceBufferManager = InstanceBufferManager<Instance, 4, { 1 << 18 }>;
+}
+
+pub mod custom_block {
+    use super::*;
+
+    pub fn create_graphics_pipeline(
+        device: &Arc<VulkanDevice>,
+        layout: &Arc<VulkanPipelineLayout>,
+        subpass: &VulkanSubpass,
+        // config: &SurfaceConfiguration,
+        // layout: &PipelineLayout,
+    ) -> anyhow::Result<Arc<VulkanGraphicsPipeline>> {
+        VulkanGraphicsPipeline::new(
+            device,
+            None, // No pipeline cache
+            &VulkanGraphicsPipelineCreateInfo {
+                flags: VulkanPipelineCreateFlags::default(),
+                stages: &[
+                    shader_stage_from_entry_point(
+                        &mut None,
+                        device,
+                        "shader::chunk::custom_block::vertex",
+                    ),
+                    shader_stage_from_entry_point(
+                        &mut None,
+                        device,
+                        "shader::chunk::custom_block::fragment",
+                    ),
+                ],
+                vertex_input_state: Some(&vertex_input_state::custom_block()),
+                input_assembly_state: Some(&VulkanInputAssemblyState {
+                    topology: VulkanPrimitiveTopology::TriangleList,
+                    primitive_restart_enable: false,
+                    ..Default::default()
+                }),
+                tessellation_state: None,
+                // We leave the viewport state as a single default viewport, as we use dynamic
+                // state to set the viewport at render time.
+                viewport_state: Some(&Default::default()),
+                rasterization_state: Some(&VulkanRasterizationState {
+                    cull_mode: VulkanCullMode::Back,
+                    ..Default::default()
+                }),
+                multisample_state: Some(&Default::default()),
+                depth_stencil_state: Some(&VulkanDepthStencilState {
+                    depth: Some(VulkanDepthState {
+                        write_enable: true,
+                        compare_op: VulkanCompareOp::GreaterOrEqual,
+                    }),
+                    ..Default::default()
+                }),
+                color_blend_state: Some(&VulkanColorBlendState {
+                    attachments: &[VulkanColorBlendAttachmentState::default()],
+                    ..Default::default()
+                }),
+                dynamic_state: &[VulkanDynamicState::Viewport],
+                layout,
+                subpass: Some(VulkanPipelineSubpassType::BeginRenderPass(subpass)),
+                base_pipeline: None,
+                discard_rectangle_state: None,
+                fragment_shading_rate_state: None,
+                _ne: vulkano_non_exhaustive(),
+            },
+        )
+        .context("Error while creating block face graphics pipeline")
+    }
+
+    pub use shader_chunk_types::CustomBlockVertex as Vertex;
+
+    pub use shader_chunk_types::CustomBlockInstance as Instance;
+
+    pub type VertexList = VertexListBuffer<Vertex>;
+    pub type IndexList = IndexListBuffer<u32>;
+    pub type CustomBlockInstanceBufferManager =
+        super::super::chunk::InstanceBufferManager<Instance, 4, { 1 << 20 }>;
 }

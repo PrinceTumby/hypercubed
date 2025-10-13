@@ -1,10 +1,10 @@
-use super::block_face::{calculate_light_rgb, get_base_position, get_uvs, BASE_NORMAL};
+use super::block_face::{BASE_NORMAL, calculate_light_rgb, get_base_position, get_uvs};
 use super::types::BlockFaceInstanceFields;
 use spirv_std::glam::{FloatExt, Mat3A, Mat4, UVec4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use spirv_std::image::Image2d;
 #[cfg(target_arch = "spirv")]
 use spirv_std::num_traits::Float;
-use spirv_std::{spirv, Sampler};
+use spirv_std::{Sampler, spirv};
 
 #[spirv(vertex)]
 pub fn vertex(

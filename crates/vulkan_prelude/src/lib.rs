@@ -40,6 +40,7 @@ pub use vulkano::command_buffer::{
     CopyBufferToImageInfo as VulkanCopyBufferToImageInfo,
     DrawIndexedIndirectCommand as VulkanDrawIndexedIndirectCommand,
     DrawIndirectCommand as VulkanDrawIndirectCommand,
+    PrimaryCommandBufferAbstract as VulkanPrimaryCommandBufferAbstract,
     RecordingCommandBuffer as VulkanRecordingCommandBuffer,
     RenderPassBeginInfo as VulkanRenderPassBeginInfo,
     SemaphoreSubmitInfo as VulkanSemaphoreSubmitInfo, SubmitInfo as VulkanSubmitInfo,
@@ -60,8 +61,8 @@ pub use vulkano::descriptor_set::layout::{
     DescriptorType as VulkanDescriptorType,
 };
 pub use vulkano::descriptor_set::{
-    CopyDescriptorSet as VulkanCopyDescriptorSet, DescriptorSet as VulkanDescriptorSet,
-    WriteDescriptorSet as VulkanWriteDescriptorSet,
+    CopyDescriptorSet as VulkanCopyDescriptorSet, DescriptorImageInfo as VulkanDescriptorImageInfo,
+    DescriptorSet as VulkanDescriptorSet, WriteDescriptorSet as VulkanWriteDescriptorSet,
 };
 pub use vulkano::device::physical::PhysicalDeviceType as VulkanPhysicalDeviceType;
 pub use vulkano::device::{
@@ -172,7 +173,8 @@ pub use vulkano::sync::semaphore::Semaphore as VulkanSemaphore;
 pub use vulkano::sync::{GpuFuture, Sharing as VulkanSharing};
 pub use vulkano::{
     DeviceSize as VulkanDeviceSize, Packed24_8 as VulkanPacked24_8, Validated as VulkanValidated,
-    VulkanError, VulkanLibrary, single_pass_renderpass as vulkan_single_pass_renderpass,
+    VulkanError, VulkanLibrary, VulkanObject,
+    single_pass_renderpass as vulkan_single_pass_renderpass,
 };
 
 // HACK: Some vulkano structs don't seem to implement Default when they should, so this is useful
@@ -203,7 +205,7 @@ macro_rules! vulkan_vertex_default_input_rate {
 #[macro_export]
 macro_rules! vulkan_vertex_bindings {
     ( $( $binding:literal => ($vertex_type:ty, $input_rate:ident) $(,)? )* ) => {
-        ::foldhash::HashMap::from_iter([
+        ::core::iter::FromIterator::from_iter([
             $(
                 (
                     $binding,
@@ -215,7 +217,6 @@ macro_rules! vulkan_vertex_bindings {
                 )
             ),*
         ])
-        .into()
     };
 }
 
@@ -223,7 +224,7 @@ macro_rules! vulkan_vertex_bindings {
 macro_rules! vulkan_vertex_attributes {
     ( $num_bindings:literal, [ $( [ $attribute:literal <- $binding:literal ] => $format:ident $(,)? )* ] ) => {{
         let mut __current_attribute_offsets: [u32; $num_bindings] = [0; $num_bindings];
-        ::foldhash::HashMap::from_iter([
+        ::core::iter::FromIterator::from_iter([
             $(
                 (
                     $attribute,
@@ -242,7 +243,6 @@ macro_rules! vulkan_vertex_attributes {
                 )
             ),*
         ])
-        .into()
     }};
 }
 

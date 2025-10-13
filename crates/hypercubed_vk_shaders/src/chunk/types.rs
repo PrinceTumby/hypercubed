@@ -130,15 +130,6 @@ impl TintedBlockFaceInstance {
     }
 }
 
-// TODO:
-// - Right now VRAM usage is really high for vertex buffer (150MB)
-// - Switch to using vertex pulling
-// - Two storage buffers:
-//   - Vertex buffer replaced by cube buffer, stores packed 4x4 matrix
-//   - Index buffer replaced by face buffer, stores direction index and cube index
-// - During rendering, just divide vertex index by 6 to get face index
-// - Packed matrix could be 4x4 Snorm8
-// - Radiance Cascade raytracing just needs ray-OBB tests
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
@@ -146,9 +137,13 @@ pub struct CustomBlockVertex {
     pub pos: [f32; 3],
     pub uvs: [u16; 2],
     pub normal: [f32; 3],
+    #[cfg(not(target_arch = "spirv"))]
     pub packed_fields: CustomBlockVertexFields,
+    #[cfg(target_arch = "spirv")]
+    pub packed_fields: CustomBlockVertexFieldsGpu,
 }
 
+#[cfg(not(target_arch = "spirv"))]
 impl CustomBlockVertex {
     pub fn new(pos: [f32; 3], uvs: [u16; 2], normal: [f32; 3], is_tinted: bool) -> Self {
         let mut packed_fields = CustomBlockVertexFields(0);
@@ -292,26 +287,18 @@ pub mod vertex_input_state {
     pub fn custom_block() -> VulkanVertexInputState {
         VulkanVertexInputState {
             bindings: vulkan_vertex_bindings![
-                0 => (CustomBlockVertex, Vertex),
-                1 => (CustomBlockInstance, Instance),
+                // Vertex pulling is used from face data.
+                0 => (CustomBlockInstance, Instance),
             ],
             attributes: vulkan_vertex_attributes!(2, [
-                // vertex::pos
+                // pos
                 [0 <- 0] => R32G32B32_SFLOAT,
-                // uvs
-                [1 <- 0] => R16G16_UINT,
-                // normal
-                [2 <- 0] => R32G32B32_SFLOAT,
-                // packed_fields
-                [3 <- 0] => R32_UINT,
-                // instance::pos
-                [4 <- 1] => R32G32B32_SFLOAT,
                 // tint_color
-                [5 <- 1] => R8G8B8A8_UNORM,
+                [1 <- 0] => R8G8B8A8_UNORM,
                 // light_level_pairs (first half)
-                [6 <- 1] => R8G8B8A8_UINT,
+                [2 <- 0] => R8G8B8A8_UINT,
                 // light_level_pairs (second half) and packed_fields
-                [7 <- 1] => R8G8B8A8_UINT,
+                [3 <- 0] => R8G8B8A8_UINT,
             ]),
             ..Default::default()
         }

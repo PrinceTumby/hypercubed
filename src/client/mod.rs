@@ -10,6 +10,7 @@ use crate::portable_prelude::*;
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode};
 use crate::protocol::prelude::*;
+use anyhow::Context;
 use graphics::GraphicsState;
 use nalgebra::Point3;
 use portable_std::sync::mpsc;
@@ -105,41 +106,6 @@ pub struct RawSubchunk {
     pub tinted_block_face_instance_groups: [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
     pub custom_block_groups: Vec<RawCustomBlockGroup>,
     pub connected_faces: graphics::chunk::SubchunkConnectivity,
-    #[cfg(feature = "graphics_backend_vulkan")]
-    pub rt_info: RayTracingInfo,
-}
-
-#[cfg(feature = "graphics_backend_vulkan")]
-#[derive(Clone, Debug)]
-pub struct RayTracingInfo {
-    pub vertex_positions: Vec<[f32; 3]>,
-    pub block_face_triangle_quads: Vec<[[u32; 3]; 2]>,
-    pub tinted_block_face_triangle_quads: Vec<[[u32; 3]; 2]>,
-    pub custom_block_face_triangle_quads: Vec<[[u32; 3]; 2]>,
-    /// Combined quad info lists, with offsets specified in `quads_info_offsets`.
-    pub quads_info: Vec<RayTracedQuadInfo>,
-    /// Offsets of tinted and custom quad info lists.
-    /// Block quad info starts at 0, so isn't specified.
-    pub quads_info_offsets: [u32; 2],
-}
-
-#[cfg(feature = "graphics_backend_vulkan")]
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct RayTracedQuadInfo {
-    pub uvs: [[u16; 2]; 4],
-    pub packed_fields: RayTracedQuadPackedFields,
-}
-
-#[cfg(feature = "graphics_backend_vulkan")]
-bitfield::bitfield! {
-    // 0-7: Unused
-    // 8-31: Tint colour
-    #[repr(transparent)]
-    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-    pub struct RayTracedQuadPackedFields(u32);
-    impl Debug;
-    pub tint_colour, set_tint_colour: 31, 8;
 }
 
 #[derive(Debug)]
@@ -251,8 +217,6 @@ pub async fn window_run(
                     debug_lines,
                     debug_triangles,
                 } = debug::render_debug_ui(
-                    #[cfg(feature = "full_std")]
-                    &thread_pool,
                     &server_connection,
                     &mut play_state,
                     &mut graphics_state,
@@ -294,7 +258,7 @@ pub async fn window_run(
                         //         &play_state.raw_chunks,
                         //     );
                         // }
-                        match graphics_state.render(
+                        debug_output = graphics_state.render(
                             &play_state.subchunks,
                             &play_state.visible_chunks,
                             &egui_ctx,
@@ -303,11 +267,9 @@ pub async fn window_run(
                             &debug_points,
                             &debug_lines,
                             &debug_triangles,
-                        ) {
-                            Ok(new_debug_output) => debug_output = new_debug_output,
-                            // FIXME: Call resize if there's a swapchain error
-                            Err(err) => panic!("Rendering error: {err}"),
-                        };
+                        )
+                        .context("Error while rendering")
+                        .unwrap();
                     } else if #[cfg(feature = "graphics_backend_wgpu")] {
                         match graphics_state.render(
                             &play_state.subchunks,

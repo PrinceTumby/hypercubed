@@ -1,10 +1,10 @@
-use objc::runtime::{Class, Object, Sel, YES, NO};
-use objc::{msg_send, sel, Encode, Encoding};
-use core::ffi::{c_int, c_float, c_ulong, c_void};
+use crate::portable_prelude::eprintln;
+use core::cell::{Cell, UnsafeCell};
+use core::ffi::{c_float, c_int, c_ulong, c_void};
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU8, Ordering};
-use core::cell::{Cell, UnsafeCell};
-use crate::portable_prelude::eprintln;
+use objc::runtime::{Class, NO, Object, Sel, YES};
+use objc::{Encode, Encoding, msg_send, sel};
 
 struct LazySpin<T, F = fn() -> T> {
     value: UnsafeCell<MaybeUninit<T>>,
@@ -305,10 +305,7 @@ pub unsafe fn run() {
         let pool: *mut Object = msg_send![msg_send_ret_obj![*NSAutoReleasePool, alloc], init];
         let _: () = msg_send![*NSApplication, sharedApplication];
         let app_delegate: *mut Object = msg_send![
-            msg_send_ret_obj![
-                msg_send_ret_obj![*AppDelegate, alloc],
-                init
-            ],
+            msg_send_ret_obj![msg_send_ret_obj![*AppDelegate, alloc], init],
             autorelease
         ];
         let _: () = msg_send![NS_APP, setDelegate:app_delegate];
@@ -337,7 +334,8 @@ static AppDelegate: LazySpin<&'static Class> = LazySpin::new(|| unsafe {
             let new_this: *mut Object = msg_send![super(this, superclass), init];
             if !new_this.is_null() {
                 this = &mut *new_this;
-                let screen_rect: NSRect = msg_send![msg_send_ret_obj![*NSScreen, mainScreen], frame];
+                let screen_rect: NSRect =
+                    msg_send![msg_send_ret_obj![*NSScreen, mainScreen], frame];
                 let content_rect = NSRect {
                     origin: NSPoint { x: 0.0, y: 0.0 },
                     size: NSSize {
@@ -374,7 +372,10 @@ static AppDelegate: LazySpin<&'static Class> = LazySpin::new(|| unsafe {
             new_this
         }
     }
-    decl.add_method(sel!(init), init as extern "C" fn(&mut Object, Sel) -> *mut Object);
+    decl.add_method(
+        sel!(init),
+        init as extern "C" fn(&mut Object, Sel) -> *mut Object,
+    );
 
     /// `- (void) applicationWillFinishLaunching:(NSNotification *) notification`
     extern "C" fn application_will_finish_launching(
@@ -423,10 +424,8 @@ static AppDelegate: LazySpin<&'static Class> = LazySpin::new(|| unsafe {
                 // Populate application menu
                 {
                     // "About {APP_NAME}"
-                    let app_name: *mut Object = msg_send![
-                        msg_send_ret_obj![*NSProcessInfo, processInfo],
-                        processName
-                    ];
+                    let app_name: *mut Object =
+                        msg_send![msg_send_ret_obj![*NSProcessInfo, processInfo], processName];
                     let about_menu_item: *mut Object = msg_send![submenu,
                         addItemWithTitle:msg_send_ret_obj![
                             msg_send_ret_obj![
@@ -473,10 +472,7 @@ static AppDelegate: LazySpin<&'static Class> = LazySpin::new(|| unsafe {
     );
 
     /// `- (void) dealloc`
-    extern "C" fn dealloc(
-        this: &Object,
-        _cmd: Sel,
-    ) {
+    extern "C" fn dealloc(this: &Object, _cmd: Sel) {
         unsafe {
             let superclass = this.class().superclass().unwrap();
             let window: *mut Object = *this.get_ivar("window");
@@ -486,10 +482,7 @@ static AppDelegate: LazySpin<&'static Class> = LazySpin::new(|| unsafe {
             let _: () = msg_send![super(this, superclass), dealloc];
         }
     }
-    decl.add_method(
-        sel!(dealloc),
-        dealloc as extern "C" fn(&Object, Sel),
-    );
+    decl.add_method(sel!(dealloc), dealloc as extern "C" fn(&Object, Sel));
 
     decl.register()
 });
@@ -516,13 +509,18 @@ static AppView: LazySpin<&'static Class> = LazySpin::new(|| unsafe {
                 use NSOpenGLPixelFormatAttribute::*;
                 [
                     Multisample as c_int,
-                    SampleBuffers as c_int, if multisamples > 0 { 1 } else { 0 },
-                    Samples as c_int, multisamples,
+                    SampleBuffers as c_int,
+                    if multisamples > 0 { 1 } else { 0 },
+                    Samples as c_int,
+                    multisamples,
                     Accelerated as c_int,
                     DoubleBuffer as c_int,
-                    ColorSize as c_int, 32,
-                    DepthSize as c_int, 24,
-                    AlphaSize as c_int, 8,
+                    ColorSize as c_int,
+                    32,
+                    DepthSize as c_int,
+                    24,
+                    AlphaSize as c_int,
+                    8,
                     End as c_int,
                 ]
             };
@@ -552,7 +550,11 @@ static AppView: LazySpin<&'static Class> = LazySpin::new(|| unsafe {
     );
 
     /// `- (CVReturn) getFrameForTime:(const CVTimeStamp *) outputTime`
-    extern "C" fn get_frame_for_time(this: &Object, _cmd: Sel, _output_time: CVTimeStampPtr) -> CVReturn {
+    extern "C" fn get_frame_for_time(
+        this: &Object,
+        _cmd: Sel,
+        _output_time: CVTimeStampPtr,
+    ) -> CVReturn {
         unsafe {
             draw_view(this);
             CVReturn::Success

@@ -1,6 +1,6 @@
 #![allow(unexpected_cfgs)]
 
-pub mod chunk_rc;
+pub mod chunk;
 pub mod debug;
 pub mod egui;
 
@@ -37,9 +37,7 @@ cfg_if::cfg_if! {
 
 #[cfg(not(target_arch = "spirv"))]
 pub fn cpu_dummy_ray_query() -> spirv_std::ray_tracing::RayQuery {
-    unsafe {
-        std::mem::transmute(0u32)
-    }
+    unsafe { std::mem::transmute(0u32) }
 }
 
 #[macro_export]
@@ -109,19 +107,14 @@ pub mod shader_modules {
                     );
                 }};
             }
-            module!("chunk_rc", "block_face", "vertex");
-            module!("chunk_rc", "block_face", "fragment");
-            module!("chunk_rc", "tinted_block_face", "vertex");
-            module!("chunk_rc", "tinted_block_face", "fragment");
-            module!("chunk_rc", "custom_block", "vertex");
-            module!("chunk_rc", "custom_block", "fragment");
+            module!("chunk", "block_face", "vertex");
+            module!("chunk", "block_face", "fragment");
+            module!("chunk", "tinted_block_face", "vertex");
+            module!("chunk", "tinted_block_face", "fragment");
+            module!("chunk", "custom_block", "vertex");
+            module!("chunk", "custom_block", "fragment");
             module!("egui", "vertex");
             module!("egui", "fragment");
-            module!("chunk_rc", "rc_compute", "raytrace_debug");
-            module!("chunk_rc", "rc_compute", "single_pass_update");
-            module!("chunk_rc", "rc_compute", "update_all_cascades");
-            module!("chunk_rc", "rc_compute", "update_cascade_0");
-            module!("chunk_rc", "rc_compute", "update_cascade_1");
             module!("debug", "point", "vertex");
             module!("debug", "point", "fragment");
             module!("debug", "line", "vertex");
@@ -134,7 +127,10 @@ pub mod shader_modules {
         };
     }
 
-    pub fn get_entry_point(device: &Arc<VulkanDevice>, entry_point: &'static str) -> VulkanEntryPoint {
+    pub fn get_entry_point(
+        device: &Arc<VulkanDevice>,
+        entry_point: &'static str,
+    ) -> VulkanEntryPoint {
         lazy_static! {
             static ref LOADED_MODULES: Mutex<AHashMap<&'static str, Arc<VulkanShaderModule>>> =
                 Mutex::new(AHashMap::new());

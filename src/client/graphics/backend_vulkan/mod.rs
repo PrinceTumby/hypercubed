@@ -3,17 +3,13 @@
 #[cfg(not(feature = "full_std"))]
 compile_error!("The Vulkan backend requires use of `std`");
 
-pub mod chunk_no_rc;
-pub mod chunk_rc;
+pub mod chunk;
 pub mod debug;
 pub mod egui_renderer;
 pub mod shader_exports;
 
-// TODO: Add a feature gate for "graphics_radiance_cascades"
-pub use chunk_rc as chunk;
-
 use crate::basic_types::AxisDirection;
-use crate::client::{MIN_HEIGHT_I32, RawChunk, RayTracedQuadInfo, SUBCHUNK_AXIS_LEN_I32};
+use crate::client::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, anyhow};
 use chunk::{
@@ -25,12 +21,9 @@ use debug::line::Instance as DebugLineInstance;
 use debug::point::Vertex as DebugPointVertex;
 use debug::triangle::Instance as DebugTriangleInstance;
 use nalgebra::{Perspective3, Point3, Vector3};
-use ordered_float::NotNan;
-use resources::aabb::AABB;
 use resources::block::model::{ModelRegistry, Tint};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use threadpool::ThreadPool;
+use std::sync::Arc;
 use vulkan_prelude::*;
 use winit::window::Window;
 
@@ -50,11 +43,6 @@ pub struct DebugState {
     pub cave_cull_render_traversal_graph: bool,
     pub cave_cull_debug_render_dist: f32,
     pub max_render_chunks: usize,
-    pub radiance_cascades_ray_visualiser: bool,
-    pub radiance_cascades_light_tree_visualiser: bool,
-    pub radiance_cascades_light_tree_level: usize,
-    pub radiance_cascades_areaquad_visualiser: bool,
-    pub max_radiance_cascade: u32,
     pub debug_texture_zoom: f32,
 }
 
@@ -73,11 +61,6 @@ impl Default for DebugState {
             cave_cull_render_traversal_graph: false,
             cave_cull_debug_render_dist: 24.0,
             max_render_chunks: 3000,
-            radiance_cascades_ray_visualiser: false,
-            radiance_cascades_light_tree_visualiser: false,
-            radiance_cascades_light_tree_level: 0,
-            radiance_cascades_areaquad_visualiser: false,
-            max_radiance_cascade: 0,
             debug_texture_zoom: 1.0,
         }
     }
@@ -146,63 +129,6 @@ pub struct GraphicsBufferManagers {
     pub custom_block_instance: CustomBlockInstanceBufferManager,
 }
 
-// XXX: DEBUG
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct RadianceProbeDebugInfo {
-    pub debug_floats: [f32; 4],
-    pub debug_ints: [u32; 4],
-}
-
-pub struct RadianceCascadeState {
-    pub tlas_info: Option<TlasInfo>,
-    pub update_pipelines: [Arc<VulkanComputePipeline>; 2],
-    pub update_pipeline_layout: Arc<VulkanPipelineLayout>,
-    pub probe_debug_info_descriptor_set_layout: Arc<VulkanDescriptorSetLayout>,
-    pub probe_info_descriptor_set_layout: Arc<VulkanDescriptorSetLayout>,
-    pub lightmaps_descriptor_set_layout: Arc<VulkanDescriptorSetLayout>,
-    pub debug_texture_descriptor_set: Arc<VulkanDescriptorSet>,
-    pub lightmap_render_descriptor_set_layout: Arc<VulkanDescriptorSetLayout>,
-    // XXX: DEBUG
-    pub debug_info: Arc<Mutex<RadianceProbeDebugInfo>>,
-    pub debug_egui_texture: egui::load::SizedTexture,
-    pub debug_pipeline: Arc<VulkanComputePipeline>,
-    pub debug_pipeline_layout: Arc<VulkanPipelineLayout>,
-    pub debug_light_tree: Option<Vec<LightNode>>,
-}
-
-// TODO: Move this to shader chunk_rc types
-// Node 0 is a dummy node, only containing the number of root nodes.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct LightNode {
-    pub sphere_centre: [f32; 3],
-    pub sphere_radius: f32,
-    pub aabb_corner_1: [f32; 3],
-    pub aabb_corner_2: [f32; 3],
-    /// Equal to `[u32::MAX; 2]` if the node has no children.
-    pub children: [u32; 2],
-}
-
-#[derive(Clone)]
-pub struct TlasInfo {
-    pub world_tlas: Arc<VulkanAccelerationStructure>,
-    pub instance_info_buffer: VulkanSubbuffer<[TlasInstanceInfo]>,
-    pub quads_info_buffer: VulkanSubbuffer<[RayTracedQuadInfo]>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct TlasInstanceInfo {
-    pub quads_info_offsets: [u32; 3],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct RadianceCascadeUpdateInfo {
-    pub inv_view_matrix: [[f32; 4]; 4],
-}
-
 pub struct GraphicsState {
     pub resources: GraphicsResources,
     pub swapchain: Arc<vulkano::swapchain::Swapchain>,
@@ -210,13 +136,12 @@ pub struct GraphicsState {
     pub depth_image: Arc<VulkanImage>,
     pub egui_renderer: egui_renderer::Renderer,
     pub graphics_options: GraphicsOptions,
-    pub radiance_cascades: RadianceCascadeState,
     pub block_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
     pub generic_block_graphics_pipeline_layout: Arc<VulkanPipelineLayout>,
     pub tinted_block_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
     pub custom_block_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
-    pub custom_block_vertices_buffer: VulkanSubbuffer<[chunk_rc::custom_block::Vertex]>,
-    pub custom_block_indices_buffer: VulkanSubbuffer<[u32]>,
+    pub custom_block_faces_buffer: VulkanSubbuffer<[[chunk::custom_block::Vertex; 4]]>,
+    pub custom_block_faces_descriptor_set: Arc<VulkanDescriptorSet>,
     pub camera_buffer: VulkanSubbuffer<[[f32; 4]; 4]>,
     pub camera_descriptor_set: Arc<VulkanDescriptorSet>,
     pub matrices_descriptor_set: Arc<VulkanDescriptorSet>,
@@ -263,10 +188,6 @@ impl GraphicsState {
         // Find a suitable physical device
         let required_extensions = VulkanDeviceExtensions {
             khr_swapchain: true,
-            // NOTE: RADIANCE CASCADES
-            khr_shader_non_semantic_info: true,
-            khr_acceleration_structure: true,
-            khr_ray_query: true,
             ..VulkanDeviceExtensions::empty()
         };
         let required_features = VulkanDeviceFeatures {
@@ -276,10 +197,6 @@ impl GraphicsState {
             shader_int16: true,
             storage_buffer8_bit_access: true,
             storage_buffer16_bit_access: true,
-            // NOTE: RADIANCE CASCADES
-            acceleration_structure: true,
-            buffer_device_address: true,
-            ray_query: true,
             ..VulkanDeviceFeatures::empty()
         };
         let (physical_device, render_queue_family_index, compute_queue_family_index) = instance
@@ -439,7 +356,7 @@ impl GraphicsState {
         )
         .context("Error while creating depth image")?;
         // Initialise egui renderer, for debug UI
-        let mut egui_renderer = egui_renderer::Renderer::new(
+        let egui_renderer = egui_renderer::Renderer::new(
             &device,
             &(memory_allocator.clone() as Arc<_>),
             &(descriptor_set_allocator.clone() as Arc<_>),
@@ -450,9 +367,9 @@ impl GraphicsState {
         let (
             block_item_texture_atlas,
             block_item_atlas_size,
+            custom_block_faces_buffer,
             block_registry,
-            custom_block_vertices_buffer,
-            custom_block_indices_buffer,
+            model_registry,
         ) = {
             let size = [1024; 2];
             let square_length = 16;
@@ -469,10 +386,10 @@ impl GraphicsState {
                 command_buffer_allocator.clone(),
             )
             .context("Failed while building block and item atlas")?;
-            let custom_block_vertices_buffer = VulkanBuffer::from_iter(
+            let custom_block_faces_buffer = VulkanBuffer::from_iter(
                 &memory_allocator,
                 &VulkanBufferCreateInfo {
-                    usage: VulkanBufferUsage::VERTEX_BUFFER | VulkanBufferUsage::STORAGE_BUFFER,
+                    usage: VulkanBufferUsage::STORAGE_BUFFER,
                     ..Default::default()
                 },
                 &VulkanAllocationCreateInfo {
@@ -481,53 +398,24 @@ impl GraphicsState {
                     allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
                     ..Default::default()
                 },
-                model_cache
-                    .custom_block_faces
-                    .iter()
-                    // NOTE: RADIANCE CASCADES
-                    .map(|face| {
-                        face.map(|v| {
-                            chunk::custom_block::Vertex::new(
-                                *v.local_pos.coords.as_ref(),
-                                v.uvs,
-                                *v.normal.as_ref(),
-                                matches!(v.tint, Some(Tint::Biome)),
-                            )
-                        })
-                    }),
-                // .map(|face| face.map(|v| GraphicsCustomBlockVertex {
-                //     pos: *v.local_pos.coords.as_ref(),
-                //     uvs: v.uvs,
-                //     normal: *v.normal.as_ref(),
-                //     tint_percentage: match v.tint {
-                //         None => 0.0,
-                //         Some(Tint::Biome) => 1.0,
-                //     },
-                // })),
+                model_cache.custom_block_faces.iter().map(|face| {
+                    face.map(|v| {
+                        chunk::custom_block::Vertex::new(
+                            *v.local_pos.coords.as_ref(),
+                            v.uvs,
+                            *v.normal.as_ref(),
+                            matches!(v.tint, Some(Tint::Biome)),
+                        )
+                    })
+                }),
             )
-            .context("Error while creating custom block vertices buffer")?
-            .reinterpret::<[chunk::custom_block::Vertex]>();
-            let custom_block_indices_buffer = VulkanBuffer::from_iter(
-                &memory_allocator,
-                &VulkanBufferCreateInfo {
-                    usage: VulkanBufferUsage::INDEX_BUFFER | VulkanBufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &VulkanAllocationCreateInfo {
-                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
-                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
-                    ..Default::default()
-                },
-                model_cache.custom_block_indices,
-            )
-            .context("Error while creating custom block indices buffer")?;
+            .context("Error while creating custom block faces buffer")?;
             (
                 atlas,
                 size,
+                custom_block_faces_buffer,
                 block_registry,
-                custom_block_vertices_buffer,
-                custom_block_indices_buffer,
+                model_cache.finish(),
             )
         };
         let camera = Camera {
@@ -575,6 +463,22 @@ impl GraphicsState {
             },
         )
         .context("Error while creating matrices descriptor set layout")?;
+        let custom_block_faces_descriptor_set_layout = VulkanDescriptorSetLayout::new(
+            &device,
+            &VulkanDescriptorSetLayoutCreateInfo {
+                bindings: &[VulkanDescriptorSetLayoutBinding {
+                    binding: 0,
+                    binding_flags: VulkanDescriptorBindingFlags::empty(),
+                    descriptor_type: VulkanDescriptorType::StorageBuffer,
+                    descriptor_count: 1,
+                    stages: VulkanShaderStages::VERTEX | VulkanShaderStages::COMPUTE,
+                    immutable_samplers: &[],
+                    _ne: vulkano_non_exhaustive(),
+                }],
+                ..Default::default()
+            },
+        )
+        .context("Error while creating custom block faces descriptor set layout")?;
         let block_item_atlas_descriptor_set_layout = VulkanDescriptorSetLayout::new(
             &device,
             &VulkanDescriptorSetLayoutCreateInfo {
@@ -648,7 +552,7 @@ impl GraphicsState {
                     | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            chunk_rc::block_face::face_matrices::generate_array(),
+            chunk::block_face::face_matrices::generate_array(),
         )
         .context("Error while creating face matrices buffer")?;
         let matrices_descriptor_set = VulkanDescriptorSet::new(
@@ -658,6 +562,16 @@ impl GraphicsState {
             [],
         )
         .context("Error while creating matrices descriptor set")?;
+        let custom_block_faces_descriptor_set = VulkanDescriptorSet::new(
+            descriptor_set_allocator.clone(),
+            custom_block_faces_descriptor_set_layout.clone(),
+            [VulkanWriteDescriptorSet::buffer(
+                0,
+                custom_block_faces_buffer.clone(),
+            )],
+            [],
+        )
+        .context("Error while creating custom block faces descriptor set")?;
         let block_item_atlas_size_buffer = VulkanBuffer::from_data(
             &memory_allocator,
             &VulkanBufferCreateInfo {
@@ -683,22 +597,6 @@ impl GraphicsState {
             [],
         )
         .context("Error while creating matrices descriptor set")?;
-        let radiance_probe_lightmap_render_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[VulkanDescriptorSetLayoutBinding {
-                    binding: 0,
-                    binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    descriptor_type: VulkanDescriptorType::StorageBuffer,
-                    descriptor_count: 1,
-                    stages: VulkanShaderStages::FRAGMENT,
-                    immutable_samplers: &[],
-                    _ne: vulkano_non_exhaustive(),
-                }],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating lightmap render descriptor set layout")?;
         // Block graphics pipelines
         let generic_block_graphics_pipeline_layout = VulkanPipelineLayout::new(
             &device,
@@ -707,332 +605,44 @@ impl GraphicsState {
                     &camera_descriptor_set_layout,
                     &block_item_atlas_descriptor_set_layout,
                     &matrices_descriptor_set_layout,
-                    &radiance_probe_lightmap_render_descriptor_set_layout,
+                    &custom_block_faces_descriptor_set_layout,
                 ],
                 ..Default::default()
             },
         )
         .context("Error while creating block graphics pipeline layout")?;
-        let block_graphics_pipeline = chunk_rc::block_face::create_graphics_pipeline(
+        let block_graphics_pipeline = chunk::block_face::create_graphics_pipeline(
             &device,
             &generic_block_graphics_pipeline_layout,
             &render_pass.first_subpass(),
         )
         .context("Error while creating block graphics pipeline")?;
-        let tinted_block_graphics_pipeline = chunk_rc::tinted_block_face::create_graphics_pipeline(
+        let tinted_block_graphics_pipeline = chunk::tinted_block_face::create_graphics_pipeline(
             &device,
             &generic_block_graphics_pipeline_layout,
             &render_pass.first_subpass(),
         )
         .context("Error while creating tinted block graphics pipeline")?;
-        let custom_block_graphics_pipeline = chunk_rc::custom_block::create_graphics_pipeline(
+        let custom_block_graphics_pipeline = chunk::custom_block::create_graphics_pipeline(
             &device,
             &generic_block_graphics_pipeline_layout,
             &render_pass.first_subpass(),
         )
         .context("Error while creating custom block graphics pipeline")?;
         // Buffer managers
-        let render_queue_family_index = render_queue.queue_family_index();
-        let compute_queue_family_index = compute_queue.queue_family_index();
         let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device)
             .context("Error while creating block face vertex buffer manager")?;
-        let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(
-            &device,
-            render_queue_family_index,
-            compute_queue_family_index,
-        )
-        .context("Error while creating block face instance buffer manager")?;
+        let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device)
+            .context("Error while creating block face instance buffer manager")?;
         let tinted_block_face_vertex_buffer_manager =
             TintedBlockFaceVertexBufferManager::new(&device)
                 .context("Error while creating tinted block face vertex buffer manager")?;
-        let tinted_block_face_instance_buffer_manager = TintedBlockFaceInstanceBufferManager::new(
-            &device,
-            render_queue_family_index,
-            compute_queue_family_index,
-        )
-        .context("Error while creating tinted block face instance buffer manager")?;
+        let tinted_block_face_instance_buffer_manager =
+            TintedBlockFaceInstanceBufferManager::new(&device)
+                .context("Error while creating tinted block face instance buffer manager")?;
         let custom_block_instance_buffer_manager =
             CustomBlockInstanceBufferManager::new(&device)
                 .context("Error while creating custom block instance buffer manager")?;
-        // XXX: DEBUG
-        let radiance_cascade_debug_egui_image = VulkanImage::new(
-            &memory_allocator,
-            &VulkanImageCreateInfo {
-                image_type: VulkanImageType::Dim2d,
-                format: VulkanFormat::R8G8B8A8_UNORM,
-                extent: [960, 540, 1],
-                usage: VulkanImageUsage::STORAGE | VulkanImageUsage::SAMPLED,
-                ..Default::default()
-            },
-            &VulkanAllocationCreateInfo {
-                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
-                allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
-                ..Default::default()
-            },
-        )
-        .context("Error while creating radiance probe debug image")?;
-        let radiance_probe_debug_egui_image_id = egui_renderer
-            .register_user_image(
-                &device,
-                &(descriptor_set_allocator.clone() as Arc<_>),
-                radiance_cascade_debug_egui_image.clone(),
-                egui::TextureOptions::NEAREST,
-            )
-            .context("Error while registering radiance probe debug image ID")?;
-        let radiance_probe_debug_info_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[
-                    // Block and item raw atlas colour image
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 0,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::SampledImage,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // Block and item raw atlas luma image
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 1,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::SampledImage,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // World TLAS
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 2,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::AccelerationStructure,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // World TLAS info buffer
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 3,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // World TLAS quads buffer
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 4,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                ],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating radiance probe debug info descriptor set layout")?;
-        let radiance_probe_info_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[
-                    // Block and item raw atlas colour image
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 0,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::SampledImage,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // Block and item raw atlas luma image
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 1,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::SampledImage,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // World TLAS
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 2,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::AccelerationStructure,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // World TLAS info buffer
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 3,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // World TLAS quads buffer
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 4,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // Cascade update info buffer
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 5,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // Block face instances
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 6,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // Light block tree
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 7,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                ],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating radiance probe info descriptor set layout")?;
-        let radiance_probe_debug_texture_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[VulkanDescriptorSetLayoutBinding {
-                    binding: 0,
-                    binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    descriptor_type: VulkanDescriptorType::StorageImage,
-                    descriptor_count: 1,
-                    stages: VulkanShaderStages::COMPUTE,
-                    immutable_samplers: &[],
-                    _ne: vulkano_non_exhaustive(),
-                }],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating radiance probe debug texture descriptor set layout")?;
-        let radiance_cascade_debug_egui_image_view =
-            VulkanImageView::new_default(&radiance_cascade_debug_egui_image)
-                .context("Error while creating radiance probe debug image view")?;
-        let radiance_probe_debug_texture_descriptor_set = VulkanDescriptorSet::new(
-            descriptor_set_allocator.clone(),
-            radiance_probe_debug_texture_descriptor_set_layout.clone(),
-            [VulkanWriteDescriptorSet::image_view(
-                0,
-                radiance_cascade_debug_egui_image_view,
-            )],
-            [],
-        )
-        .context("Error while creating radiance probe debug texture descriptor set")?;
-        let radiance_probe_lightmaps_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 0,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::StorageBuffer,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::COMPUTE,
-                        immutable_samplers: &[],
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // (
-                    //     1,
-                    //     VulkanDescriptorSetLayoutBinding {
-                    //         binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    //         descriptor_type: VulkanDescriptorType::StorageBuffer,
-                    //         descriptor_count: 1,
-                    //         stages: VulkanShaderStages::COMPUTE,
-                    //         immutable_samplers: vec![],
-                    //         _ne: vulkano_non_exhaustive(),
-                    //     },
-                    // ),
-                ],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating radiance probe lightmaps descriptor set layout")?;
-        let radiance_probe_debug_pipeline_layout = VulkanPipelineLayout::new(
-            &device,
-            &VulkanPipelineLayoutCreateInfo {
-                set_layouts: &[
-                    &radiance_probe_debug_info_descriptor_set_layout,
-                    &radiance_probe_debug_texture_descriptor_set_layout,
-                ],
-                push_constant_ranges: &[VulkanPushConstantRange {
-                    stages: VulkanShaderStages::COMPUTE,
-                    offset: 0,
-                    size: std::mem::size_of::<RadianceCascadeUpdateInfo>()
-                        .try_into()
-                        .unwrap(),
-                }],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating radiance probe debug pipeline layout")?;
-        let radiance_probe_update_pipeline_layout = VulkanPipelineLayout::new(
-            &device,
-            &VulkanPipelineLayoutCreateInfo {
-                set_layouts: &[
-                    &radiance_probe_info_descriptor_set_layout,
-                    &radiance_probe_lightmaps_descriptor_set_layout,
-                    &matrices_descriptor_set_layout,
-                ],
-                push_constant_ranges: &[
-                    // `update_info_idx`
-                    VulkanPushConstantRange {
-                        stages: VulkanShaderStages::COMPUTE,
-                        offset: 0,
-                        size: 4,
-                    },
-                ],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating radiance cascade update pipeline layout")?;
-        let radiance_probe_debug_pipeline = chunk_rc::compute::create_raytracing_debug_pipeline(
-            &device,
-            &radiance_probe_debug_pipeline_layout,
-        )
-        .context("Error while creating radiance probe debug pipeline")?;
-        let radiance_probe_update_pipelines = chunk_rc::compute::create_cascade_update_pipelines(
-            &device,
-            &radiance_probe_update_pipeline_layout,
-        )
-        .context("Error while creating radiance probe update pipelines")?;
         // Debug pipelines
         let debug_point_pipeline = debug::point::create_graphics_pipeline(
             &device,
@@ -1059,38 +669,19 @@ impl GraphicsState {
                 descriptor_set_allocator,
                 render_pass,
                 block_registry: Arc::new(block_registry),
+                model_registry: Arc::new(model_registry),
             },
             swapchain,
             swapchain_images,
             depth_image,
             egui_renderer,
             graphics_options,
-            radiance_cascades: RadianceCascadeState {
-                tlas_info: None,
-                update_pipelines: radiance_probe_update_pipelines,
-                update_pipeline_layout: radiance_probe_update_pipeline_layout,
-                probe_debug_info_descriptor_set_layout:
-                    radiance_probe_debug_info_descriptor_set_layout,
-                probe_info_descriptor_set_layout: radiance_probe_info_descriptor_set_layout,
-                lightmaps_descriptor_set_layout: radiance_probe_lightmaps_descriptor_set_layout,
-                debug_texture_descriptor_set: radiance_probe_debug_texture_descriptor_set,
-                lightmap_render_descriptor_set_layout:
-                    radiance_probe_lightmap_render_descriptor_set_layout,
-                debug_info: Arc::new(Mutex::new(RadianceProbeDebugInfo::default())),
-                debug_egui_texture: egui::load::SizedTexture {
-                    id: radiance_probe_debug_egui_image_id,
-                    size: (960.0, 540.0).into(),
-                },
-                debug_pipeline: radiance_probe_debug_pipeline,
-                debug_pipeline_layout: radiance_probe_debug_pipeline_layout,
-                debug_light_tree: None,
-            },
             block_graphics_pipeline,
             generic_block_graphics_pipeline_layout,
             tinted_block_graphics_pipeline,
             custom_block_graphics_pipeline,
-            custom_block_vertices_buffer,
-            custom_block_indices_buffer,
+            custom_block_faces_buffer,
+            custom_block_faces_descriptor_set,
             camera_buffer,
             camera_descriptor_set,
             matrices_descriptor_set,
@@ -1175,7 +766,7 @@ impl GraphicsState {
     #[expect(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
+        subchunks: &AHashMap<[i32; 3], chunk::Subchunk>,
         loaded_chunks: &AHashSet<[i32; 2]>,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
@@ -1316,7 +907,7 @@ impl GraphicsState {
             let mut num_subchunks_rendered = 0;
             let mut block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
             let mut tinted_block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
-            let mut custom_block_draw_commands: Vec<VulkanDrawIndexedIndirectCommand> = Vec::new();
+            let mut custom_block_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
             while let Some(queued_chunk) = chunk_queue.pop_front() {
                 let QueuedChunk {
                     coords: chunk_coords,
@@ -1497,11 +1088,10 @@ impl GraphicsState {
                 }
                 // Custom blocks
                 for group in &subchunk.custom_block_groups {
-                    custom_block_draw_commands.push(VulkanDrawIndexedIndirectCommand {
-                        index_count: group.start_index_and_len[1],
+                    custom_block_draw_commands.push(VulkanDrawIndirectCommand {
+                        vertex_count: group.start_face_and_len[1] * 6,
                         instance_count: group.start_instance_and_len[1],
-                        first_index: group.start_index_and_len[0],
-                        vertex_offset: group.start_vertex,
+                        first_vertex: group.start_face_and_len[0] * 6,
                         first_instance: group.start_instance_and_len[0],
                     });
                 }
@@ -1565,20 +1155,6 @@ impl GraphicsState {
                 );
             }
         }
-        // let lightmap_buffers = self.buffer_managers.block_face_instance.get_lightmap_buffers();
-        let lightmap_buffer = self
-            .buffer_managers
-            .block_face_instance
-            .get_lightmap_render_buffer();
-        let lightmap_render_descriptor_set = VulkanDescriptorSet::new(
-            self.resources.descriptor_set_allocator.clone(),
-            self.radiance_cascades
-                .lightmap_render_descriptor_set_layout
-                .clone(),
-            [VulkanWriteDescriptorSet::buffer(0, lightmap_buffer.clone())],
-            [],
-        )
-        .context("Error while creating matrices descriptor set")?;
         // Render blocks
         command_buffer
             // Need to bind a pipeline with compatible layout for binding descriptor sets
@@ -1592,7 +1168,7 @@ impl GraphicsState {
                     self.camera_descriptor_set.clone(),
                     self.block_item_atlas_descriptor_set.clone(),
                     self.matrices_descriptor_set.clone(),
-                    lightmap_render_descriptor_set,
+                    self.custom_block_faces_descriptor_set.clone(),
                 ),
             )
             .unwrap()
@@ -1608,13 +1184,6 @@ impl GraphicsState {
             unsafe {
                 // Block graphics pipeline already bound
                 command_buffer
-                    // .bind_descriptor_sets(
-                    //     VulkanPipelineBindPoint::Graphics,
-                    //     self.generic_block_graphics_pipeline_layout.clone(),
-                    //     3,
-                    //     vec![lightmap_render_descriptor_set],
-                    // )
-                    // .unwrap()
                     .bind_vertex_buffers(
                         0,
                         (
@@ -1651,15 +1220,10 @@ impl GraphicsState {
                     .unwrap()
                     .bind_vertex_buffers(
                         0,
-                        (
-                            self.custom_block_vertices_buffer.clone(),
-                            self.buffer_managers.custom_block_instance.get_buffer(),
-                        ),
+                        (self.buffer_managers.custom_block_instance.get_buffer(),),
                     )
                     .unwrap()
-                    .bind_index_buffer(self.custom_block_indices_buffer.clone())
-                    .unwrap()
-                    .draw_indexed_indirect(draw_commands_buffer)
+                    .draw_indirect(draw_commands_buffer)
                     .unwrap();
             }
         }
@@ -1793,14 +1357,14 @@ impl GraphicsState {
                 queue_guard
                     .submit(
                         &[VulkanSubmitInfo {
-                            command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
-                                built_command_buffer.clone(),
+                            command_buffers: &[VulkanCommandBufferSubmitInfo::new(
+                                built_command_buffer.as_raw(),
                             )],
-                            wait_semaphores: vec![VulkanSemaphoreSubmitInfo::new(
-                                swapchain_semaphore,
+                            wait_semaphores: &[VulkanSemaphoreSubmitInfo::new(
+                                &swapchain_semaphore,
                             )],
-                            signal_semaphores: vec![
-                                VulkanSemaphoreSubmitInfo::new(render_semaphore.clone()),
+                            signal_semaphores: &[
+                                VulkanSemaphoreSubmitInfo::new(&render_semaphore),
                                 // VulkanSemaphoreSubmitInfo::new(render_semaphore_2.clone()),
                             ],
                             ..Default::default()
@@ -1835,719 +1399,6 @@ impl GraphicsState {
             subchunks_culled: subchunks_skipped,
             subchunk_traversal_graph,
         })
-    }
-
-    pub fn radiance_cascades_debug_render(
-        &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
-    ) {
-        // XXX: DEBUG
-        // TODO: Clear output image if there's nothing to display
-        if subchunks.is_empty() {
-            return;
-        }
-        let Some(tlas_info) = self.radiance_cascades.tlas_info.clone() else {
-            return;
-        };
-        let radiance_probe_info_descriptor_set = VulkanDescriptorSet::new(
-            self.resources.descriptor_set_allocator.clone(),
-            self.radiance_cascades
-                .probe_debug_info_descriptor_set_layout
-                .clone(),
-            [
-                VulkanWriteDescriptorSet::image_view(0, self.block_item_atlas.view.clone()),
-                VulkanWriteDescriptorSet::image_view(1, self.block_item_atlas.luma_view.clone()),
-                VulkanWriteDescriptorSet::acceleration_structure(2, tlas_info.world_tlas),
-                VulkanWriteDescriptorSet::buffer(3, tlas_info.instance_info_buffer),
-                VulkanWriteDescriptorSet::buffer(4, tlas_info.quads_info_buffer),
-            ],
-            [],
-        )
-        .context("Error while creating radiance probe info descriptor set")
-        .unwrap();
-        let queue = &self.resources.compute_queue;
-        // let queue = &self.resources.queues[0];
-        let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
-            self.resources.command_buffer_allocator.clone(),
-            queue.queue_family_index(),
-            VulkanCommandBufferUsage::OneTimeSubmit,
-        )
-        .context("Error while creating radiance probe debug command buffer builder")
-        .unwrap();
-        unsafe {
-            command_buffer
-                .bind_pipeline_compute(self.radiance_cascades.debug_pipeline.clone())
-                .unwrap()
-                .bind_descriptor_sets(
-                    VulkanPipelineBindPoint::Compute,
-                    self.radiance_cascades.debug_pipeline_layout.clone(),
-                    0,
-                    (
-                        radiance_probe_info_descriptor_set,
-                        self.radiance_cascades.debug_texture_descriptor_set.clone(),
-                    ),
-                )
-                .unwrap()
-                .push_constants(
-                    self.radiance_cascades.debug_pipeline_layout.clone(),
-                    0,
-                    RadianceCascadeUpdateInfo {
-                        inv_view_matrix: *self
-                            .camera
-                            .generate_view_matrix()
-                            .try_inverse()
-                            .unwrap()
-                            .as_ref(),
-                    },
-                )
-                .unwrap()
-                .dispatch([960 / 16, 540 / 4, 1])
-                // .dispatch([1, 1, 1])
-                .unwrap();
-        }
-        let built_command_buffer = command_buffer.build().unwrap();
-        vulkano::sync::now(self.resources.device.clone())
-            .then_execute(queue.clone(), built_command_buffer)
-            .unwrap()
-            .flush()
-            .unwrap();
-    }
-
-    pub fn update_all_subchunks_radiance_lighting(
-        &mut self,
-        thread_pool: &ThreadPool,
-        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
-        raw_chunks: &AHashMap<[i32; 2], Arc<RawChunk>>,
-    ) {
-        if subchunks.is_empty() {
-            return;
-        }
-        let Some(tlas_info) = self.radiance_cascades.tlas_info.clone() else {
-            return;
-        };
-        let queue = self.resources.compute_queue.clone();
-        let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
-            self.resources.command_buffer_allocator.clone(),
-            queue.queue_family_index(),
-            VulkanCommandBufferUsage::OneTimeSubmit,
-        )
-        .context("Error while creating radiance probe update command buffer builder")
-        .unwrap();
-        let (update_info_buffer, num_updates, update_lengths, _buffer_copy_regions) = {
-            #[repr(C)]
-            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-            struct UpdateInfo {
-                pub subchunk_start_coords: [f32; 3],
-                pub faces_start: u32,
-                pub faces_len: u32,
-                pub faces_dir_i: u32,
-            }
-            let mut updates = Vec::new();
-            let mut max_dispatch_width = 0;
-            let mut buffer_copy_regions: SmallVec<[VulkanBufferCopy; 1]> = SmallVec::new();
-            for subchunk in subchunks.values() {
-                // XXX: DEBUG
-                let subchunk_list = [
-                    [0, 112, -16],
-                    [0, 112, 0],
-                    [-16, 112, 0],
-                    [-16, 112, -16],
-                    [0, 144, -32],
-                    [16, 144, -32],
-                    [16, 144, -16],
-                    [0, 144, -16],
-                ];
-                if !subchunk_list.contains(&subchunk.start_coords) {
-                    continue;
-                }
-                // if subchunk.start_coords[1] < 60 {
-                //     continue;
-                // }
-                for dir_i in 0..6 {
-                    if subchunk.block_face_start_vertices[dir_i] != u32::MAX {
-                        let instance_group = &subchunk.block_face_instance_groups[dir_i];
-                        updates.push(UpdateInfo {
-                            subchunk_start_coords: subchunk.start_coords.map(|n| n as f32),
-                            faces_start: instance_group.0,
-                            faces_len: instance_group.1,
-                            faces_dir_i: dir_i.try_into().unwrap(),
-                        });
-                        let instance_byte_size =
-                            std::mem::size_of::<chunk_rc::block_face::Instance>()
-                                as VulkanDeviceSize;
-                        let byte_offset =
-                            (instance_group.0 as VulkanDeviceSize) * instance_byte_size;
-                        buffer_copy_regions.push(VulkanBufferCopy {
-                            src_offset: byte_offset,
-                            dst_offset: byte_offset,
-                            size: (instance_group.1 as VulkanDeviceSize) * instance_byte_size,
-                            ..Default::default()
-                        });
-                        let dispatch_width = instance_group.1;
-                        if dispatch_width > max_dispatch_width {
-                            max_dispatch_width = dispatch_width;
-                        }
-                    }
-                }
-            }
-            let num_updates: u32 = updates.len().try_into().unwrap();
-            let update_lengths: Vec<u32> = updates
-                .iter()
-                .map(|update_info| update_info.faces_len)
-                .collect();
-            // let update_info_buffer = VulkanBuffer::from_iter(
-            //     self.resources.memory_allocator.clone(),
-            //     VulkanBufferCreateInfo {
-            //         usage: VulkanBufferUsage::STORAGE_BUFFER,
-            //         ..Default::default()
-            //     },
-            //     VulkanAllocationCreateInfo {
-            //         memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
-            //             | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            //         ..Default::default()
-            //     },
-            //     updates,
-            // )
-            // .context("Error while creating update info buffer")
-            // .unwrap();
-            let update_info_buffer = vulkan_new_buffer_slice(
-                &(self.resources.memory_allocator.clone() as Arc<_>),
-                &VulkanBufferCreateInfo {
-                    usage: VulkanBufferUsage::STORAGE_BUFFER | VulkanBufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &VulkanAllocationCreateInfo {
-                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
-                updates.len().try_into().unwrap(),
-            )
-            .context("Error while creating update info buffer")
-            .unwrap();
-            command_buffer
-                .update_buffer(update_info_buffer.clone(), updates.into_boxed_slice())
-                .unwrap();
-            (
-                update_info_buffer,
-                num_updates,
-                update_lengths,
-                buffer_copy_regions,
-            )
-        };
-        // Find all light-emitting blocks, organise into a tree
-        let light_tree_buffer = {
-            const EMISSION_TO_BRIGHTNESS_COEF: f32 = 1.0;
-            const BRIGHTNESS_TO_MAX_RADIUS_COEF: f32 = 1.2;
-            #[derive(Clone, Copy, Debug, Default)]
-            struct RawLightNode {
-                pub sphere_centre: Point3<f32>,
-                pub sphere_radius: f32,
-                pub brightness: f32,
-                pub aabb: AABB,
-                // pub children: Option<Box<[RawLightNode; 2]>>,
-                pub children: Option<[u32; 2]>,
-            }
-            let mut nodes: Vec<RawLightNode> = Vec::new();
-            // Find all light emitting blocks in the world, add as base nodes.
-            for (chunk_xz, raw_chunk) in raw_chunks {
-                for (subchunk_yi_usize, raw_subchunk) in raw_chunk.sections.iter().enumerate() {
-                    let subchunk_yi: i32 = subchunk_yi_usize.try_into().unwrap();
-                    if raw_subchunk.block_count == 0 {
-                        continue;
-                    }
-                    let subchunk_start_x = chunk_xz[0] * SUBCHUNK_AXIS_LEN_I32;
-                    let subchunk_start_y = (subchunk_yi * SUBCHUNK_AXIS_LEN_I32) + MIN_HEIGHT_I32;
-                    let subchunk_start_z = chunk_xz[1] * SUBCHUNK_AXIS_LEN_I32;
-                    let block_registry = &self.resources.block_registry;
-                    let subchunk_light_nodes = raw_subchunk
-                        .block_states
-                        .get_all_of_types(block_registry.light_emitting_blockstates())
-                        .into_iter()
-                        .map(|([x_u8, y_u8, z_u8], blockstate_idx)| {
-                            use resources::block::blockstate::ModelData;
-                            use resources::block::model::ModelType;
-                            let global_x_f32 = (subchunk_start_x + i32::from(x_u8)) as f32;
-                            let global_y_f32 = (subchunk_start_y + i32::from(y_u8)) as f32;
-                            let global_z_f32 = (subchunk_start_z + i32::from(z_u8)) as f32;
-                            let global_pos = Point3::new(global_x_f32, global_y_f32, global_z_f32);
-                            let blockstate = &block_registry[blockstate_idx];
-                            let emission_level = blockstate.extra_info.light_info.emission_level;
-                            debug_assert_ne!(emission_level, 0);
-                            let brightness =
-                                (emission_level as f32).powi(2) * EMISSION_TO_BRIGHTNESS_COEF;
-                            let sphere_radius = brightness.sqrt() * BRIGHTNESS_TO_MAX_RADIUS_COEF;
-                            // TODO: Add custom AABBs for some blocks
-                            fn model_to_aabb(model: &ModelType) -> AABB {
-                                match model {
-                                    ModelType::Other(other_model) => {
-                                        let faces = &other_model.faces;
-                                        let mut corner_1 = faces[0][0].local_pos.coords;
-                                        let mut corner_2 = corner_1;
-                                        for vertex in faces.iter().flatten() {
-                                            corner_1 = corner_1.inf(&vertex.local_pos.coords);
-                                            corner_2 = corner_2.sup(&vertex.local_pos.coords);
-                                        }
-                                        let offset = Vector3::repeat(0.5);
-                                        AABB {
-                                            corner_1: Point3::from(corner_1) + offset,
-                                            corner_2: Point3::from(corner_2) + offset,
-                                        }
-                                    }
-                                    _ => AABB {
-                                        corner_1: Point3::origin(),
-                                        corner_2: Point3::new(1.0, 1.0, 1.0),
-                                    },
-                                }
-                            }
-                            let local_aabb = match &blockstate.model_data {
-                                ModelData::Single(model) => model_to_aabb(model.as_ref()),
-                                ModelData::RandomChoice(models) => models
-                                    .iter()
-                                    .map(|model| model_to_aabb(model.model.as_ref()))
-                                    .reduce(|acc, aabb| acc.max(&aabb))
-                                    .unwrap(),
-                            };
-                            let aabb = local_aabb + global_pos.coords;
-                            RawLightNode {
-                                sphere_centre: global_pos + Vector3::repeat(0.5),
-                                sphere_radius,
-                                brightness,
-                                aabb,
-                                children: None,
-                            }
-                        });
-                    nodes.extend(subchunk_light_nodes);
-                }
-            }
-            // TODO
-            // - Go through all pairs in list, test for sphere combining.
-            // - If we find a valid pair, add to back of list, and restart pair search.
-            // - (Note that we'll definitely need a faster method later for pair search, but we can
-            //    do that once we've found a good distance for chunking.)
-            // - If a full run of pair search ends, then we're done, and we're only left with root
-            //   nodes.
-            // NOTES
-            // - We'll definitely need a faster method later for pair search, but we can do that
-            //   once we've found a good distance for chunking.
-            // - It's probably best to find the pair with the smallest valid combined sphere, so
-            //   that we end up with more balanced trees.
-            // XXX: DEBUG
-            dbg!(nodes.len());
-            let start_time = std::time::Instant::now();
-            if !nodes.is_empty() {
-                #[expect(clippy::too_many_arguments)]
-                fn process_sublist(
-                    current_depth: usize,
-                    current_sublist_start_i: usize,
-                    sublist: &mut [RawLightNode],
-                    branch_nodes_start_i: usize,
-                    branch_nodes: &mut [RawLightNode],
-                    current_branch_node_i: &mut usize,
-                    positive_diff_sum: &mut f32,
-                    negative_diff_sum: &mut f32,
-                ) -> (usize, RawLightNode) {
-                    let key_function: fn(&RawLightNode) -> NotNan<f32> = match current_depth % 3 {
-                        0 => |node| NotNan::new(node.sphere_centre.x).unwrap(),
-                        1 => |node| NotNan::new(node.sphere_centre.y).unwrap(),
-                        2 => |node| NotNan::new(node.sphere_centre.z).unwrap(),
-                        _ => unreachable!(),
-                    };
-                    sublist.sort_unstable_by_key(key_function);
-                    if sublist.len() == 1 {
-                        (current_sublist_start_i, sublist[0])
-                    } else {
-                        let pivot_i = sublist.len() / 2;
-                        let (left_sublist, right_sublist) = sublist.split_at_mut(pivot_i);
-                        let (left_child_i, left_child) = process_sublist(
-                            current_depth + 1,
-                            current_sublist_start_i,
-                            left_sublist,
-                            branch_nodes_start_i,
-                            branch_nodes,
-                            current_branch_node_i,
-                            positive_diff_sum,
-                            negative_diff_sum,
-                        );
-                        let (right_child_i, right_child) = process_sublist(
-                            current_depth + 1,
-                            current_sublist_start_i + pivot_i,
-                            right_sublist,
-                            branch_nodes_start_i,
-                            branch_nodes,
-                            current_branch_node_i,
-                            positive_diff_sum,
-                            negative_diff_sum,
-                        );
-                        let tree_node_i = *current_branch_node_i;
-                        *current_branch_node_i += 1;
-                        let tree_node = &mut branch_nodes[tree_node_i];
-                        {
-                            let node_dist =
-                                (left_child.sphere_centre - right_child.sphere_centre).magnitude();
-                            let threshold_radius =
-                                (node_dist + left_child.sphere_radius + right_child.sphere_radius)
-                                    / 2.0;
-                            let brightness = left_child.brightness + right_child.brightness;
-                            let radius = brightness.sqrt() * BRIGHTNESS_TO_MAX_RADIUS_COEF;
-                            if radius >= threshold_radius {
-                                *positive_diff_sum += radius - threshold_radius;
-                            } else {
-                                *negative_diff_sum += threshold_radius - radius;
-                            }
-                            *tree_node = RawLightNode {
-                                sphere_centre: Point3::from(
-                                    (left_child.sphere_centre.coords
-                                        + right_child.sphere_centre.coords)
-                                        / 2.0,
-                                ),
-                                sphere_radius: f32::max(radius, threshold_radius),
-                                brightness,
-                                aabb: AABB::max(&left_child.aabb, &right_child.aabb),
-                                children: Some([
-                                    left_child_i.try_into().unwrap(),
-                                    right_child_i.try_into().unwrap(),
-                                ]),
-                            };
-                        }
-                        (branch_nodes_start_i + tree_node_i, *tree_node)
-                    }
-                }
-                // Add dummy nodes to nodes list, which will be replaced with branch nodes.
-                let branch_nodes_start_i = nodes.len();
-                // XXX: DEBUG
-                {
-                    let num_branch_layers =
-                        (usize::BITS - nodes.len().saturating_sub(1).leading_zeros()) as usize;
-                    let max_depth = num_branch_layers + 1;
-                    dbg!(max_depth);
-                }
-                let num_branch_nodes = if nodes.len() == 1 {
-                    0
-                } else {
-                    let mut num_current_layer_nodes = nodes.len().div_ceil(2);
-                    let mut sum = 0;
-                    while num_current_layer_nodes > 1 {
-                        sum += num_current_layer_nodes;
-                        num_current_layer_nodes = num_current_layer_nodes.div_ceil(2);
-                    }
-                    sum + 1
-                };
-                nodes.extend(std::iter::repeat_n(
-                    RawLightNode::default(),
-                    num_branch_nodes,
-                ));
-                let (leaf_nodes, branch_nodes) = nodes.split_at_mut(branch_nodes_start_i);
-                let mut positive_diff_sum = 0.0;
-                let mut negative_diff_sum = 0.0;
-                let mut current_branch_node_i = 0;
-                process_sublist(
-                    0,
-                    0,
-                    leaf_nodes,
-                    branch_nodes_start_i,
-                    branch_nodes,
-                    // &mut 0,
-                    &mut current_branch_node_i,
-                    &mut positive_diff_sum,
-                    &mut negative_diff_sum,
-                );
-                dbg!(positive_diff_sum, negative_diff_sum);
-                // HACK: The number of branch nodes we allocate seems to be a bit too big?
-                nodes.drain(branch_nodes_start_i + current_branch_node_i..);
-                dbg!(nodes.len(), branch_nodes_start_i, current_branch_node_i);
-            }
-            // XXX: DEBUG
-            println!(
-                "Tree construction took {:?}",
-                std::time::Instant::now() - start_time
-            );
-            // Convert nodes
-            let converted_light_nodes: Vec<LightNode> = nodes
-                .into_iter()
-                .map(|node| LightNode {
-                    sphere_centre: node.sphere_centre.into(),
-                    sphere_radius: node.sphere_radius,
-                    aabb_corner_1: node.aabb.corner_1.into(),
-                    aabb_corner_2: node.aabb.corner_2.into(),
-                    children: node.children.unwrap_or([u32::MAX; 2]),
-                })
-                .collect();
-            dbg!(converted_light_nodes[converted_light_nodes.len() - 1]);
-            // XXX: DEBUG
-            {
-                // Write tree representation to file
-                use std::fmt::Write;
-                let mut tree_string = String::new();
-                let mut current_indent: usize = 0;
-                let mut node_stack: Vec<(usize, LightNode)> = Vec::new();
-                let mut max_node_stack_len = 0;
-                let mut current_node: LightNode =
-                    converted_light_nodes[converted_light_nodes.len() - 1];
-                loop {
-                    if current_node.children[0] == u32::MAX {
-                        // Leaf node
-                        writeln!(
-                            &mut tree_string,
-                            "{:current_indent$}Leaf(sph: ({:.2?}, {:.2}), aabb: [{:.2?}, {:.2?}])",
-                            "",
-                            current_node.sphere_centre,
-                            current_node.sphere_radius,
-                            current_node.aabb_corner_1,
-                            current_node.aabb_corner_2,
-                        )
-                        .unwrap();
-                        if let Some((new_indent, parent_node)) = node_stack.pop() {
-                            current_node = parent_node;
-                            current_indent = new_indent;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        // Branch node
-                        writeln!(
-                            &mut tree_string,
-                            "{:current_indent$}Branch(sph: ({:.2?}, {:.2}), aabb: [{:.2?}, {:.2?}]):",
-                            "",
-                            current_node.sphere_centre,
-                            current_node.sphere_radius,
-                            current_node.aabb_corner_1,
-                            current_node.aabb_corner_2,
-                        )
-                        .unwrap();
-                        // Push right child to stack, switch to left child
-                        current_indent += 1;
-                        let left_child_i = current_node.children[0] as usize;
-                        let right_child_i = current_node.children[1] as usize;
-                        let left_child = converted_light_nodes[left_child_i];
-                        let right_child = converted_light_nodes[right_child_i];
-                        node_stack.push((current_indent, right_child));
-                        max_node_stack_len = max_node_stack_len.max(node_stack.len());
-                        current_node = left_child;
-                    }
-                }
-                std::fs::write("temp/lt_nodes.txt", &tree_string).unwrap();
-                dbg!(max_node_stack_len);
-            }
-            let light_tree_buffer = VulkanBuffer::from_iter(
-                &self.resources.memory_allocator,
-                &VulkanBufferCreateInfo {
-                    usage: VulkanBufferUsage::STORAGE_BUFFER | VulkanBufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &VulkanAllocationCreateInfo {
-                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
-                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                converted_light_nodes.clone(),
-            )
-            .context("Error while creating light node buffer")
-            .unwrap();
-            self.radiance_cascades.debug_light_tree = Some(converted_light_nodes);
-            light_tree_buffer
-        };
-        let radiance_probe_info_descriptor_set = VulkanDescriptorSet::new(
-            self.resources.descriptor_set_allocator.clone(),
-            self.radiance_cascades
-                .probe_info_descriptor_set_layout
-                .clone(),
-            [
-                VulkanWriteDescriptorSet::image_view(0, self.block_item_atlas.view.clone()),
-                VulkanWriteDescriptorSet::image_view(1, self.block_item_atlas.luma_view.clone()),
-                VulkanWriteDescriptorSet::acceleration_structure(2, tlas_info.world_tlas),
-                VulkanWriteDescriptorSet::buffer(3, tlas_info.instance_info_buffer),
-                VulkanWriteDescriptorSet::buffer(4, tlas_info.quads_info_buffer),
-                VulkanWriteDescriptorSet::buffer(5, update_info_buffer.clone()),
-                VulkanWriteDescriptorSet::buffer(
-                    6,
-                    self.buffer_managers.block_face_instance.get_buffer(),
-                ),
-                VulkanWriteDescriptorSet::buffer(7, light_tree_buffer.clone()),
-            ],
-            [],
-        )
-        .context("Error while creating radiance probe info descriptor set")
-        .unwrap();
-        // let lightmap_buffers = self.buffer_managers.block_face_instance.get_lightmap_buffers();
-        let lightmap_buffer = self
-            .buffer_managers
-            .block_face_instance
-            .get_lightmap_compute_buffer();
-        let cascade_0_lightmaps_descriptor_set = VulkanDescriptorSet::new(
-            self.resources.descriptor_set_allocator.clone(),
-            self.radiance_cascades
-                .lightmaps_descriptor_set_layout
-                .clone(),
-            [
-                VulkanWriteDescriptorSet::buffer(0, lightmap_buffer.clone()),
-                // VulkanWriteDescriptorSet::buffer(0, lightmap_buffers[0].clone()),
-                // VulkanWriteDescriptorSet::buffer(1, lightmap_buffers[1].clone()),
-            ],
-            [],
-        )
-        .context("Error while creating cascade 0 lightmaps descriptor set")
-        .unwrap();
-        // let cascade_1_lightmaps_descriptor_set = VulkanDescriptorSet::new(
-        //     self.resources.descriptor_set_allocator.clone(),
-        //     self.radiance_cascades
-        //         .lightmaps_descriptor_set_layout
-        //         .clone(),
-        //     [
-        //         VulkanWriteDescriptorSet::buffer(0, lightmap_buffers[1].clone()),
-        //         VulkanWriteDescriptorSet::buffer(1, lightmap_buffers[0].clone()),
-        //     ],
-        //     [],
-        // )
-        // .context("Error while creating cascade 1 lightmaps descriptor set")
-        // .unwrap();
-        // let queue = &self.resources.queues[0];
-        // let mut command_buffer = VulkanRecordingCommandBuffer::new(
-        //     self.resources.command_buffer_allocator.clone(),
-        //     queue.queue_family_index(),
-        //     VulkanCommandBufferLevel::Primary,
-        //     VulkanCommandBufferBeginInfo {
-        //         usage: VulkanCommandBufferUsage::OneTimeSubmit,
-        //         ..Default::default()
-        //     },
-        // )
-        // .unwrap();
-        // let built_command_buffer = unsafe {
-        //     command_buffer
-        //         .bind_pipeline_compute(&self.radiance_cascades.update_pipelines[0])
-        //         .unwrap()
-        //         .bind_descriptor_sets(
-        //             VulkanPipelineBindPoint::Compute,
-        //             &self.radiance_cascades.update_pipeline_layout,
-        //             0,
-        //             &[
-        //                 radiance_probe_info_descriptor_set.as_raw(),
-        //                 cascade_0_lightmaps_descriptor_set.as_raw(),
-        //                 self.matrices_descriptor_set.as_raw(),
-        //             ],
-        //             &[],
-        //         )
-        //         .unwrap()
-        //         .dispatch([max_dispatch_width, num_updates, 1])
-        //         .unwrap();
-        //     command_buffer.end().unwrap()
-        // };
-        // XXX: DEBUG
-        // - Dispatch initial copy commands, before we do individual updates.
-        // - Doing this for testing, because currently updates can take so long we trigger TDR.
-        {
-            let built_command_buffer = command_buffer.build().unwrap();
-            let device = &self.resources.device;
-            let fence = Arc::new(VulkanFence::from_pool(device).unwrap());
-            queue.with(|mut queue_guard| unsafe {
-                queue_guard
-                    .submit(
-                        &[VulkanSubmitInfo {
-                            command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
-                                built_command_buffer.clone(),
-                            )],
-                            ..Default::default()
-                        }],
-                        Some(&fence),
-                    )
-                    .unwrap();
-            });
-            fence.wait(None).unwrap();
-        }
-        let mut copy_command_buffer = VulkanAutoCommandBufferBuilder::primary(
-            self.resources.command_buffer_allocator.clone(),
-            queue.queue_family_index(),
-            VulkanCommandBufferUsage::OneTimeSubmit,
-        )
-        .context("Error while creating radiance probe copy command buffer builder")
-        .unwrap();
-        copy_command_buffer
-            // .copy_buffer(VulkanCopyBufferInfo {
-            //     src_buffer: lightmap_buffer.clone(),
-            //     dst_buffer: self.buffer_managers.block_face_instance.get_lightmap_render_buffer().clone(),
-            //     regions: buffer_copy_regions,
-            //     _ne: vulkano_non_exhaustive(),
-            // })
-            .copy_buffer(VulkanCopyBufferInfo::new(
-                lightmap_buffer.clone(),
-                self.buffer_managers
-                    .block_face_instance
-                    .get_lightmap_render_buffer()
-                    .clone(),
-            ))
-            .unwrap();
-        let built_copy_command_buffer = copy_command_buffer.build().unwrap();
-        {
-            let device = self.resources.device.clone();
-            let command_buffer_allocator = self.resources.command_buffer_allocator.clone();
-            let update_pipeline = self.radiance_cascades.update_pipelines[0].clone();
-            let update_pipeline_layout = self.radiance_cascades.update_pipeline_layout.clone();
-            let matrices_descriptor_set = self.matrices_descriptor_set.clone();
-            thread_pool.execute(move || {
-                for update_i in 0..num_updates {
-                    let fence = Arc::new(VulkanFence::from_pool(&device).unwrap());
-                    let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
-                        command_buffer_allocator.clone(),
-                        queue.queue_family_index(),
-                        VulkanCommandBufferUsage::OneTimeSubmit,
-                    )
-                    .context("Error while creating radiance probe update command buffer builder")
-                    .unwrap();
-                    unsafe {
-                        command_buffer
-                            .bind_pipeline_compute(update_pipeline.clone())
-                            .unwrap()
-                            .bind_descriptor_sets(
-                                VulkanPipelineBindPoint::Compute,
-                                update_pipeline_layout.clone(),
-                                0,
-                                (
-                                    radiance_probe_info_descriptor_set.clone(),
-                                    cascade_0_lightmaps_descriptor_set.clone(),
-                                    matrices_descriptor_set.clone(),
-                                ),
-                            )
-                            .unwrap()
-                            .push_constants(update_pipeline_layout.clone(), 0, update_i)
-                            .unwrap()
-                            .dispatch([update_lengths[update_i as usize], 1, 1])
-                            .unwrap();
-                    }
-                    let built_command_buffer = command_buffer.build().unwrap();
-                    queue.with(|mut queue_guard| unsafe {
-                        queue_guard
-                            .submit(
-                                &[VulkanSubmitInfo {
-                                    command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
-                                        built_command_buffer.clone(),
-                                    )],
-                                    ..Default::default()
-                                }],
-                                Some(&fence),
-                            )
-                            .unwrap();
-                    });
-                    fence.wait(None).unwrap();
-                    drop(built_command_buffer);
-                }
-                let fence = Arc::new(VulkanFence::from_pool(&device).unwrap());
-                queue.with(|mut queue_guard| unsafe {
-                    queue_guard
-                        .submit(
-                            &[VulkanSubmitInfo {
-                                command_buffers: vec![VulkanCommandBufferSubmitInfo::new(
-                                    built_copy_command_buffer,
-                                )],
-                                ..Default::default()
-                            }],
-                            Some(&fence),
-                        )
-                        .unwrap();
-                });
-                drop(radiance_probe_info_descriptor_set);
-                drop(cascade_0_lightmaps_descriptor_set);
-                drop(update_info_buffer);
-            });
-        }
     }
 }
 

@@ -1,4 +1,4 @@
-use spirv_std::glam::{vec4, Vec2, Vec4};
+use spirv_std::glam::{Vec2, Vec4, vec4};
 use spirv_std::image::{Image2d, SampledImage};
 use spirv_std::spirv;
 

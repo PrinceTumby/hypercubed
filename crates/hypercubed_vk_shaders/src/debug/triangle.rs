@@ -1,6 +1,6 @@
+use super::types::PackedFlags;
 use spirv_std::glam::{Mat4, Vec3, Vec4};
 use spirv_std::spirv;
-use super::types::PackedFlags;
 
 #[spirv(vertex)]
 pub fn vertex(
@@ -31,9 +31,6 @@ pub fn vertex(
 }
 
 #[spirv(fragment)]
-pub fn fragment(
-    in_colour: Vec4,
-    out_colour: &mut Vec4,
-) {
+pub fn fragment(in_colour: Vec4, out_colour: &mut Vec4) {
     *out_colour = in_colour * Vec4::ONE;
 }

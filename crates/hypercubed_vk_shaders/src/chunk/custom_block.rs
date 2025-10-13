@@ -1,24 +1,25 @@
 use super::block_face::calculate_light_rgb;
-use super::types::CustomBlockVertexFieldsGpu;
+use super::types::{CustomBlockVertex, CustomBlockVertexFieldsGpu};
 use spirv_std::glam::{Mat4, UVec2, UVec4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use spirv_std::image::Image2d;
 #[cfg(target_arch = "spirv")]
 use spirv_std::num_traits::Float;
-use spirv_std::{spirv, Sampler};
+use spirv_std::{Sampler, spirv};
 
 // NOTE: The code here was mostly written in a way that makes Rust GPU happy, hopefully it can be
 //       rewritten to be more idiomatic as Rust GPU improves and is able to compile more code.
+
+const BLOCK_FACE_INDICES: [usize; 6] = [1, 0, 2, 3, 1, 2];
 
 #[spirv(vertex)]
 pub fn vertex(
     // Bindings
     #[spirv(uniform, descriptor_set = 0, binding = 0)] view_matrix: &Mat4,
     #[spirv(uniform, descriptor_set = 1, binding = 2)] block_item_atlas_size: &Vec2,
+    #[spirv(storage_buffer, descriptor_set = 3, binding = 0)] custom_block_faces: &[[CustomBlockVertex; 4]],
     // Vertex inputs
-    in_vertex_pos: Vec3,
-    in_uvs: UVec2,
-    in_normal: Vec3,
-    in_vertex_packed_fields: CustomBlockVertexFieldsGpu,
+    #[spirv(vertex_index)]
+    in_vertex_index: u32,
     // Instance inputs
     // #[spirv(instance_index)]
     // in_instance_index: u32,
@@ -34,6 +35,15 @@ pub fn vertex(
     out_tint_percentage: &mut f32,
     out_light_rgb: &mut Vec3,
 ) {
+    // Pull vertex from faces buffer.
+    let face_i = in_vertex_index as usize / 6;
+    let face_vertex_i = BLOCK_FACE_INDICES[in_vertex_index as usize % 6];
+    let in_vertex = custom_block_faces[face_i][face_vertex_i];
+    let in_vertex_pos = Vec3::from(in_vertex.pos);
+    let in_uvs = UVec2::new(in_vertex.uvs[0] as u32, in_vertex.uvs[1] as u32);
+    let in_normal = Vec3::from(in_vertex.normal);
+    let in_vertex_packed_fields = in_vertex.packed_fields;
+    // Instance info
     let light_pairs = [
         in_light_level_pairs_1.x,
         in_light_level_pairs_1.y,
@@ -52,7 +62,10 @@ pub fn vertex(
     *out_normal = in_normal;
     // Tint
     *out_tint_colour = in_tint_colour;
-    *out_tint_percentage = in_vertex_packed_fields.tinted_bit() as f32;
+    #[cfg(target_arch = "spirv")]
+    {
+        *out_tint_percentage = in_vertex_packed_fields.tinted_bit() as f32;
+    }
     // Light RGB
     {
         let adjusted_pos = Vec3::mul_add(in_normal, Vec3::splat(0.02), in_vertex_pos);

@@ -24,6 +24,8 @@ pub mod portable_prelude {
             #[allow(unused)]
             pub(crate) use crate::platform::{dbg, println, eprintln};
             pub use nalgebra::{ComplexField, RealField};
+        } else {
+            pub use std::{dbg, println, eprintln};
         }
     }
 }

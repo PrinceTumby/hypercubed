@@ -41,11 +41,11 @@ once_cell = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 # If updating, also update in "crates/hypercubed_vk_shaders/Cargo.toml"
-vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "99ccf3c" }
+vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "432955a" }
 vulkan_prelude = { path = "crates/vulkan_prelude" }
 smallstr = { version = "0", features = ["serde"] }
-spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "20052f8" }
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [workspace.dependencies.image]
@@ -317,7 +317,6 @@ default-features = false
 
 [profile.dev]
 opt-level = 1
-panic = "abort"
 
 [profile.dev.build-override]
 opt-level = 1
