@@ -1,9 +1,9 @@
 #![cfg_attr(not(feature = "full_std"), no_main)]
 #![cfg_attr(not(feature = "mini_std"), no_std)]
 
-use minecraft_client::client;
-use minecraft_client::protocol;
-use minecraft_client::protocol::prelude::*;
+use hypercubed::client;
+use hypercubed::protocol;
+use hypercubed::protocol::prelude::*;
 use portable_std::Arc;
 
 #[cfg(feature = "full_std")]

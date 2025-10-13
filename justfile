@@ -23,7 +23,7 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
 
 @build-with-vk-shaders *BUILD_FLAGS:
     echo - Compiling Vulkan shaders...
-    cd crates/minecraft_client_vk_shaders/builder && cargo build
+    cd crates/hypercubed_vk_shaders/builder && cargo build
     echo - Compiling client...
     cargo build {{BUILD_FLAGS}}
 
@@ -31,8 +31,8 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
 # Playstation 2
 
 _ps2_out_dir := join("target", "mipsel-sony-ps2", "dev-ps2")
-_ps2_unstripped_bin := join(_ps2_out_dir, "minecraft_client_unstripped")
-_ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
+_ps2_unstripped_bin := join(_ps2_out_dir, "hypercubed_unstripped")
+_ps2_elf := join(_ps2_out_dir, "hypercubed.elf")
 
 @check-ps2:
     cargo check \
@@ -64,11 +64,11 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         src/platform/ps2/syscalls.s \
         src/platform/ps2/asm_helpers.s \
         -Wl,--gc-sections \
-        target/mipsel-sony-ps2/dev-ps2/libminecraft_client.a \
+        target/mipsel-sony-ps2/dev-ps2/libhypercubed.a \
         -mabi=64 \
         -Wl,--no-warn-mismatch \
         -T targets/ps2.ld \
-        -o target/mipsel-sony-ps2/dev-ps2/minecraft_client_unstripped.elf \
+        -o target/mipsel-sony-ps2/dev-ps2/hypercubed_unstripped.elf \
         -ffreestanding \
         -nostdlib \
         -lgcc \
@@ -76,8 +76,8 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
     {{wsl}} \
         /usr/local/ps2dev/ee/bin/mips64r5900el-ps2-elf-strip \
         --strip-debug \
-        target/mipsel-sony-ps2/dev-ps2/minecraft_client_unstripped.elf \
-        -o target/mipsel-sony-ps2/dev-ps2/minecraft_client.elf
+        target/mipsel-sony-ps2/dev-ps2/hypercubed_unstripped.elf \
+        -o target/mipsel-sony-ps2/dev-ps2/hypercubed.elf
 
 @build-release-ps2:
     echo - Compiling...
@@ -95,11 +95,11 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
         src/platform/ps2/syscalls.s \
         src/platform/ps2/asm_helpers.s \
         -Wl,--gc-sections \
-        target/mipsel-sony-ps2/release-ps2/libminecraft_client.a \
+        target/mipsel-sony-ps2/release-ps2/libhypercubed.a \
         -mabi=64 \
         -Wl,--no-warn-mismatch \
         -T targets/ps2.ld \
-        -o target/mipsel-sony-ps2/release-ps2/minecraft_client.elf \
+        -o target/mipsel-sony-ps2/release-ps2/hypercubed.elf \
         -ffreestanding \
         -nostdlib \
         -lgcc \
@@ -154,7 +154,7 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
 @build-imac-w2c2-wasm:
     echo - Compiling...
     cargo +nightly-2025-08-25 rustc \
-        --bin minecraft_client \
+        --bin hypercubed \
         --target targets/ppc_mac/wasm32-wasip1.json \
         --no-default-features \
         --features=platform_w2c2_opengl_mac,embed_vanilla_cache \
@@ -171,8 +171,8 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
     cd {{join("target", "wasm32-wasip1", "debug")}} && w2c2 \
         -d sectcreate2 \
         -f 500 \
-        minecraft_client.wasm \
-        minecraft_client.c
+        hypercubed.wasm \
+        hypercubed.c
     echo - Copying files to remote...
     {{join("scripts", "imac_run_psftp.bat")}} {{env("IMAC_PASSWORD")}}
     echo - Compiling C on remote...
@@ -191,7 +191,7 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
 @build-ibook-wasm:
     echo - Compiling...
     cargo +nightly-2025-08-25 rustc \
-        --bin minecraft_client \
+        --bin hypercubed \
         --target targets/ppc_mac/wasm32-wasip1.json \
         --no-default-features \
         --features=platform_w2c2_opengl_mac,embed_vanilla_cache \
@@ -208,8 +208,8 @@ _ps2_elf := join(_ps2_out_dir, "minecraft_client.elf")
     w2c2 \
         -d sectcreate2 \
         -f 500 \
-        target/wasm32-wasip1/debug/minecraft_client.wasm \
-        target/wasm32-wasip1/debug/minecraft_client.c
+        target/wasm32-wasip1/debug/hypercubed.wasm \
+        target/wasm32-wasip1/debug/hypercubed.c
     echo - Copying files to remote...
     ibook_run_psftp.bat {{env("IBOOK_PASSWORD")}}
     echo - Compiling C on remote...

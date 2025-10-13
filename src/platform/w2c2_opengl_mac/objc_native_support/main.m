@@ -5,7 +5,7 @@
 
 #import "w2c2_base.h"
 #import "wasi.h"
-#import "minecraft_client.h"
+#import "hypercubed.h"
 #import "client_event.h"
 
 static const float VERTICES[3][3] = {

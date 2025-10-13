@@ -3,7 +3,7 @@ LDFLAGS += -lm -lobjc
 LDFLAGS += -framework Cocoa -framework OpenGL -framework Quartz
 CFLAGS += -O1 -g
 
-# minecraft_client: main.c minecraft_client.c
+# hypercubed: main.c hypercubed.c
 # 	$(CC) -I../../opt/w2c2/include $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 EXTRASOURCES = $(wildcard s*.c)
@@ -12,12 +12,12 @@ EXTRAOBJECTS = $(EXTRASOURCES:.c=.o)
 # `build.rs` generated bindings for W2C2.
 BINDING_OBJS = gl.o
 
-OBJECTS = $(BINDING_OBJS) main.o minecraft_client.o $(EXTRAOBJECTS)
+OBJECTS = $(BINDING_OBJS) main.o hypercubed.o $(EXTRAOBJECTS)
 
-minecraft_client.app/Contents/MacOS/minecraft_client: $(OBJECTS)
+hypercubed.app/Contents/MacOS/hypercubed: $(OBJECTS)
 	$(CC) $^ -o $@ $(LDFLAGS) -sectcreate __DATA __datasegments datasegments
 
-minecraft_client.o: minecraft_client.c
+hypercubed.o: hypercubed.c
 	$(CC) -I../../opt/w2c2/include -c -O1 $< -o $@
 
 %.o: %.c

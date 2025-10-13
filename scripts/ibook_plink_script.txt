@@ -1,2 +1,2 @@
-cd Documents/minecraft_client_build
+cd Documents/hypercubed_build
 make

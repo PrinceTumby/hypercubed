@@ -1979,6 +1979,141 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercubed"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "ahash",
+ "anyhow",
+ "bimap",
+ "bincode",
+ "bitfield",
+ "bitflags 2.9.4",
+ "bytebuffer",
+ "bytemuck",
+ "bytes",
+ "cfb8",
+ "cfg-if",
+ "crab_nbt",
+ "critical-section",
+ "egui",
+ "egui_plot",
+ "embedded-alloc",
+ "embedded-io",
+ "embedded-io-async",
+ "embedded-nal-async",
+ "env_logger",
+ "fast-srgb8",
+ "fixedbitset 0.5.7",
+ "foldhash 0.2.0",
+ "futures",
+ "image",
+ "indexmap",
+ "log",
+ "mimalloc",
+ "hypercubed_portable_std",
+ "hypercubed_resources",
+ "hypercubed_vk_shaders",
+ "hypercubed_w2c2_binding_generator",
+ "miniz_oxide",
+ "multiversion",
+ "nalgebra",
+ "nom",
+ "nom_locate",
+ "objc",
+ "once_cell",
+ "ordered-float",
+ "petgraph 0.6.5",
+ "pixels",
+ "pollster",
+ "protocol_derive",
+ "rand",
+ "reqwest",
+ "reqwless",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1",
+ "smallvec",
+ "thiserror 2.0.17",
+ "threadpool",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tracy",
+ "uuid",
+ "vulkan_prelude",
+ "vulkano",
+ "wgpu 24.0.5",
+ "wide",
+ "winit",
+]
+
+[[package]]
+name = "hypercubed_portable_std"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "cfg-if",
+ "embedded-io",
+ "foldhash 0.2.0",
+ "hashbrown 0.16.0",
+ "indexmap",
+ "nalgebra",
+ "smallstr",
+ "spin",
+ "string_cache 0.9.0",
+]
+
+[[package]]
+name = "hypercubed_resources"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bimap",
+ "bincode",
+ "bitfield",
+ "cfg-if",
+ "image",
+ "indexmap",
+ "lazy_static",
+ "log",
+ "hypercubed_portable_std",
+ "nalgebra",
+ "nickel-lang-core",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "smallstr",
+ "smallvec",
+ "thiserror 2.0.17",
+ "zip",
+]
+
+[[package]]
+name = "hypercubed_vk_shaders"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bitfield",
+ "bytemuck",
+ "cfg-if",
+ "foldhash 0.2.0",
+ "lazy_static",
+ "vulkan_prelude",
+ "vulkano",
+]
+
+[[package]]
+name = "hypercubed_w2c2_binding_generator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kdl",
+]
+
+[[package]]
 name = "icrate"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2647,141 +2782,6 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
-
-[[package]]
-name = "minecraft_client"
-version = "0.1.0"
-dependencies = [
- "aes",
- "ahash",
- "anyhow",
- "bimap",
- "bincode",
- "bitfield",
- "bitflags 2.9.4",
- "bytebuffer",
- "bytemuck",
- "bytes",
- "cfb8",
- "cfg-if",
- "crab_nbt",
- "critical-section",
- "egui",
- "egui_plot",
- "embedded-alloc",
- "embedded-io",
- "embedded-io-async",
- "embedded-nal-async",
- "env_logger",
- "fast-srgb8",
- "fixedbitset 0.5.7",
- "foldhash 0.2.0",
- "futures",
- "image",
- "indexmap",
- "log",
- "mimalloc",
- "minecraft_client_portable_std",
- "minecraft_client_resources",
- "minecraft_client_vk_shaders",
- "minecraft_client_w2c2_binding_generator",
- "miniz_oxide",
- "multiversion",
- "nalgebra",
- "nom",
- "nom_locate",
- "objc",
- "once_cell",
- "ordered-float",
- "petgraph 0.6.5",
- "pixels",
- "pollster",
- "protocol_derive",
- "rand",
- "reqwest",
- "reqwless",
- "rsa",
- "serde",
- "serde_json",
- "sha1",
- "smallvec",
- "thiserror 2.0.17",
- "threadpool",
- "tracing",
- "tracing-subscriber",
- "tracing-tracy",
- "uuid",
- "vulkan_prelude",
- "vulkano",
- "wgpu 24.0.5",
- "wide",
- "winit",
-]
-
-[[package]]
-name = "minecraft_client_portable_std"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "cfg-if",
- "embedded-io",
- "foldhash 0.2.0",
- "hashbrown 0.16.0",
- "indexmap",
- "nalgebra",
- "smallstr",
- "spin",
- "string_cache 0.9.0",
-]
-
-[[package]]
-name = "minecraft_client_resources"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "anyhow",
- "bimap",
- "bincode",
- "bitfield",
- "cfg-if",
- "image",
- "indexmap",
- "lazy_static",
- "log",
- "minecraft_client_portable_std",
- "nalgebra",
- "nickel-lang-core",
- "serde",
- "serde_json",
- "serde_repr",
- "smallstr",
- "smallvec",
- "thiserror 2.0.17",
- "zip",
-]
-
-[[package]]
-name = "minecraft_client_vk_shaders"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "anyhow",
- "bitfield",
- "bytemuck",
- "cfg-if",
- "foldhash 0.2.0",
- "lazy_static",
- "vulkan_prelude",
- "vulkano",
-]
-
-[[package]]
-name = "minecraft_client_w2c2_binding_generator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "kdl",
-]
 
 [[package]]
 name = "miniz_oxide"

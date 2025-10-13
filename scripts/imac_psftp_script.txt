@@ -1,6 +1,6 @@
-cd Documents/minecraft_client_build
-put target/wasm32-wasip1/debug/minecraft_client.c
-put target/wasm32-wasip1/debug/minecraft_client.h
+cd Documents/hypercubed_build
+put target/wasm32-wasip1/debug/hypercubed.c
+put target/wasm32-wasip1/debug/hypercubed.h
 put target/wasm32-wasip1/debug/datasegments
 del s*.c
 del s*.o

@@ -176,7 +176,7 @@ pub async fn window_run(
     // TODO: Change this to an `Arc`
     #[cfg(feature = "full_std")]
     let window = Box::leak(Box::new(WindowBuilder::new().build(&event_loop)?));
-    window.set_title("Rust Minecraft Client");
+    window.set_title("Hypercubed Client");
     let window_id = window.id();
     let mut scale_factor = window.scale_factor();
     #[cfg(feature = "full_std")]

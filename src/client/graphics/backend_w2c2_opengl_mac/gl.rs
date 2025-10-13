@@ -1,5 +1,5 @@
 // Import OpenGL W2C2 bindings, generated from `gl.kdl`.
-// See `build.rs` and the `minecraft_client_w2c2_binding_generator` crate for more information.
+// See `build.rs` and the `hypercubed_w2c2_binding_generator` crate for more information.
 include!(concat!(env!("OUT_DIR"), "/w2c2_generated_bindings/gl.rs"));
 
 pub use super::to_host_f32_2d_array;

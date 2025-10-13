@@ -1,5 +1,5 @@
 [package]
-name = "minecraft_client_resources"
+name = "hypercubed_resources"
 version = "0.1.0"
 edition = "2024"
 
@@ -50,6 +50,6 @@ thiserror = { version = "2", default-features = false }
 zip = { workspace = true, optional = true }
 
 [dependencies.portable_std]
-package = "minecraft_client_portable_std"
-path = "../minecraft_client_portable_std"
+package = "hypercubed_portable_std"
+path = "../hypercubed_portable_std"
 default-features = false
