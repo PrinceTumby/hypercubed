@@ -94,10 +94,10 @@ bench = false
 name = "hypercubed"
 
 [features]
-# default = ["graphics_backend_vulkan"]
+default = ["graphics_backend_vulkan"]
 # default = ["platform_ps2", "embed_vanilla_cache"]
 # default = ["platform_w2c2_opengl_mac", "embed_vanilla_cache"]
-default = ["platform_opengl_mac_tiger", "embed_vanilla_cache"]
+# default = ["platform_opengl_mac_tiger", "embed_vanilla_cache"]
 full_std = [
     "mini_std",
     "dep:winit",

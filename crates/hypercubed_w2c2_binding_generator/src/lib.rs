@@ -19,11 +19,11 @@ pub fn compile_document<P: AsRef<Path>, O1: AsRef<Path>, O2: AsRef<Path>>(
     let doc_string = std::fs::read_to_string(doc_path).unwrap();
     let out_sources = compile(&doc_string).unwrap();
     let mut rust_out_path = PathBuf::from(rust_out_dir_path);
-    rust_out_path.push(doc_path.file_prefix().unwrap());
+    rust_out_path.push(doc_path.file_stem().unwrap());
     rust_out_path.set_extension("rs");
     std::fs::write(&rust_out_path, out_sources.rust).unwrap();
     let mut c_out_path = PathBuf::from(c_out_dir_path);
-    c_out_path.push(doc_path.file_prefix().unwrap());
+    c_out_path.push(doc_path.file_stem().unwrap());
     c_out_path.set_extension("c");
     std::fs::write(&c_out_path, out_sources.c).unwrap();
 }
