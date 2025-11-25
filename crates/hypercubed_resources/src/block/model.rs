@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow, bail, ensure};
+use anyhow::{Context, anyhow, ensure};
 use bitfield::bitfield;
 use nalgebra::{Matrix4, Point3, Rotation3, Vector3, point};
 use portable_std::prelude::*;
@@ -187,8 +187,8 @@ impl ModelRegistryBuilder {
         if parts.len() == 0 {
             return Ok(EMPTY_MODEL_IDX);
         }
-        // Ditto here, we don't have the `Equivalent` trait, so we have to do allocate a box just
-        // to find if the combination's already been cached.
+        // Ditto here, we don't have the `Equivalent` trait, so we have to allocate a box just to
+        // find if the combination's already been cached.
         let owned_parts = Box::from(parts);
         if let Some(&model_idx) = self.completed_model_combinations.get(&owned_parts) {
             return Ok(model_idx);
@@ -215,9 +215,6 @@ impl ModelRegistryBuilder {
             )?;
             converted_parts.push(CompositeModelPart {
                 model_idx: part_model_idx,
-                x_rotation: *x_rotation,
-                y_rotation: *y_rotation,
-                uv_lock: *uv_lock,
             });
         }
         let completed_model = ModelType::Composite(converted_parts.into());
@@ -226,89 +223,6 @@ impl ModelRegistryBuilder {
             .insert(owned_parts, completed_model_idx);
         Ok(completed_model_idx)
     }
-
-    /* // #[tracing::instrument(skip(self, texture_atlas))]
-    pub fn load_composite_model(
-        &mut self,
-        location: &Identifier,
-        parts: &[RawCompositeModelPart],
-        texture_atlas: &mut texture::AtlasBuilder,
-    ) -> anyhow::Result<ModelIndex> {
-        if parts.len() == 0 {
-            return Ok(EMPTY_MODEL_IDX);
-        }
-        // Ditto here, we don't have the `Equivalent` trait, so we have to do allocate a box just
-        // to find if the combination's already been cached.
-        let owned_parts = Box::from(parts);
-        if let Some(&model_idx) = self.completed_model_combinations.get(&owned_parts) {
-            return Ok(model_idx);
-        }
-        if parts.is_empty() {
-            return Ok(EMPTY_MODEL_IDX);
-        }
-        let mut current_template: Option<Template> = None;
-        for RawCompositeModelPart {
-            x_rotation,
-            y_rotation,
-            location,
-            uv_lock,
-        } in parts
-        {
-            let part_model_idx = match self.get_or_load_model(
-                location,
-                &ModelRotationInfo {
-                    x_rotation: *x_rotation,
-                    y_rotation: *y_rotation,
-                    uv_lock: *uv_lock,
-                },
-                texture_atlas,
-                true,
-            )? {
-                ModelState::Complete(model_idx) => model_idx,
-                ModelState::Pending | ModelState::Template(_) => unreachable!(),
-            };
-            let template = match self.get_or_load_model(
-                location,
-                &ModelRotationInfo {
-                    x_rotation: *x_rotation,
-                    y_rotation: *y_rotation,
-                    uv_lock: *uv_lock,
-                },
-                texture_atlas,
-                true,
-            )? {
-                ModelState::Complete(_) | ModelState::Pending => unreachable!(),
-                ModelState::Template(template) => template,
-            };
-            let mut template = template.as_ref().clone();
-            // TODO: Rotate blockstates template elements as we append them, instead of just
-            // labelling them as rotated and letting finalisation rotate them.
-            template.apply_blockstate_rotations(*x_rotation, *y_rotation, *uv_lock);
-            if let Some(ref mut current_template) = current_template {
-                if let Some(ref mut current_template_elements) = current_template.elements {
-                    current_template_elements.append(&mut template.elements.with_context(
-                        || format!("combined model part {location:?} has no elements"),
-                    )?);
-                }
-            } else {
-                current_template = Some(template);
-            }
-        }
-        let mut final_template = current_template.unwrap();
-        let complete = final_template.fill_texture_variables();
-        if !complete {
-            bail!("combined template {final_template:?} cannot be finalised");
-        }
-        let completed_model = self.finalise_model(
-            final_template,
-            &ModelRotationInfo::default(),
-            texture_atlas,
-            None,
-        )?;
-        let completed_model_idx = self.register_model(completed_model);
-        self.completed_model_combinations.insert(owned_parts, completed_model_idx);
-        Ok(completed_model_idx)
-    } */
 
     /// If `skip_finalising_model` is specified, this will return the model's template instead of
     /// attempting to finalise and return the completed model.
@@ -1001,7 +915,6 @@ impl ModelRegistryBuilder {
                     _ => unreachable!(),
                 };
                 let face_normal = FACE_NORMALS[face_i];
-                let base_index = u32::try_from(converted_faces.len() * 4).unwrap();
                 let basic_rotation = match template_element.rotation {
                     None => Matrix4::identity(),
                     Some(template_rotation) => {
@@ -1287,10 +1200,6 @@ pub enum ModelType {
     TintedBlock(BlockInfo),
     /// Block with extra faces containing transparent pixels drawn on top. Example: Grass block
     OverlayedBlock(OverlayedBlockInfo),
-    /// Contains two double sided 2D elements at 45 degrees. Example: Dandelion
-    Cross(CrossInfo),
-    /// Contains two double sided biome tinted 2D elements at 45 degrees. Example: Grass
-    BiomeTintedCross(CrossInfo),
     /// Hardcoded rendering, faces dynamically generated. Example: Water
     Liquid(LiquidInfo),
     /// Any other type of single component model, unspecialised. Example: Farmland
@@ -1338,19 +1247,13 @@ pub struct OverlayedBlockFace {
 #[derive(
     Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
 )]
-pub struct CrossInfo {
-    pub cross_atlas_start_uvs: [u16; 4],
-}
-
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
 pub struct LiquidInfo {
     pub uvs: [u16; 4],
 }
 
 #[derive(
     Clone,
+    Copy,
     Debug,
     PartialEq,
     Eq,
@@ -1377,9 +1280,6 @@ pub struct OtherInfo {
 )]
 pub struct CompositeModelPart {
     pub model_idx: ModelIndex,
-    pub x_rotation: RightAngleRotation,
-    pub y_rotation: RightAngleRotation,
-    pub uv_lock: bool,
 }
 
 #[derive(

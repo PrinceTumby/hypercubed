@@ -1,5 +1,5 @@
 use super::block_face::calculate_light_rgb;
-use super::types::{CustomBlockVertex, CustomBlockVertexFieldsGpu};
+use super::types::CustomBlockVertex;
 use spirv_std::glam::{Mat4, UVec2, UVec4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use spirv_std::image::Image2d;
 #[cfg(target_arch = "spirv")]
@@ -16,10 +16,10 @@ pub fn vertex(
     // Bindings
     #[spirv(uniform, descriptor_set = 0, binding = 0)] view_matrix: &Mat4,
     #[spirv(uniform, descriptor_set = 1, binding = 2)] block_item_atlas_size: &Vec2,
-    #[spirv(storage_buffer, descriptor_set = 3, binding = 0)] custom_block_faces: &[[CustomBlockVertex; 4]],
+    #[spirv(storage_buffer, descriptor_set = 3, binding = 0)] custom_block_faces: &[[CustomBlockVertex;
+          4]],
     // Vertex inputs
-    #[spirv(vertex_index)]
-    in_vertex_index: u32,
+    #[spirv(vertex_index)] in_vertex_index: u32,
     // Instance inputs
     // #[spirv(instance_index)]
     // in_instance_index: u32,
@@ -29,10 +29,7 @@ pub fn vertex(
     in_light_level_pairs_2_and_packed_fields: UVec4,
     // Outputs
     #[spirv(invariant, position)] out_pos: &mut Vec4,
-    out_normal: &mut Vec3,
     out_uvs: &mut Vec2,
-    out_tint_colour: &mut Vec4,
-    out_tint_percentage: &mut f32,
     out_light_rgb: &mut Vec3,
 ) {
     // Pull vertex from faces buffer.
@@ -58,16 +55,10 @@ pub fn vertex(
     *out_pos = Vec4::new(1.0, -1.0, 1.0, 1.0) * (*view_matrix * Vec4::from((global_pos, 1.0)));
     // UVs
     *out_uvs = in_uvs.as_vec2() / *block_item_atlas_size;
-    // Normal
-    *out_normal = in_normal;
-    // Tint
-    *out_tint_colour = in_tint_colour;
-    #[cfg(target_arch = "spirv")]
-    {
-        *out_tint_percentage = in_vertex_packed_fields.tinted_bit() as f32;
-    }
     // Light RGB
+    // Includes block lighting, as well as some basic per-face directional shading.
     {
+        // Block lighting, based on surrounding light levels.
         let adjusted_pos = Vec3::mul_add(in_normal, Vec3::splat(0.02), in_vertex_pos);
         let light_pair_positions = [
             Vec3::new(0.0, 0.0, 0.0),
@@ -87,7 +78,19 @@ pub fn vertex(
             closest_light_pair_idx = if is_closer { i } else { closest_light_pair_idx };
         }
         let closest_light_pair = light_pairs[closest_light_pair_idx];
-        *out_light_rgb = calculate_light_rgb(closest_light_pair & 0xF, closest_light_pair >> 4);
+        // Per-face directional shading.
+        let light_source_dir = Vec3::new(2.0, 5.0, 1.0).normalize();
+        let dir_lighting = Vec3::dot(in_normal, light_source_dir);
+        let dir_light_coef = f32::mul_add(dir_lighting, 0.3, 0.7);
+        let light_rgb = calculate_light_rgb(closest_light_pair & 0xF, closest_light_pair >> 4);
+        // Tint
+        #[cfg(target_arch = "spirv")]
+        let tint_percentage = in_vertex_packed_fields.tinted_bit() as f32;
+        // TODO: Unify the packed field methods so we don't have to do dirty hacks like this.
+        #[cfg(not(target_arch = "spirv"))]
+        let tint_percentage = 1.0;
+        let applied_tint_rgb = Vec3::lerp(Vec3::splat(1.0), in_tint_colour.xyz(), tint_percentage);
+        *out_light_rgb = light_rgb * applied_tint_rgb * dir_light_coef;
     }
 }
 
@@ -97,10 +100,7 @@ pub fn fragment(
     #[spirv(descriptor_set = 1, binding = 0)] block_item_atlas: &Image2d,
     #[spirv(descriptor_set = 1, binding = 1)] block_item_atlas_sampler: &Sampler,
     // Inputs
-    in_normal: Vec3,
     in_uvs: Vec2,
-    in_tint_colour: Vec4,
-    in_tint_percentage: f32,
     in_light_rgb: Vec3,
     // Outputs
     out_colour: &mut Vec4,
@@ -109,9 +109,5 @@ pub fn fragment(
     if tex_sample.w < 1.0 {
         spirv_std::arch::kill();
     }
-    let tex_sample = tex_sample * Vec4::lerp(Vec4::splat(1.0), in_tint_colour, in_tint_percentage);
-    let light_source_dir = Vec3::new(2.0, 5.0, 1.0).normalize();
-    let lighting = Vec3::dot(in_normal, light_source_dir);
-    let light_coef = f32::mul_add(lighting, 0.3, 0.4);
-    *out_colour = Vec4::from((tex_sample.xyz() * light_coef * in_light_rgb, 1.0));
+    *out_colour = Vec4::from((tex_sample.xyz() * in_light_rgb, 1.0));
 }

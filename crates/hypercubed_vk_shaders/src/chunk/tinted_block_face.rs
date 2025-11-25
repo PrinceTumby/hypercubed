@@ -24,10 +24,8 @@ pub fn vertex(
     in_packed_fields: BlockFaceInstanceFields,
     // Outputs
     #[spirv(invariant, position)] out_pos: &mut Vec4,
-    out_normal: &mut Vec3,
     out_uvs: &mut Vec2,
     #[spirv(flat)] out_light_rgb: &mut Vec3,
-    #[spirv(flat)] out_tint_colour: &mut Vec4,
 ) {
     // Unpack instance data
     let xyz_offset = Vec3::new(
@@ -53,12 +51,14 @@ pub fn vertex(
         start_uvs.x.lerp(end_uvs.x, base_uvs.x),
         start_uvs.y.lerp(end_uvs.y, base_uvs.y),
     );
-    // Normal
-    *out_normal = face_matrix * BASE_NORMAL;
     // Light RGB
-    *out_light_rgb = calculate_light_rgb(sky_light_level, block_light_level);
-    // Tint colour
-    *out_tint_colour = in_tint_colour;
+    // Includes block lighting, tinting, as well as some basic per-face directional shading.
+    let normal = face_matrix * BASE_NORMAL;
+    let light_source_dir = Vec3::new(2.0, 5.0, 1.0).normalize();
+    let dir_lighting = Vec3::dot(normal, light_source_dir);
+    let dir_light_coef = f32::mul_add(dir_lighting, 0.3, 0.7);
+    let light_rgb = calculate_light_rgb(sky_light_level, block_light_level);
+    *out_light_rgb = light_rgb * in_tint_colour.xyz() * dir_light_coef;
 }
 
 #[spirv(fragment)]
@@ -67,10 +67,8 @@ pub fn fragment(
     #[spirv(descriptor_set = 1, binding = 0)] block_item_atlas: &Image2d,
     #[spirv(descriptor_set = 1, binding = 1)] block_item_atlas_sampler: &Sampler,
     // Inputs
-    in_normal: Vec3,
     in_uvs: Vec2,
     #[spirv(flat)] in_light_rgb: Vec3,
-    #[spirv(flat)] in_tint_colour: Vec4,
     // Outputs
     out_colour: &mut Vec4,
 ) {
@@ -78,9 +76,5 @@ pub fn fragment(
     if tex_sample.w < 1.0 {
         spirv_std::arch::kill();
     }
-    let tex_sample = tex_sample * in_tint_colour;
-    let light_source_dir = Vec3::new(2.0, 5.0, 1.0).normalize();
-    let lighting = Vec3::dot(in_normal, light_source_dir);
-    let light_coef = f32::mul_add(lighting, 0.3, 0.4);
-    *out_colour = Vec4::from((tex_sample.xyz() * light_coef * in_light_rgb, 1.0));
+    *out_colour = Vec4::from((tex_sample.xyz() * in_light_rgb, 1.0));
 }

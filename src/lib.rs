@@ -16,6 +16,9 @@
 #[macro_use]
 extern crate alloc;
 
+// extern crate portable_std as std;
+// TODO: Try this (^), to see if we can simplify imports in crates.
+
 pub mod portable_prelude {
     pub use portable_std::prelude::*;
 
@@ -37,16 +40,6 @@ pub mod platform;
 pub mod protocol;
 pub mod world;
 
-#[cfg(all(
-    feature = "full_std",
-    any(
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd",
-    ),
-))]
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;

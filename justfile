@@ -20,13 +20,35 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
 
 @_default:
     just --list
+    
+# Winit (default)
 
 @build-with-vk-shaders *BUILD_FLAGS:
     echo - Compiling Vulkan shaders...
     cd crates/hypercubed_vk_shaders/builder && cargo build
     echo - Compiling client...
-    cargo build {{BUILD_FLAGS}}
+    cargo build \
+        --bin hypercubed \
+        --features=platform_winit,graphics_backend_vulkan \
+        {{BUILD_FLAGS}}
 
+# Linux DRM
+
+default_linux_drm_arch := if os() == "linux" { arch() } else { "x86_64" }
+
+@check-linux-drm arch=default_linux_drm_arch:
+    cargo check \
+        --bin hypercubed \
+        --no-default-features \
+        --features=platform_linux_drm,graphics_backend_opengl \
+        {{ if os() == "linux" { "" } else { "--target" + arch + "-unknown-linux-gnu" } }}
+
+@build-linux-drm arch=default_linux_drm_arch:
+    cargo build \
+        --bin hypercubed \
+        --no-default-features \
+        --features=platform_linux_drm,graphics_backend_opengl \
+        {{ if os() == "linux" { "" } else { "--target" + arch + "-unknown-linux-gnu" } }}
 
 # Playstation 2
 

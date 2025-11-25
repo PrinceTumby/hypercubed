@@ -507,7 +507,7 @@ fn load_blockstate_multipart_cases(
         if properties.is_empty() {
             is_final_state = true;
         }
-        log::debug!("Generating model for state {state:?}");
+        log::trace!("Generating model for state {state:?}");
         #[derive(Clone, Debug)]
         struct WeightedModelPartGroup {
             pub parts: Vec<RawCompositeModelPart>,
@@ -577,7 +577,7 @@ fn load_blockstate_multipart_cases(
             }
         }
         if model_part_groups.len() == 1 && model_part_groups[0].parts.is_empty() {
-            log::debug!("^ no parts");
+            log::trace!("^ no parts");
         }
         // Generate models for current state
         if let [model_parts] = &model_part_groups[..] {

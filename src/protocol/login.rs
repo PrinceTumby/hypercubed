@@ -162,7 +162,7 @@ pub async fn login(
                     let session_server_url =
                         "https://sessionserver.mojang.com/session/minecraft/join";
                     cfg_if::cfg_if! {
-                        if #[cfg(feature = "full_std")] {{
+                        if #[cfg(feature = "platform_winit")] {{
                             let auth_response = reqwest::blocking::Client::new()
                                 .post(session_server_url)
                                 .json(&join_info)
@@ -179,8 +179,8 @@ pub async fn login(
                             use reqwless::request::{RequestBuilder, Method};
                             use reqwless::client::HttpClient;
                             use reqwless::headers::ContentType;
-                            let mut auth_tcp_stack = crate::platform::net::TcpStack;
-                            let mut auth_dns_resolver = crate::platform::net::DnsResolver;
+                            let auth_tcp_stack = crate::platform::TcpStack;
+                            let auth_dns_resolver = crate::platform::DnsResolver;
                             let mut auth_client = HttpClient::new(
                                 &auth_tcp_stack,
                                 &auth_dns_resolver,
@@ -195,7 +195,7 @@ pub async fn login(
                                 .unwrap()
                                 .body(join_info_json_bytes)
                                 .content_type(ContentType::ApplicationJson);
-                            let mut auth_response = auth_request
+                            let auth_response = auth_request
                                 .send(&mut auth_response_buffer)
                                 .await
                                 .unwrap();

@@ -511,8 +511,8 @@ fn translate_bitflags<'a>(
 
 fn translate_c_binding_fn<'a>(
     module_name: &str,
-    c_enum_type: &str,
-    c_bitflags_type: &str,
+    _c_enum_type: &str,
+    _c_bitflags_type: &str,
     output_rust: &mut String,
     output_rust_extern_fns: &mut String,
     output_c: &mut String,

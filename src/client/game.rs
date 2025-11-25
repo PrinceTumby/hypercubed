@@ -581,7 +581,6 @@ pub fn process_game_events(
             } => {
                 let span = tracing::trace_span!("add_new_subchunks");
                 let _enter = span.enter();
-                #[cfg(feature = "graphics_backend_vulkan")]
                 for (subchunk_coords, raw_subchunk) in new_raw_subchunks {
                     use std::collections::hash_map::Entry;
                     let [subchunk_x, _, subchunk_z] = subchunk_coords;
@@ -617,9 +616,9 @@ pub fn process_game_events(
                             graphics_state.free_subchunk_data(subchunk_coords);
                         }
                     }
-                    let buffer_managers = &mut graphics_state.buffer_managers;
                     cfg_if::cfg_if! {
                         if #[cfg(feature = "graphics_backend_vulkan")] {
+                            let buffer_managers = &mut graphics_state.buffer_managers;
                             macro_rules! alloc_area {
                                 (
                                     $buffer_manager:ident,
@@ -636,6 +635,7 @@ pub fn process_game_events(
                             // TODO:
                             // - Define a function here to upload
                         } else if #[cfg(feature = "graphics_backend_wgpu")] {
+                            let buffer_managers = &mut graphics_state.buffer_managers;
                             macro_rules! alloc_area {
                                 (
                                     $buffer_manager:ident,
@@ -651,79 +651,91 @@ pub fn process_game_events(
                             }
                         }
                     }
-                    // Base block faces
-                    let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-                    let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
-                    for (i, instance_group) in raw_subchunk
-                        .block_face_instance_groups
-                        .into_iter()
-                        .enumerate()
+                    #[cfg(any(
+                        feature = "graphics_backend_wgpu",
+                        feature = "graphics_backend_vulkan",
+                    ))]
                     {
-                        let Some(base_quad) = raw_subchunk.block_face_quads[i] else {
-                            continue;
-                        };
-                        let quad_start_vertex =
-                            alloc_area!(block_face_vertex, subchunk_coords, base_quad);
-                        let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-                        let instance_group_start = alloc_area!(
-                            block_face_instance,
-                            subchunk_coords,
-                            instance_group.into_boxed_slice(),
-                        );
-                        block_face_start_vertices[i] = quad_start_vertex;
-                        block_face_instance_groups[i] = (instance_group_start, instance_group_len);
-                    }
-                    // Tinted block faces
-                    let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-                    let mut tinted_block_face_instance_groups: [(u32, u32); 6] = Default::default();
-                    for (i, instance_group) in raw_subchunk
-                        .tinted_block_face_instance_groups
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let Some(base_quad) = raw_subchunk.tinted_block_face_quads[i] else {
-                            continue;
-                        };
-                        let quad_start_vertex =
-                            alloc_area!(tinted_block_face_vertex, subchunk_coords, base_quad);
-                        let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-                        let instance_group_start = alloc_area!(
-                            tinted_block_face_instance,
-                            subchunk_coords,
-                            instance_group.into_boxed_slice(),
-                        );
-                        tinted_block_face_start_vertices[i] = quad_start_vertex;
-                        tinted_block_face_instance_groups[i] =
-                            (instance_group_start, instance_group_len);
-                    }
-                    let custom_block_groups = raw_subchunk
-                        .custom_block_groups
-                        .into_iter()
-                        .map(|group| {
-                            let num_instances: u32 = group.instances.len().try_into().unwrap();
-                            let start_instance = alloc_area!(
-                                custom_block_instance,
+                        // Base block faces
+                        let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
+                        let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
+                        for (i, instance_group) in raw_subchunk
+                            .block_face_instance_groups
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let Some(base_quad) = raw_subchunk.block_face_quads[i] else {
+                                continue;
+                            };
+                            let quad_start_vertex =
+                                alloc_area!(block_face_vertex, subchunk_coords, base_quad);
+                            let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+                            let instance_group_start = alloc_area!(
+                                block_face_instance,
                                 subchunk_coords,
-                                group.instances.into_boxed_slice(),
+                                instance_group.into_boxed_slice(),
                             );
-                            graphics::chunk::CustomBlockGroup {
-                                start_face_and_len: group.start_face_and_len,
-                                start_instance_and_len: [start_instance, num_instances],
-                            }
-                        })
-                        .collect();
-                    play_state.subchunks.insert(
-                        subchunk_coords,
-                        graphics::chunk::Subchunk {
-                            start_coords: raw_subchunk.start_coords,
-                            block_face_start_vertices,
-                            block_face_instance_groups,
-                            tinted_block_face_start_vertices,
-                            tinted_block_face_instance_groups,
-                            custom_block_groups,
-                            connected_faces: raw_subchunk.connected_faces,
-                        },
-                    );
+                            block_face_start_vertices[i] = quad_start_vertex;
+                            block_face_instance_groups[i] =
+                                (instance_group_start, instance_group_len);
+                        }
+                        // Tinted block faces
+                        let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
+                        let mut tinted_block_face_instance_groups: [(u32, u32); 6] =
+                            Default::default();
+                        for (i, instance_group) in raw_subchunk
+                            .tinted_block_face_instance_groups
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let Some(base_quad) = raw_subchunk.tinted_block_face_quads[i] else {
+                                continue;
+                            };
+                            let quad_start_vertex =
+                                alloc_area!(tinted_block_face_vertex, subchunk_coords, base_quad);
+                            let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+                            let instance_group_start = alloc_area!(
+                                tinted_block_face_instance,
+                                subchunk_coords,
+                                instance_group.into_boxed_slice(),
+                            );
+                            tinted_block_face_start_vertices[i] = quad_start_vertex;
+                            tinted_block_face_instance_groups[i] =
+                                (instance_group_start, instance_group_len);
+                        }
+                        let custom_block_groups = raw_subchunk
+                            .custom_block_groups
+                            .into_iter()
+                            .map(|group| {
+                                let num_instances: u32 = group.instances.len().try_into().unwrap();
+                                let start_instance = alloc_area!(
+                                    custom_block_instance,
+                                    subchunk_coords,
+                                    group.instances.into_boxed_slice(),
+                                );
+                                graphics::chunk::CustomBlockGroup {
+                                    start_face_and_len: group.start_face_and_len,
+                                    start_instance_and_len: [start_instance, num_instances],
+                                }
+                            })
+                            .collect();
+                        play_state.subchunks.insert(
+                            subchunk_coords,
+                            graphics::chunk::Subchunk {
+                                start_coords: raw_subchunk.start_coords,
+                                block_face_start_vertices,
+                                block_face_instance_groups,
+                                tinted_block_face_start_vertices,
+                                tinted_block_face_instance_groups,
+                                custom_block_groups,
+                                connected_faces: raw_subchunk.connected_faces,
+                            },
+                        );
+                    }
+                    #[cfg(feature = "graphics_backend_opengl")]
+                    graphics_state
+                        .subchunk_data_queue
+                        .push((subchunk_coords, raw_subchunk));
                     subchunks_processed_this_frame += 1;
                     play_state.visible_chunks.insert([subchunk_x, subchunk_z]);
                 }

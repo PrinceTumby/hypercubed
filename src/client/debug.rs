@@ -18,6 +18,7 @@ pub struct DebugRenderOutput {
 
 #[expect(clippy::too_many_arguments)]
 pub fn render_debug_ui(
+    event_loop_window_target: &super::winit::event_loop::EventLoopWindowTarget<()>,
     server_connection: &PlayConnection,
     play_state: &mut ClientPlayState,
     graphics_state: &mut GraphicsState,
@@ -66,6 +67,11 @@ pub fn render_debug_ui(
         let painter = Painter::new(ctx.clone(), LayerId::background(), Rect::EVERYTHING);
         Window::new("Debug Info").resizable(false).show(ctx, |ui| {
             ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
+            // Quit button.
+            // Useful for fullscreen mode and embedded platforms.
+            if ui.button("Quit").clicked() {
+                event_loop_window_target.exit();
+            }
             // VSync
             {
                 let mut new_graphics_options = graphics_state.graphics_options;

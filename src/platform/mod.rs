@@ -1,5 +1,11 @@
 cfg_if::cfg_if! {
-    if #[cfg(feature = "platform_ps2")] {
+    if #[cfg(feature = "platform_winit")] {
+        pub mod winit;
+        pub use winit::exports::*;
+    } else if #[cfg(feature = "platform_linux_drm")] {
+        pub mod linux_drm;
+        pub use linux_drm::exports::*;
+    } else if #[cfg(feature = "platform_ps2")] {
         pub mod ps2;
         pub use ps2::exports::*;
     } else if #[cfg(feature = "platform_opengl_mac_tiger")] {
@@ -111,8 +117,13 @@ pub fn get_embedded_cache() -> resources::block::EmbeddedCache {
     embedded_cache
 }
 
-#[cfg(feature = "full_std")]
-pub use std::net;
+cfg_if::cfg_if! {
+    if #[cfg(feature = "full_std")] {
+        #[allow(unused)]
+        pub(crate) use std::{dbg, eprintln, print, println};
+        pub use std::net;
+    }
+}
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "mini_std")] {

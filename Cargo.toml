@@ -94,14 +94,23 @@ bench = false
 name = "hypercubed"
 
 [features]
-default = ["graphics_backend_vulkan"]
+# default = ["platform_winit", "graphics_backend_vulkan"]
+# default = ["platform_winit", "graphics_backend_opengl"]
 # default = ["platform_ps2", "embed_vanilla_cache"]
 # default = ["platform_w2c2_opengl_mac", "embed_vanilla_cache"]
 # default = ["platform_opengl_mac_tiger", "embed_vanilla_cache"]
+default = ["platform_linux_drm", "graphics_backend_opengl"]
+
+# Represents platforms which have full access to a standard library, and for which using `std`
+# should be the default mechanism for most I/O.
+# This includes using `std` for printing, file I/O, and networking.
 full_std = [
     "mini_std",
-    "dep:winit",
 ]
+
+# Represents platforms which don't require `no_std`, but that don't necessarily have access to a
+# fully featured standard library.
+# For example, the "wasm32-unknown-unknown" target has `std`, but it isn't useful for any I/O.
 mini_std = [
     # Dependencies
     "dep:egui",
@@ -110,7 +119,6 @@ mini_std = [
     "dep:image",
     "dep:petgraph",
     "dep:pollster",
-    "dep:reqwest",
     "dep:threadpool",
     # Dependency features
     "ahash/default",
@@ -133,6 +141,7 @@ mini_std = [
     "uuid/default",
     "uuid/v4",
 ]
+
 mimalloc = ["dep:mimalloc"]
 protocol_verbose = ["full_std"]
 tracy = ["dep:tracing-tracy"]
@@ -144,25 +153,77 @@ embed_vanilla_cache = ["use_embedded_cache"]
 
 # Graphics backends
 
-graphics_backend_wgpu = ["full_std", "mimalloc", "dep:wgpu"]
-graphics_backend_vulkan = [
-    "full_std",
+graphics_backend_wgpu = [
+    # Other features
+    "platform_winit",
     "mimalloc",
+    # Dependencies
+    "dep:wgpu",
+]
+
+graphics_backend_vulkan = [
+    # Other features
+    "platform_winit",
+    "mimalloc",
+    # Dependencies
     "dep:vulkano",
     "dep:vulkan_prelude",
     "dep:hypercubed_vk_shaders",
     "resources/luma_textures",
 ]
-graphics_backend_software = [
+
+graphics_backend_opengl = [
+    # Other features
     "full_std",
+    # Dependencies
+    "dep:glutin",
+]
+
+graphics_backend_software = [
+    # Other features
+    "platform_winit",
     "mimalloc",
+    # Dependencies
     "dep:multiversion",
     "dep:pixels",
     "dep:wide",
-    "dep:fast-srgb8"
+    "dep:fast-srgb8",
 ]
 
 # Alternative platforms
+
+platform_winit = [
+    # Other features
+    "full_std",
+    # Dependencies
+    "dep:reqwest",
+    "dep:winit",
+    # Dependency features
+    "glutin/default",
+]
+
+platform_linux_drm = [
+    # Other features
+    "full_std",
+    # Dependencies
+    "dep:clap",
+    "dep:drm",
+    "dep:egli",
+    "dep:embedded-io",
+    "dep:embedded-io-async",
+    "dep:embedded-nal-async",
+    "dep:gbm",
+    "dep:input",
+    "dep:libseat",
+    "dep:raw-window-handle",
+    "dep:reqwless",
+    "dep:rustix",
+    # Dependency features
+    "embedded-io/std",
+    "embedded-io-async/std",
+    "gbm/import-egl",
+    "glutin/egl",
+]
 
 platform_ps2 = [
     # Other features
@@ -175,6 +236,7 @@ platform_ps2 = [
     "dep:embedded-nal-async",
     "dep:reqwless",
 ]
+
 platform_opengl_mac_tiger = [
     # Other features
     "use_embedded_cache",
@@ -231,8 +293,11 @@ bytemuck.workspace = true
 bytes = { version = "1", default-features = false }
 cfb8 = { version = "0.8" }
 cfg-if.workspace = true
+clap = { version = "4.5", features = ["derive"], optional = true }
 crab_nbt = { version = "0.2", default-features = false, features = ["serde"] }
 critical-section = { workspace = true, features = ["restore-state-bool"], optional = true }
+drm = { version = "0.14", optional = true }
+egli = { git = "https://github.com/Nercury/egli-rs", rev = "723ee34", optional = true }
 embedded-alloc = { version = "0.6", optional = true }
 embedded-io = { workspace = true, optional = true }
 embedded-io-async = { workspace = true, optional = true }
@@ -242,8 +307,12 @@ fast-srgb8 = { version = "1.0", optional = true }
 fixedbitset = "0.5"
 foldhash.workspace = true
 futures = { version = "0.3", default-features = false, features = ["async-await"] }
+gbm = { version = "0.18", default-features = false, features = ["drm-support"], optional = true }
+glutin = { version = "0.32", default-features = false, optional = true }
 image = { workspace = true, optional = true }
 indexmap.workspace = true
+input = { version = "0.9", optional = true }
+libseat = { version = "0.2", default-features = false, optional = true }
 log.workspace = true
 mimalloc = { version = "0.1", optional = true }
 miniz_oxide.workspace = true
@@ -259,7 +328,9 @@ pixels = { version = "0.15", optional = true }
 pollster = { version = "0.3", optional = true }
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
 rand = { version = "0.9", default-features = false, features = ["std_rng"] }
+raw-window-handle = { version = "0.6", optional = true }
 reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+rustix = { version = "1.1", features = ["event"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha1 = { version = "0.10", default-features = false }

@@ -157,7 +157,7 @@ pub struct GraphicsState {
 }
 
 impl GraphicsState {
-    pub async fn new<F>(window: &'static Window, register_blocks: F) -> anyhow::Result<Self>
+    pub async fn new<F>(window: Arc<Window>, register_blocks: F) -> anyhow::Result<Self>
     where
         F: FnOnce(
             &mut resources::block::Registry,
@@ -168,7 +168,7 @@ impl GraphicsState {
         let graphics_options = GraphicsOptions::default();
         // Initialise Vulkan state
         let library = VulkanLibrary::new().context("Failed to load Vulkan library")?;
-        let surface_required_extensions = VulkanSurface::required_extensions(window)
+        let surface_required_extensions = VulkanSurface::required_extensions(&window)
             .context("Failed to retrieve required surface extensions from window")?;
         let instance = VulkanInstance::new(
             &library,
@@ -183,7 +183,8 @@ impl GraphicsState {
         .context("Failed to create Vulkan instance")?;
         // SAFETY: `window` is 'static lifetime, so will definitely outlive surface.
         let surface = unsafe {
-            VulkanSurface::from_window_ref(&instance, window).context("Failed to create surface")?
+            VulkanSurface::from_window_ref(&instance, &window)
+                .context("Failed to create surface")?
         };
         // Find a suitable physical device
         let required_extensions = VulkanDeviceExtensions {
@@ -232,8 +233,6 @@ impl GraphicsState {
             })
             .min_by_key(|(device, _, _)| match device.properties().device_type {
                 VulkanPhysicalDeviceType::DiscreteGpu => 0,
-                // XXX: DEBUG
-                // VulkanPhysicalDeviceType::IntegratedGpu => -1,
                 VulkanPhysicalDeviceType::IntegratedGpu => 1,
                 VulkanPhysicalDeviceType::VirtualGpu => 2,
                 VulkanPhysicalDeviceType::Cpu => 3,
@@ -250,15 +249,10 @@ impl GraphicsState {
             .into_iter()
             .next()
             .unwrap();
-        // HACK: My computer (Windows) returns B8G8R8A8_UNORM as the first surface format for some
-        //       reason? Completely messes up the colours, so forcing this for now. Best solution
-        //       is probably to use R8G8B8A8_SRGB or B8G8R8A8_SRGB by default if they're supported,
-        //       and only then fall back to whatever's actually supported and hope for the best.
-        let image_format = VulkanFormat::R8G8B8A8_SRGB;
-        // let image_format = physical_device
-        //     .surface_formats(&surface, Default::default())
-        //     .unwrap()[0]
-        //     .0;
+        let image_format = physical_device
+            .surface_formats(&surface, &Default::default())
+            .unwrap()[0]
+            .0;
         let (device, mut queue_iter) = VulkanDevice::new(
             &physical_device,
             &VulkanDeviceCreateInfo {
@@ -1426,7 +1420,7 @@ impl TextureAtlas {
             memory_allocator,
             &VulkanImageCreateInfo {
                 image_type: VulkanImageType::Dim2d,
-                format: VulkanFormat::R8G8B8A8_SRGB,
+                format: VulkanFormat::R8G8B8A8_UNORM,
                 extent: [width, height, 1],
                 usage: VulkanImageUsage::SAMPLED | VulkanImageUsage::TRANSFER_DST,
                 ..Default::default()

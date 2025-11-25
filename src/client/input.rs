@@ -1,22 +1,9 @@
 use super::graphics::Camera;
 use nalgebra::Vector3;
 
-#[cfg(feature = "full_std")]
-use std_imports::*;
-#[cfg(feature = "full_std")]
-mod std_imports {
-    pub use winit::event::ElementState;
-    pub use winit::keyboard::{KeyCode, PhysicalKey};
-}
-
-#[cfg(not(feature = "full_std"))]
-use no_std_imports::*;
-#[cfg(not(feature = "full_std"))]
-mod no_std_imports {
-    pub use crate::platform::libs::winit;
-    pub use winit::event::ElementState;
-    pub use winit::keyboard::{KeyCode, PhysicalKey};
-}
+use crate::platform::libs::winit;
+use winit::event::ElementState;
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 // TODO We probably want to convert this to an action system at some point, where actions are
 // registered as being continuous, single press, toggle, etc. Would make modded custom controls
@@ -30,8 +17,8 @@ pub struct PlayControlState {
     pub jump: bool,
     pub sneak: bool,
     pub sprint: bool,
-    // Used as a flag for whether sprinting should be continually retried. Is enabled if sprint
-    // toggling is off and Left Control is held down.
+    /// Used as a flag for whether sprinting should be continually retried.
+    /// Is enabled if sprint toggling is off and Left Control is held down.
     pub trying_to_sprint: bool,
     // TODO: Rename this to better reflect that it enables all gameplay input, not just mouse
     // movement.
@@ -80,8 +67,7 @@ impl PlayControlState {
                     }
                 }
             }
-            //KeyCode::Space => self.jump = is_pressed,
-            KeyCode::BracketRight => self.jump = is_pressed,
+            KeyCode::Space | KeyCode::BracketRight => self.jump = is_pressed,
             KeyCode::ShiftLeft => self.sneak = is_pressed,
             KeyCode::Escape if is_pressed => {
                 self.mouse_locked = !self.mouse_locked;

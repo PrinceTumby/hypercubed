@@ -2,10 +2,12 @@
 #![cfg_attr(feature = "graphics_backend_software", expect(unused))]
 
 use crate::basic_types::AxisDirection;
+#[cfg(not(feature = "graphics_backend_opengl"))]
+use crate::client::RawCustomBlockGroup;
 use crate::client::graphics::{self, GraphicsResources};
 use crate::client::{
-    ClientPlayStateUpdate, MAX_HEIGHT_I32, MIN_HEIGHT_I32, RawChunk, RawCustomBlockGroup,
-    RawSubchunk, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32,
+    ClientPlayStateUpdate, MAX_HEIGHT_I32, MIN_HEIGHT_I32, RawChunk, RawSubchunk,
+    SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32,
 };
 #[cfg(feature = "graphics_backend_vulkan")]
 use crate::portable_prelude::*;
@@ -18,7 +20,8 @@ use fixedbitset::FixedBitSet;
 use portable_std::sync::mpsc;
 use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 use resources::block::blockstate::{self, BlockOpacity, SkyLightOpacity};
-use resources::block::model::{ModelType, Tint};
+use resources::block::model::{ModelIndex, ModelType, Tint};
+#[cfg_attr(not(feature = "graphics_backend_vulkan"), expect(unused))]
 use resources::block::{GlobalPaletteIndex, RightAngleRotation};
 use resources::identifier;
 use smallvec::SmallVec;
@@ -72,9 +75,15 @@ pub fn process_subchunks(
                 }
             }
         }
-        let mut block_faces: [Vec<_>; 6] = Default::default();
-        let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
-        let mut custom_block_instance_groups = FastHashMap::new();
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "graphics_backend_opengl")] {
+                let mut face_groups: [Vec<graphics::chunk::BlockFace>; 7] = Default::default();
+            } else {
+                let mut block_faces: [Vec<_>; 6] = Default::default();
+                let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
+                let mut custom_block_instance_groups = FastHashMap::new();
+            }
+        }
         for y in 0..SUBCHUNK_AXIS_LEN {
             let global_y_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y) + y as i32 + MIN_HEIGHT_I32;
             let global_y = global_y_i32 as f32;
@@ -177,167 +186,38 @@ pub fn process_subchunks(
                         ident if ident == spruce_leaves_registry_index => [0x61, 0x99, 0x61, 0xFF],
                         _ => [0x91, 0xBD, 0x59, 0xFF],
                     };
-                    let model = &graphics_resources.model_registry[model_idx];
-                    match model {
-                        ModelType::None => continue,
-                        ModelType::Block(info) => {
-                            match block_opacity {
-                                BlockOpacity::Opaque => {
-                                    for i in 0..6 {
-                                        if face_cull_map[i] {
-                                            continue;
-                                        }
-                                        block_faces[i].push(
-                                            graphics::chunk::block_face::Instance::new(
-                                                [x as u8, y as u8, z as u8],
-                                                info.per_face_atlas_uvs[i],
-                                                #[cfg(feature = "graphics_backend_vulkan")]
-                                                match info.per_face_uv_rotations[i] {
-                                                    RightAngleRotation::Zero => 0,
-                                                    RightAngleRotation::Ninety => 1,
-                                                    RightAngleRotation::OneEighty => 2,
-                                                    RightAngleRotation::TwoSeventy => 3,
-                                                },
-                                                #[cfg(not(feature = "graphics_backend_vulkan"))]
-                                                info.per_face_uv_rotations[i],
-                                                face_light_map[i],
-                                                blockstate_info
-                                                    .extra_info
-                                                    .light_info
-                                                    .emission_level
-                                                    > 0,
-                                            ),
-                                        );
-                                    }
-                                }
-                                _ => {
-                                    for i in 0..6 {
-                                        if face_cull_map[i] {
-                                            continue;
-                                        }
-                                        tinted_block_faces[i].push(
-                                            graphics::chunk::tinted_block_face::Instance::new(
-                                                [x as u8, y as u8, z as u8],
-                                                info.per_face_atlas_uvs[i],
-                                                #[cfg(feature = "graphics_backend_vulkan")]
-                                                match info.per_face_uv_rotations[i] {
-                                                    RightAngleRotation::Zero => 0,
-                                                    RightAngleRotation::Ninety => 1,
-                                                    RightAngleRotation::OneEighty => 2,
-                                                    RightAngleRotation::TwoSeventy => 3,
-                                                },
-                                                #[cfg(not(feature = "graphics_backend_vulkan"))]
-                                                info.per_face_uv_rotations[i],
-                                                face_light_map[i],
-                                                // Block doesn't have any tint, so just use
-                                                // transparent white as a null value.
-                                                [0xFF, 0xFF, 0xFF, 0x00],
-                                                blockstate_info
-                                                    .extra_info
-                                                    .light_info
-                                                    .emission_level
-                                                    > 0,
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        ModelType::TintedBlock(info) => {
-                            for i in 0..6 {
-                                if face_cull_map[i] {
-                                    continue;
-                                }
-                                tinted_block_faces[i].push(
-                                    graphics::chunk::tinted_block_face::Instance::new(
-                                        [x as u8, y as u8, z as u8],
-                                        info.per_face_atlas_uvs[i],
-                                        #[cfg(feature = "graphics_backend_vulkan")]
-                                        match info.per_face_uv_rotations[i] {
-                                            RightAngleRotation::Zero => 0,
-                                            RightAngleRotation::Ninety => 1,
-                                            RightAngleRotation::OneEighty => 2,
-                                            RightAngleRotation::TwoSeventy => 3,
-                                        },
-                                        #[cfg(not(feature = "graphics_backend_vulkan"))]
-                                        info.per_face_uv_rotations[i],
-                                        face_light_map[i],
-                                        tint_color,
-                                        blockstate_info.extra_info.light_info.emission_level > 0,
-                                    ),
-                                );
-                            }
-                        }
-                        ModelType::OverlayedBlock(info) => {
-                            for face in &info.faces {
-                                if face_cull_map[face.face_i as usize] {
-                                    continue;
-                                }
-                                if let Some(tint) = face.tint {
-                                    assert!(tint == Tint::Biome, "TODO: Alternative tints");
-                                    tinted_block_faces[face.face_i as usize].push(
-                                        graphics::chunk::tinted_block_face::Instance::new(
-                                            [x as u8, y as u8, z as u8],
-                                            face.atlas_uvs,
-                                            #[cfg(feature = "graphics_backend_vulkan")]
-                                            match face.uv_rotation {
-                                                RightAngleRotation::Zero => 0,
-                                                RightAngleRotation::Ninety => 1,
-                                                RightAngleRotation::OneEighty => 2,
-                                                RightAngleRotation::TwoSeventy => 3,
-                                            },
-                                            #[cfg(not(feature = "graphics_backend_vulkan"))]
-                                            face.uv_rotation,
-                                            face_light_map[face.face_i as usize],
-                                            tint_color,
-                                            blockstate_info.extra_info.light_info.emission_level
-                                                > 0,
-                                        ),
-                                    );
-                                } else {
-                                    block_faces[face.face_i as usize].push(
-                                        graphics::chunk::block_face::Instance::new(
-                                            [x as u8, y as u8, z as u8],
-                                            face.atlas_uvs,
-                                            #[cfg(feature = "graphics_backend_vulkan")]
-                                            match face.uv_rotation {
-                                                RightAngleRotation::Zero => 0,
-                                                RightAngleRotation::Ninety => 1,
-                                                RightAngleRotation::OneEighty => 2,
-                                                RightAngleRotation::TwoSeventy => 3,
-                                            },
-                                            #[cfg(not(feature = "graphics_backend_vulkan"))]
-                                            face.uv_rotation,
-                                            face_light_map[face.face_i as usize],
-                                            blockstate_info.extra_info.light_info.emission_level
-                                                > 0,
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                        ModelType::Other(info) => {
-                            // TODO:
-                            // - Add a `face_opacity_map`
-                            // - For each neighbour, if it's opaque, replace with centre block
-                            //   light level
-                            let light_section = chunk
-                                .lighting
-                                .get_section(MIN_HEIGHT_I32, subchunk_y + (MIN_HEIGHT_I32 / 16))
-                                .unwrap();
-                            let block_instances = custom_block_instance_groups
-                                .entry(info)
-                                .or_insert_with(Vec::new);
-                            block_instances.push(graphics::chunk::custom_block::Instance::new(
-                                [global_x, global_y, global_z],
-                                tint_color,
-                                light_section.get(x, y, z),
-                                face_light_map,
-                                blockstate_info.extra_info.light_info.emission_level > 0,
-                            ));
-                        }
-                        _ => {}
-                    }
+                    #[cfg(feature = "graphics_backend_opengl")]
+                    process_subchunk_model(
+                        &mut face_groups,
+                        graphics_resources,
+                        chunk,
+                        blockstate_info,
+                        block_opacity,
+                        face_cull_map,
+                        face_light_map,
+                        tint_color,
+                        [subchunk_x, subchunk_y, subchunk_z],
+                        [global_x, global_y, global_z],
+                        [x, y, z],
+                        model_idx,
+                    );
+                    #[cfg(not(feature = "graphics_backend_opengl"))]
+                    process_subchunk_model(
+                        &mut block_faces,
+                        &mut tinted_block_faces,
+                        &mut custom_block_instance_groups,
+                        graphics_resources,
+                        chunk,
+                        blockstate_info,
+                        block_opacity,
+                        face_cull_map,
+                        face_light_map,
+                        tint_color,
+                        [subchunk_x, subchunk_y, subchunk_z],
+                        [global_x, global_y, global_z],
+                        [x, y, z],
+                        model_idx,
+                    );
                 }
             }
         }
@@ -502,48 +382,62 @@ pub fn process_subchunks(
             SUBCHUNK_AXIS_LEN_I32 * subchunk_y + MIN_HEIGHT_I32,
             SUBCHUNK_AXIS_LEN_I32 * subchunk_z,
         ];
-        // Block faces
-        let mut block_face_quads: [Option<_>; 6] = [None; 6];
-        let block_face_instance_groups: [Vec<_>; 6] = block_faces;
-        for i in 0..6 {
-            if block_face_instance_groups[i].is_empty() {
-                continue;
-            }
-            let base_quad =
-                graphics::chunk::block_face::Vertex::generate_base_quad(start_coords, i);
-            block_face_quads[i] = Some(base_quad);
+        #[cfg(feature = "graphics_backend_opengl")]
+        {
+            new_raw_subchunks.push((
+                subchunk_coords,
+                RawSubchunk {
+                    start_coords,
+                    face_groups,
+                    connected_faces,
+                },
+            ));
         }
-        // Tinted block faces
-        let mut tinted_block_face_quads: [Option<_>; 6] = [None; 6];
-        let tinted_block_face_instance_groups: [Vec<_>; 6] = tinted_block_faces;
-        for i in 0..6 {
-            if tinted_block_face_instance_groups[i].is_empty() {
-                continue;
+        #[cfg(not(feature = "graphics_backend_opengl"))]
+        {
+            // Block faces
+            let mut block_face_quads: [Option<_>; 6] = [None; 6];
+            let block_face_instance_groups: [Vec<_>; 6] = block_faces;
+            for i in 0..6 {
+                if block_face_instance_groups[i].is_empty() {
+                    continue;
+                }
+                let base_quad =
+                    graphics::chunk::block_face::Vertex::generate_base_quad(start_coords, i);
+                block_face_quads[i] = Some(base_quad);
             }
-            let base_quad =
-                graphics::chunk::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
-            tinted_block_face_quads[i] = Some(base_quad);
+            // Tinted block faces
+            let mut tinted_block_face_quads: [Option<_>; 6] = [None; 6];
+            let tinted_block_face_instance_groups: [Vec<_>; 6] = tinted_block_faces;
+            for i in 0..6 {
+                if tinted_block_face_instance_groups[i].is_empty() {
+                    continue;
+                }
+                let base_quad =
+                    graphics::chunk::tinted_block_face::Vertex::generate_base_quad(start_coords, i);
+                tinted_block_face_quads[i] = Some(base_quad);
+            }
+            // Custom block groups
+            let custom_block_groups = custom_block_instance_groups
+                .into_iter()
+                .map(|(info, instances)| RawCustomBlockGroup {
+                    start_face_and_len: info.start_face_and_len,
+                    instances,
+                })
+                .collect();
+            new_raw_subchunks.push((
+                subchunk_coords,
+                RawSubchunk {
+                    start_coords,
+                    block_face_quads,
+                    block_face_instance_groups,
+                    tinted_block_face_quads,
+                    tinted_block_face_instance_groups,
+                    custom_block_groups,
+                    connected_faces,
+                },
+            ));
         }
-        // Custom block groups
-        let custom_block_groups = custom_block_instance_groups
-            .into_iter()
-            .map(|(info, instances)| RawCustomBlockGroup {
-                start_face_and_len: info.start_face_and_len,
-                instances,
-            })
-            .collect();
-        new_raw_subchunks.push((
-            subchunk_coords,
-            RawSubchunk {
-                start_coords,
-                block_face_quads,
-                block_face_instance_groups,
-                tinted_block_face_quads,
-                tinted_block_face_instance_groups,
-                custom_block_groups,
-                connected_faces,
-            },
-        ));
     }
     play_state_update_tx
         .send(ClientPlayStateUpdate::PlaceSubchunks {
@@ -551,6 +445,333 @@ pub fn process_subchunks(
             new_raw_subchunks,
         })
         .unwrap();
+}
+
+#[cfg(feature = "graphics_backend_opengl")]
+fn process_subchunk_model(
+    face_groups: &mut [Vec<graphics::chunk::BlockFace>; 7],
+    graphics_resources: &GraphicsResources,
+    chunk: &RawChunk,
+    blockstate_info: &blockstate::Blockstate,
+    block_opacity: BlockOpacity,
+    face_cull_map: [bool; 6],
+    face_light_map: [[u8; 2]; 6],
+    tint_color: [u8; 4],
+    [subchunk_x, subchunk_y, subchunk_z]: [i32; 3],
+    [global_x, global_y, global_z]: [f32; 3],
+    [x, y, z]: [usize; 3],
+    model_idx: ModelIndex,
+) {
+    let model = &graphics_resources.model_registry[model_idx];
+    match model {
+        ModelType::None => return,
+        ModelType::Block(info) => {
+            match block_opacity {
+                BlockOpacity::Opaque => {
+                    for i in 0..6 {
+                        if face_cull_map[i] {
+                            continue;
+                        }
+                        face_groups[i].push(graphics::chunk::BlockFace::new_basic(
+                            [x as u8, y as u8, z as u8],
+                            info.per_face_atlas_uvs[i],
+                            info.per_face_uv_rotations[i],
+                            face_light_map[i],
+                            i,
+                        ));
+                    }
+                }
+                _ => {
+                    for i in 0..6 {
+                        if face_cull_map[i] {
+                            continue;
+                        }
+                        face_groups[i].push(graphics::chunk::BlockFace::new_tinted(
+                            [x as u8, y as u8, z as u8],
+                            info.per_face_atlas_uvs[i],
+                            info.per_face_uv_rotations[i],
+                            face_light_map[i],
+                            // Block doesn't have any tint, so just use opaque
+                            // white as a null value.
+                            [0xFF; 4],
+                            i,
+                        ));
+                    }
+                }
+            }
+        }
+        ModelType::TintedBlock(info) => {
+            for i in 0..6 {
+                if face_cull_map[i] {
+                    continue;
+                }
+                face_groups[i].push(graphics::chunk::BlockFace::new_tinted(
+                    [x as u8, y as u8, z as u8],
+                    info.per_face_atlas_uvs[i],
+                    info.per_face_uv_rotations[i],
+                    face_light_map[i],
+                    tint_color,
+                    i,
+                ));
+            }
+        }
+        ModelType::OverlayedBlock(info) => {
+            for face in &info.faces {
+                if face_cull_map[face.face_i as usize] {
+                    continue;
+                }
+                if let Some(tint) = face.tint {
+                    assert!(tint == Tint::Biome, "TODO: Alternative tints");
+                    face_groups[face.face_i as usize].push(graphics::chunk::BlockFace::new_tinted(
+                        [x as u8, y as u8, z as u8],
+                        face.atlas_uvs,
+                        face.uv_rotation,
+                        face_light_map[face.face_i as usize],
+                        tint_color,
+                        face.face_i as usize,
+                    ));
+                } else {
+                    face_groups[face.face_i as usize].push(graphics::chunk::BlockFace::new_basic(
+                        [x as u8, y as u8, z as u8],
+                        face.atlas_uvs,
+                        face.uv_rotation,
+                        face_light_map[face.face_i as usize],
+                        face.face_i as usize,
+                    ));
+                }
+            }
+        }
+        ModelType::Liquid(_info) => {
+            // TODO:
+        }
+        ModelType::Other(info) => {
+            let [start, len]: [usize; 2] = info.start_face_and_len.map(|n| n.try_into().unwrap());
+            let faces = &graphics_resources.model_registry.custom_block_faces[start..start + len];
+            face_groups[6].reserve(faces.len());
+            let light_section = chunk
+                .lighting
+                .get_section(MIN_HEIGHT_I32, subchunk_y + (MIN_HEIGHT_I32 / 16))
+                .unwrap();
+            for face in faces {
+                face_groups[6].push(graphics::chunk::BlockFace::new_custom(
+                    face,
+                    [x as u8, y as u8, z as u8],
+                    tint_color,
+                    light_section.get(x, y, z),
+                    face_light_map,
+                ));
+            }
+        }
+        ModelType::Composite(parts) => {
+            for part in parts {
+                process_subchunk_model(
+                    face_groups,
+                    graphics_resources,
+                    chunk,
+                    blockstate_info,
+                    block_opacity,
+                    face_cull_map,
+                    face_light_map,
+                    tint_color,
+                    [subchunk_x, subchunk_y, subchunk_z],
+                    [global_x, global_y, global_z],
+                    [x, y, z],
+                    part.model_idx,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "graphics_backend_opengl"))]
+fn process_subchunk_model(
+    block_faces: &mut [Vec<graphics::chunk::block_face::Instance>; 6],
+    tinted_block_faces: &mut [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
+    custom_block_instance_groups: &mut FastHashMap<
+        resources::block::model::OtherInfo,
+        Vec<graphics::chunk::custom_block::Instance>,
+    >,
+    graphics_resources: &GraphicsResources,
+    chunk: &RawChunk,
+    blockstate_info: &blockstate::Blockstate,
+    block_opacity: BlockOpacity,
+    face_cull_map: [bool; 6],
+    face_light_map: [[u8; 2]; 6],
+    tint_color: [u8; 4],
+    [subchunk_x, subchunk_y, subchunk_z]: [i32; 3],
+    [global_x, global_y, global_z]: [f32; 3],
+    [x, y, z]: [usize; 3],
+    model_idx: ModelIndex,
+) {
+    let model = &graphics_resources.model_registry[model_idx];
+    match model {
+        ModelType::None => return,
+        ModelType::Block(info) => {
+            match block_opacity {
+                BlockOpacity::Opaque => {
+                    for i in 0..6 {
+                        if face_cull_map[i] {
+                            continue;
+                        }
+                        block_faces[i].push(graphics::chunk::block_face::Instance::new(
+                            [x as u8, y as u8, z as u8],
+                            info.per_face_atlas_uvs[i],
+                            #[cfg(feature = "graphics_backend_vulkan")]
+                            match info.per_face_uv_rotations[i] {
+                                RightAngleRotation::Zero => 0,
+                                RightAngleRotation::Ninety => 1,
+                                RightAngleRotation::OneEighty => 2,
+                                RightAngleRotation::TwoSeventy => 3,
+                            },
+                            #[cfg(not(feature = "graphics_backend_vulkan"))]
+                            info.per_face_uv_rotations[i],
+                            face_light_map[i],
+                            blockstate_info.extra_info.light_info.emission_level > 0,
+                        ));
+                    }
+                }
+                _ => {
+                    for i in 0..6 {
+                        if face_cull_map[i] {
+                            continue;
+                        }
+                        tinted_block_faces[i].push(
+                            graphics::chunk::tinted_block_face::Instance::new(
+                                [x as u8, y as u8, z as u8],
+                                info.per_face_atlas_uvs[i],
+                                #[cfg(feature = "graphics_backend_vulkan")]
+                                match info.per_face_uv_rotations[i] {
+                                    RightAngleRotation::Zero => 0,
+                                    RightAngleRotation::Ninety => 1,
+                                    RightAngleRotation::OneEighty => 2,
+                                    RightAngleRotation::TwoSeventy => 3,
+                                },
+                                #[cfg(not(feature = "graphics_backend_vulkan"))]
+                                info.per_face_uv_rotations[i],
+                                face_light_map[i],
+                                // Block doesn't have any tint, so just use opaque
+                                // white as a null value.
+                                [0xFF; 4],
+                                blockstate_info.extra_info.light_info.emission_level > 0,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        ModelType::TintedBlock(info) => {
+            for i in 0..6 {
+                if face_cull_map[i] {
+                    continue;
+                }
+                tinted_block_faces[i].push(graphics::chunk::tinted_block_face::Instance::new(
+                    [x as u8, y as u8, z as u8],
+                    info.per_face_atlas_uvs[i],
+                    #[cfg(feature = "graphics_backend_vulkan")]
+                    match info.per_face_uv_rotations[i] {
+                        RightAngleRotation::Zero => 0,
+                        RightAngleRotation::Ninety => 1,
+                        RightAngleRotation::OneEighty => 2,
+                        RightAngleRotation::TwoSeventy => 3,
+                    },
+                    #[cfg(not(feature = "graphics_backend_vulkan"))]
+                    info.per_face_uv_rotations[i],
+                    face_light_map[i],
+                    tint_color,
+                    blockstate_info.extra_info.light_info.emission_level > 0,
+                ));
+            }
+        }
+        ModelType::OverlayedBlock(info) => {
+            for face in &info.faces {
+                if face_cull_map[face.face_i as usize] {
+                    continue;
+                }
+                if let Some(tint) = face.tint {
+                    assert!(tint == Tint::Biome, "TODO: Alternative tints");
+                    tinted_block_faces[face.face_i as usize].push(
+                        graphics::chunk::tinted_block_face::Instance::new(
+                            [x as u8, y as u8, z as u8],
+                            face.atlas_uvs,
+                            #[cfg(feature = "graphics_backend_vulkan")]
+                            match face.uv_rotation {
+                                RightAngleRotation::Zero => 0,
+                                RightAngleRotation::Ninety => 1,
+                                RightAngleRotation::OneEighty => 2,
+                                RightAngleRotation::TwoSeventy => 3,
+                            },
+                            #[cfg(not(feature = "graphics_backend_vulkan"))]
+                            face.uv_rotation,
+                            face_light_map[face.face_i as usize],
+                            tint_color,
+                            blockstate_info.extra_info.light_info.emission_level > 0,
+                        ),
+                    );
+                } else {
+                    block_faces[face.face_i as usize].push(
+                        graphics::chunk::block_face::Instance::new(
+                            [x as u8, y as u8, z as u8],
+                            face.atlas_uvs,
+                            #[cfg(feature = "graphics_backend_vulkan")]
+                            match face.uv_rotation {
+                                RightAngleRotation::Zero => 0,
+                                RightAngleRotation::Ninety => 1,
+                                RightAngleRotation::OneEighty => 2,
+                                RightAngleRotation::TwoSeventy => 3,
+                            },
+                            #[cfg(not(feature = "graphics_backend_vulkan"))]
+                            face.uv_rotation,
+                            face_light_map[face.face_i as usize],
+                            blockstate_info.extra_info.light_info.emission_level > 0,
+                        ),
+                    );
+                }
+            }
+        }
+        ModelType::Liquid(_info) => {
+            // TODO:
+        }
+        ModelType::Other(info) => {
+            // TODO:
+            // - Add a `face_opacity_map`
+            // - For each neighbour, if it's opaque, replace with centre block
+            //   light level
+            let light_section = chunk
+                .lighting
+                .get_section(MIN_HEIGHT_I32, subchunk_y + (MIN_HEIGHT_I32 / 16))
+                .unwrap();
+            let block_instances = custom_block_instance_groups
+                .entry(*info)
+                .or_insert_with(Vec::new);
+            block_instances.push(graphics::chunk::custom_block::Instance::new(
+                [global_x, global_y, global_z],
+                tint_color,
+                light_section.get(x, y, z),
+                face_light_map,
+                blockstate_info.extra_info.light_info.emission_level > 0,
+            ));
+        }
+        ModelType::Composite(parts) => {
+            for part in parts {
+                process_subchunk_model(
+                    block_faces,
+                    tinted_block_faces,
+                    custom_block_instance_groups,
+                    graphics_resources,
+                    chunk,
+                    blockstate_info,
+                    block_opacity,
+                    face_cull_map,
+                    face_light_map,
+                    tint_color,
+                    [subchunk_x, subchunk_y, subchunk_z],
+                    [global_x, global_y, global_z],
+                    [x, y, z],
+                    part.model_idx,
+                );
+            }
+        }
+    }
 }
 
 pub fn recalculate_light(

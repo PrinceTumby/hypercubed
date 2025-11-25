@@ -299,7 +299,7 @@ impl Renderer {
                     memory_allocator,
                     &VulkanImageCreateInfo {
                         image_type: VulkanImageType::Dim2d,
-                        format: VulkanFormat::R8G8B8A8_SRGB,
+                        format: VulkanFormat::R8G8B8A8_UNORM,
                         extent: [size[0], size[1], 1],
                         usage: VulkanImageUsage::SAMPLED | VulkanImageUsage::TRANSFER_DST,
                         ..Default::default()

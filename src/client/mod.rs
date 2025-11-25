@@ -10,6 +10,7 @@ use crate::portable_prelude::*;
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode};
 use crate::protocol::prelude::*;
+#[allow(unused)]
 use anyhow::Context;
 use graphics::GraphicsState;
 use nalgebra::Point3;
@@ -17,37 +18,18 @@ use portable_std::sync::mpsc;
 #[allow(unused)]
 use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 
-#[cfg(feature = "full_std")]
-use full_std_imports::*;
-#[cfg(feature = "full_std")]
-mod full_std_imports {
-    pub use std::time::Instant;
-    pub use threadpool::ThreadPool;
-    pub use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
-    pub use winit::event_loop::{ControlFlow, EventLoop};
-    pub use winit::window::{Fullscreen, WindowBuilder};
-}
+use crate::platform::libs::{egui, winit};
+use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
+use winit::event_loop::{ControlFlow, EventLoop};
+use winit::window::Fullscreen;
 
-#[cfg(all(feature = "mini_std", not(feature = "full_std")))]
-use mini_std_imports::*;
-#[cfg(all(feature = "mini_std", not(feature = "full_std")))]
-mod mini_std_imports {
-    pub use crate::platform::libs::winit;
-    pub use crate::platform::time::Instant;
-    pub use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
-    pub use winit::event_loop::{ControlFlow, EventLoop};
-    pub use winit::window::{Fullscreen, WindowBuilder};
-}
-
-#[cfg(not(any(feature = "full_std", feature = "mini_std")))]
-use no_std_imports::*;
-#[cfg(not(any(feature = "full_std", feature = "mini_std")))]
-mod no_std_imports {
-    pub use crate::platform::libs::{egui, winit};
-    pub use crate::platform::time::Instant;
-    pub use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
-    pub use winit::event_loop::{ControlFlow, EventLoop};
-    pub use winit::window::{Fullscreen, WindowBuilder};
+cfg_if::cfg_if! {
+    if #[cfg(feature = "full_std")] {
+        use std::time::Instant;
+        use threadpool::ThreadPool;
+    } else {
+        use crate::platform::time::Instant;
+    }
 }
 
 pub struct ClientPlayState {
@@ -97,21 +79,32 @@ pub enum ClientPlayStateUpdate {
     },
 }
 
-#[derive(Debug)]
-pub struct RawSubchunk {
-    pub start_coords: [i32; 3],
-    pub block_face_quads: [Option<[graphics::chunk::block_face::Vertex; 4]>; 6],
-    pub block_face_instance_groups: [Vec<graphics::chunk::block_face::Instance>; 6],
-    pub tinted_block_face_quads: [Option<[graphics::chunk::tinted_block_face::Vertex; 4]>; 6],
-    pub tinted_block_face_instance_groups: [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
-    pub custom_block_groups: Vec<RawCustomBlockGroup>,
-    pub connected_faces: graphics::chunk::SubchunkConnectivity,
-}
+cfg_if::cfg_if! {
+    if #[cfg(feature = "graphics_backend_opengl")] {
+        #[derive(Debug)]
+        pub struct RawSubchunk {
+            pub start_coords: [i32; 3],
+            pub face_groups: [Vec<graphics::chunk::BlockFace>; 7],
+            pub connected_faces: graphics::chunk::SubchunkConnectivity,
+        }
+    } else {
+        #[derive(Debug)]
+        pub struct RawSubchunk {
+            pub start_coords: [i32; 3],
+            pub block_face_quads: [Option<[graphics::chunk::block_face::Vertex; 4]>; 6],
+            pub block_face_instance_groups: [Vec<graphics::chunk::block_face::Instance>; 6],
+            pub tinted_block_face_quads: [Option<[graphics::chunk::tinted_block_face::Vertex; 4]>; 6],
+            pub tinted_block_face_instance_groups: [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
+            pub custom_block_groups: Vec<RawCustomBlockGroup>,
+            pub connected_faces: graphics::chunk::SubchunkConnectivity,
+        }
 
-#[derive(Debug)]
-pub struct RawCustomBlockGroup {
-    pub start_face_and_len: [u32; 2],
-    pub instances: Vec<graphics::chunk::custom_block::Instance>,
+        #[derive(Debug)]
+        pub struct RawCustomBlockGroup {
+            pub start_face_and_len: [u32; 2],
+            pub instances: Vec<graphics::chunk::custom_block::Instance>,
+        }
+    }
 }
 
 pub const SUBCHUNK_AXIS_LEN: usize = 16;
@@ -119,35 +112,19 @@ pub const SUBCHUNK_AXIS_LEN_I32: i32 = SUBCHUNK_AXIS_LEN as i32;
 pub const MIN_HEIGHT_I32: i32 = -64;
 pub const MAX_HEIGHT_I32: i32 = 319;
 
-#[cfg(not(feature = "full_std"))]
-pub struct WindowRunEmbeddedArgs {
-    pub event_loop: EventLoop,
-    pub window: &'static winit::window::Window,
-    pub graphics_state: GraphicsState,
-}
-
-pub async fn window_run(
+pub async fn window_run<W: AsRef<winit::window::Window> + 'static>(
     server_connection: Arc<PlayConnection>,
     clientbound_rx: mpsc::Receiver<ClientboundPacket>,
     clientbound_tx: mpsc::Sender<ClientboundPacket>,
-    #[cfg(not(feature = "full_std"))] WindowRunEmbeddedArgs {
-        event_loop,
-        window,
-        mut graphics_state,
-    }: WindowRunEmbeddedArgs,
+    event_loop: EventLoop<()>,
+    window: W,
+    mut graphics_state: GraphicsState,
 ) -> anyhow::Result<()> {
     use input::PlayControlState;
-    #[cfg(feature = "full_std")]
-    let event_loop = EventLoop::new()?;
-    // TODO: Change this to an `Arc`
-    #[cfg(feature = "full_std")]
-    let window = Box::leak(Box::new(WindowBuilder::new().build(&event_loop)?));
+    let window = window.as_ref();
     window.set_title("Hypercubed Client");
     let window_id = window.id();
     let mut scale_factor = window.scale_factor();
-    #[cfg(feature = "full_std")]
-    let mut graphics_state =
-        GraphicsState::new(window, resources::block::register_vanilla_blocks).await?;
     let mut input_state = PlayControlState::default();
     let egui_ctx = egui::Context::default();
     let mut play_state = ClientPlayState {
@@ -210,13 +187,14 @@ pub async fn window_run(
                 current_time_s += delta_time_f64;
                 let delta_time = delta_time_f64 as f32;
                 // Debug GUI
-                #[cfg(feature = "mini_std")]
+                #[cfg(feature = "full_std")]
                 let debug::DebugRenderOutput {
                     egui_output,
                     debug_points,
                     debug_lines,
                     debug_triangles,
                 } = debug::render_debug_ui(
+                    window_target,
                     &server_connection,
                     &mut play_state,
                     &mut graphics_state,
@@ -246,18 +224,6 @@ pub async fn window_run(
                 // Main rendering
                 cfg_if::cfg_if! {
                     if #[cfg(feature = "graphics_backend_vulkan")] {
-                        // if debug_frame_i > 144 * 2 {
-                        //     graphics_state.radiance_cascades_debug_render(&play_state.subchunks);
-                        // }
-                        // XXX: DEBUG
-                        // if debug_frame_i == 144 * 2 {
-                        //     eprintln!("Updating subchunk lighting!");
-                        //     graphics_state.update_all_subchunks_radiance_lighting(
-                        //         &thread_pool,
-                        //         &play_state.subchunks,
-                        //         &play_state.raw_chunks,
-                        //     );
-                        // }
                         debug_output = graphics_state.render(
                             &play_state.subchunks,
                             &play_state.visible_chunks,
@@ -287,6 +253,18 @@ pub async fn window_run(
                             }
                             Err(wgpu::SurfaceError::OutOfMemory) => window_target.exit(),
                         }
+                    } else if #[cfg(feature = "graphics_backend_opengl")] {
+                        debug_output = graphics_state.render(
+                            &mut play_state.subchunks,
+                            &play_state.visible_chunks,
+                            &egui_ctx,
+                            egui_output,
+                            &debug_state,
+                            &debug_points,
+                            &debug_lines,
+                            &debug_triangles,
+                        )
+                        .unwrap();
                     } else if #[cfg(feature = "graphics_backend_software")] {
                         debug_output = graphics_state.render(
                             &play_state.subchunks,
@@ -380,6 +358,10 @@ pub async fn window_run(
                         winit::event::MouseButton::Middle => egui::PointerButton::Middle,
                         winit::event::MouseButton::Back => egui::PointerButton::Extra1,
                         winit::event::MouseButton::Forward => egui::PointerButton::Extra2,
+                        // For non-winit platforms, we define our own `winit` inside the same
+                        // crate, so `#[non_exhaustive]` does nothing.
+                        // Because of this, we have to just suppress the warning here.
+                        #[allow(unreachable_patterns)]
                         _ => return,
                     },
                     pressed: state.is_pressed(),
