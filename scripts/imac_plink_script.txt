@@ -1,2 +1,0 @@
-cd Documents/hypercubed_build
-make -j$(sysctl -n hw.ncpu)

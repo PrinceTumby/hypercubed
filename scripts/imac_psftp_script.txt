@@ -1,9 +1,0 @@
-cd Documents/hypercubed_build
-put target/wasm32-wasip1/debug/hypercubed.c
-put target/wasm32-wasip1/debug/hypercubed.h
-put target/wasm32-wasip1/debug/datasegments
-del s*.c
-del s*.o
-mput target/wasm32-wasip1/debug/s*.c
-mput target/wasm32-wasip1/debug/w2c2_generated_bindings/*
-mput src/platform/w2c2_opengl_mac/objc_native_support/*

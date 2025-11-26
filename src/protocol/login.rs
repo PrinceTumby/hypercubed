@@ -161,52 +161,17 @@ pub async fn login(
                     };
                     let session_server_url =
                         "https://sessionserver.mojang.com/session/minecraft/join";
-                    cfg_if::cfg_if! {
-                        if #[cfg(feature = "platform_winit")] {{
-                            let auth_response = reqwest::blocking::Client::new()
-                                .post(session_server_url)
-                                .json(&join_info)
-                                .send()
-                                .map_err(io::Error::other)?;
-                            if !auth_response.status().is_success() {
-                                let status = auth_response.status();
-                                return Err(io::Error::other(format!(
-                                    "authentication failure - {status:?}: {}",
-                                    auth_response.text().unwrap_or_default(),
-                                )));
-                            }
-                        }} else {{
-                            use reqwless::request::{RequestBuilder, Method};
-                            use reqwless::client::HttpClient;
-                            use reqwless::headers::ContentType;
-                            let auth_tcp_stack = crate::platform::TcpStack;
-                            let auth_dns_resolver = crate::platform::DnsResolver;
-                            let mut auth_client = HttpClient::new(
-                                &auth_tcp_stack,
-                                &auth_dns_resolver,
-                            );
-                            let join_info_json = serde_json::to_vec(&join_info)
-                                .map_err(io::Error::other)?;
-                            let join_info_json_bytes = join_info_json.as_slice();
-                            let mut auth_response_buffer = [0u8; 4096];
-                            let mut auth_request = auth_client
-                                .request(Method::POST, session_server_url)
-                                .await
-                                .unwrap()
-                                .body(join_info_json_bytes)
-                                .content_type(ContentType::ApplicationJson);
-                            let auth_response = auth_request
-                                .send(&mut auth_response_buffer)
-                                .await
-                                .unwrap();
-                            if !auth_response.status.is_successful() {
-                                let status = auth_response.status;
-                                return Err(io::Error::other(format!(
-                                    "authentication failure - {status:?}: {:?}",
-                                    core::str::from_utf8(auth_response.body().body_buf),
-                                )));
-                            }
-                        }}
+                    let auth_response = reqwest::blocking::Client::new()
+                        .post(session_server_url)
+                        .json(&join_info)
+                        .send()
+                        .map_err(io::Error::other)?;
+                    if !auth_response.status().is_success() {
+                        let status = auth_response.status();
+                        return Err(io::Error::other(format!(
+                            "authentication failure - {status:?}: {}",
+                            auth_response.text().unwrap_or_default(),
+                        )));
                     }
                 }
                 // Send encryption info to server

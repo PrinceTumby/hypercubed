@@ -1,2 +1,0 @@
-cd Documents/hypercubed_build_2
-cc libhypercubed.a -lobjc -framework Cocoa -framework OpenGL -framework Quartz

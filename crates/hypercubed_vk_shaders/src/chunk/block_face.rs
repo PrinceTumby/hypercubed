@@ -1,4 +1,3 @@
-#[expect(unused)]
 use super::types::BlockFaceInstanceFields;
 use spirv_std::glam::*;
 use spirv_std::image::Image2d;
@@ -45,15 +44,6 @@ pub fn calculate_light_rgb(sky_light_level: u32, block_light_level: u32) -> Vec3
     Vec3::splat(0.02).lerp(Vec3::splat(1.0), light_gamma)
 }
 
-fn get_face_xy(vertex_i: u32) -> Vec2 {
-    match vertex_i % 4 {
-        0 => vec2(0.0, 0.0),
-        1 => vec2(1.0, 0.0),
-        2 => vec2(0.0, 1.0),
-        _ => vec2(1.0, 1.0),
-    }
-}
-
 #[spirv(vertex)]
 pub fn vertex(
     // Bindings
@@ -65,7 +55,6 @@ pub fn vertex(
     in_subchunk_start_coords: Vec3,
     in_face_matrix_index: u32,
     // Instance inputs
-    // #[spirv(instance_index)] in_instance_index: u32,
     in_uvs: UVec4,
     in_packed_fields: BlockFaceInstanceFields,
     // Outputs
@@ -73,7 +62,7 @@ pub fn vertex(
     out_uvs: &mut Vec2,
     #[spirv(flat)] out_light_rgb: &mut Vec3,
 ) {
-    // Unpack instance data
+    // Unpack instance data.
     let xyz_offset = Vec3::new(
         in_packed_fields.x_offset() as f32,
         in_packed_fields.y_offset() as f32,

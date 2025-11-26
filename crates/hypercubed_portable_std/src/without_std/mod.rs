@@ -5,14 +5,7 @@ pub mod prelude {
 
 pub mod io;
 
-cfg_if::cfg_if! {
-    if #[cfg(all(target_arch = "mips", target_vendor = "sony", target_os = "ps2"))] {
-        pub mod sync_ps2;
-        pub use sync_ps2 as sync;
-    } else {
-        pub mod sync;
-    }
-}
+pub mod sync;
 
 pub use alloc::borrow::{Cow, ToOwned};
 pub use alloc::boxed::Box;

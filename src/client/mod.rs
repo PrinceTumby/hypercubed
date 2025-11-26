@@ -172,7 +172,7 @@ pub async fn window_run<W: AsRef<winit::window::Window> + 'static>(
     let window = &window;
     #[allow(unused)]
     let mut debug_frame_i: usize = 0;
-    let _loop = event_loop.run(move |event, window_target| {
+    event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
         match event {
             Event::NewEvents(StartCause::Poll) => {
@@ -274,25 +274,8 @@ pub async fn window_run<W: AsRef<winit::window::Window> + 'static>(
                             &debug_state,
                         )
                         .unwrap();
-                    } else if #[cfg(feature = "platform_ps2")] {
-                        debug_output = graphics_state.render(
-                            &play_state.subchunks,
-                            &play_state.visible_chunks,
-                            &debug_state,
-                        )
-                        .unwrap();
-                    } else if #[cfg(feature = "platform_w2c2_opengl_mac")] {
-                        debug_output = graphics_state.render(
-                            &play_state.subchunks,
-                            &play_state.visible_chunks,
-                            &egui_ctx,
-                            egui_output,
-                            &debug_state,
-                            &debug_points,
-                            &debug_lines,
-                            &debug_triangles,
-                        )
-                        .unwrap();
+                    } else {
+                        compile_error!("TODO (graphics backend): graphics_state.render(...)");
                     }
                 }
                 // Gameplay events and updates
@@ -443,13 +426,6 @@ pub async fn window_run<W: AsRef<winit::window::Window> + 'static>(
             },
             _ => {}
         }
-    });
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "platform_w2c2_opengl_mac")] {
-            _loop.await?;
-        } else {
-            _loop?;
-        }
-    }
+    })?;
     Ok(())
 }

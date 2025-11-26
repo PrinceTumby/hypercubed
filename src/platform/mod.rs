@@ -5,15 +5,8 @@ cfg_if::cfg_if! {
     } else if #[cfg(feature = "platform_linux_drm")] {
         pub mod linux_drm;
         pub use linux_drm::exports::*;
-    } else if #[cfg(feature = "platform_ps2")] {
-        pub mod ps2;
-        pub use ps2::exports::*;
-    } else if #[cfg(feature = "platform_opengl_mac_tiger")] {
-        pub mod opengl_mac_tiger;
-        pub use opengl_mac_tiger::exports::*;
-    } else if #[cfg(feature = "platform_w2c2_opengl_mac")] {
-        pub mod w2c2_opengl_mac;
-        pub use w2c2_opengl_mac::exports::*;
+    } else {
+        compile_error!("A platform feature must be enabled.");
     }
 }
 

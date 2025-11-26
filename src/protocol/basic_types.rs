@@ -871,7 +871,7 @@ impl Deserialize for Nbt {
 
 // HACK: Protocol version 764 removed the empty name from the root for network NBT compounds, so we
 // add it back in here for quartz_nbt to deserialize as before.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct NetworkNbt(pub Nbt);
 
@@ -898,7 +898,7 @@ impl Deserialize for NetworkNbt {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct OptionalNbt(pub Option<Nbt>);
 

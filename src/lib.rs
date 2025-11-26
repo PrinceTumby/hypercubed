@@ -10,12 +10,12 @@
 )]
 #![deny(clippy::alloc_instead_of_core)]
 #![cfg_attr(not(feature = "mini_std"), no_std)]
-#![cfg_attr(feature = "platform_ps2", feature(asm_experimental_arch))]
 
 #[cfg(not(any(feature = "mini_std", test)))]
 #[macro_use]
 extern crate alloc;
 
+// #[cfg(not(feature = "mini_std"))]
 // extern crate portable_std as std;
 // TODO: Try this (^), to see if we can simplify imports in crates.
 

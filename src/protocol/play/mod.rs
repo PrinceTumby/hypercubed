@@ -299,7 +299,7 @@ pub struct ChunkDataAndUpdateLight {
     pub light_info: RawChunkLightInfo,
 }
 
-#[derive(Clone, Debug, Deserialize, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct BlockEntity {
     pub packed_xz: u8,
     pub y: i16,

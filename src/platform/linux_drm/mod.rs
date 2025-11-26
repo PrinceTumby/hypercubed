@@ -4,7 +4,7 @@ compile_error!("The Linux DRM platform currently only supports the OpenGL graphi
 pub mod libs;
 
 pub mod exports {
-    pub use super::{DnsResolver, TcpStack, libs, main};
+    pub use super::{libs, main};
 }
 
 use anyhow::{Context, bail};
@@ -113,70 +113,4 @@ pub fn main() -> anyhow::Result<()> {
         graphics_state,
     ))?;
     Ok(())
-}
-
-use std::io::{Read, Write};
-
-pub struct TcpStreamWrapper(pub std::net::TcpStream);
-
-impl embedded_io::ErrorType for TcpStreamWrapper {
-    type Error = std::io::Error;
-}
-
-impl embedded_io_async::Read for TcpStreamWrapper {
-    async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read_exact(buf)?;
-        Ok(buf.len())
-    }
-}
-
-impl embedded_io_async::Write for TcpStreamWrapper {
-    async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write_all(buf)?;
-        Ok(buf.len())
-    }
-
-    async fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
-    }
-}
-
-pub struct TcpStack;
-
-impl embedded_nal_async::TcpConnect for TcpStack {
-    type Error = std::io::Error;
-    type Connection<'a> = TcpStreamWrapper;
-
-    async fn connect<'a>(
-        &'a self,
-        remote: core::net::SocketAddr,
-    ) -> Result<Self::Connection<'a>, Self::Error> {
-        std::net::TcpStream::connect(remote).map(TcpStreamWrapper)
-    }
-}
-
-pub struct DnsResolver;
-
-impl embedded_nal_async::Dns for DnsResolver {
-    type Error = std::io::Error;
-
-    async fn get_host_by_name(
-        &self,
-        host: &str,
-        addr_type: embedded_nal_async::AddrType,
-    ) -> Result<core::net::IpAddr, Self::Error> {
-        assert_eq!(addr_type, embedded_nal_async::AddrType::Either);
-        std::net::ToSocketAddrs::to_socket_addrs(&(host, 443))?
-            .next()
-            .ok_or_else(|| std::io::Error::other("host not found"))
-            .map(|socket_addr| socket_addr.ip())
-    }
-
-    async fn get_host_by_address(
-        &self,
-        _addr: core::net::IpAddr,
-        _result: &mut [u8],
-    ) -> Result<usize, Self::Error> {
-        Err(std::io::Error::other("unimplemented"))
-    }
 }

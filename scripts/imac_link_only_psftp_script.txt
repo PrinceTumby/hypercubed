@@ -1,3 +1,0 @@
-cd Documents/hypercubed_build_2
-put target/i686-apple-darwin8/debug/libhypercubed.a
-chmod a+x hypercubed

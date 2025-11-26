@@ -88,7 +88,10 @@ pub fn vertex(
         let tint_percentage = in_vertex_packed_fields.tinted_bit() as f32;
         // TODO: Unify the packed field methods so we don't have to do dirty hacks like this.
         #[cfg(not(target_arch = "spirv"))]
-        let tint_percentage = 1.0;
+        let tint_percentage = {
+            _ = in_vertex_packed_fields;
+            1.0
+        };
         let applied_tint_rgb = Vec3::lerp(Vec3::splat(1.0), in_tint_colour.xyz(), tint_percentage);
         *out_light_rgb = light_rgb * applied_tint_rgb * dir_light_coef;
     }

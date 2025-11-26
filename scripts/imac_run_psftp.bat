@@ -1,7 +1,0 @@
-@echo off
-
-psftp ^
-    -load "iMac Core Duo" ^
-    -pw "%*" ^
-    -batch ^
-    -b %~dp0\imac_psftp_script.txt
