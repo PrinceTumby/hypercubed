@@ -135,7 +135,7 @@ pub struct DebugOutput {
 }
 
 impl GraphicsState {
-    pub async fn new<F>(window: Arc<Window>, register_blocks: F) -> anyhow::Result<Self>
+    pub fn new<F>(window: Arc<Window>, register_blocks: F) -> anyhow::Result<Self>
     where
         F: FnOnce(
             &mut resources::block::Registry,

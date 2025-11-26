@@ -1,5 +1,6 @@
 // Much of this code is adapted from the `winit` source code.
 
+pub mod application;
 pub mod dpi;
 pub mod error;
 pub mod event;

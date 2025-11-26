@@ -273,7 +273,7 @@ vulkan_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
 wgpu = { version = "24.0.3", optional = true }
 wide = { version = "0.7", optional = true }
-winit = { version = "0.29", features = ["rwh_05"], optional = true }
+winit = { version = "0.30", optional = true }
 
 [dependencies.egui]
 version = "0.33"

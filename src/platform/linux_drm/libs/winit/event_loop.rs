@@ -1,11 +1,12 @@
 // Much of this code is adapted from the `winit` source code.
 
+use super::application::ApplicationHandler;
 use super::dpi::PhysicalPosition;
 use super::event::{
-    DeviceEvent, DeviceId, ElementState, Event, MouseButton, RawKeyEvent, WindowEvent,
+    DeviceEvent, DeviceId, ElementState, MouseButton, RawKeyEvent, StartCause, WindowEvent,
 };
 use super::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
-use super::window::{CursorGrabMode, Window, WindowId};
+use super::window::{CursorGrabMode, Window, WindowId, WindowInner, WindowAttributes};
 
 use anyhow::Context;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +14,7 @@ use input::event::EventTrait;
 use input::{AsRaw, Libinput, LibinputInterface};
 use libseat::{Seat, SeatEvent};
 use portable_std::FastHashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -58,13 +59,20 @@ impl LibinputInterface for SeatInterface {
 #[derive(Debug)]
 enum SeatThreadEvent {
     InitFinished,
-    TranslatedWinitEvent(Event),
+    TranslatedWindowEvent {
+        window_id: WindowId,
+        event: WindowEvent,
+    },
+    TranslatedDeviceEvent {
+        device_id: DeviceId,
+        event: DeviceEvent,
+    },
     Error(anyhow::Error),
 }
 
 fn seat_thread(
     event_send_channel: mpsc::Sender<SeatThreadEvent>,
-    window_recv_channel: mpsc::Receiver<Arc<Window>>,
+    window_recv_channel: mpsc::Receiver<Arc<WindowInner>>,
 ) {
     /// Attempt to send an event on `event_send_channel`.
     /// Return if `event_send_channel` has been closed.
@@ -130,13 +138,13 @@ fn seat_thread(
     // Pause libinput events until we've got a window.
     libinput.suspend();
     // Wait until a window has been registered for the event loop.
-    let window = window_recv_channel.recv().unwrap();
+    let window_ = window_recv_channel.recv().unwrap();
     drop(window_recv_channel);
     let (window_width, window_height) = {
-        let window_data = window.data.lock().unwrap();
+        let window = window_.data.lock().unwrap();
         (
-            window_data.window_size.width,
-            window_data.window_size.height,
+            window.window_size.width,
+            window.window_size.height,
         )
     };
     // Now that we've got a window, start taking libinput events.
@@ -233,23 +241,21 @@ fn seat_thread(
                                 276 => MouseButton::Forward,
                                 _ => continue,
                             };
-                            try_send_event_or_return!(SeatThreadEvent::TranslatedWinitEvent(
-                                Event::WindowEvent {
-                                    window_id: WindowId(()),
-                                    event: WindowEvent::MouseInput {
-                                        // FIXME: Get device IDs.
-                                        device_id: DeviceId::dummy(),
-                                        state,
-                                        button,
-                                    },
+                            try_send_event_or_return!(SeatThreadEvent::TranslatedWindowEvent {
+                                window_id: WindowId(()),
+                                event: WindowEvent::MouseInput {
+                                    // FIXME: Get device IDs.
+                                    device_id: DeviceId::dummy(),
+                                    state,
+                                    button,
                                 },
-                            ));
+                            });
                         }
                         input::event::PointerEvent::Motion(info) => {
                             let delta = (info.dx(), info.dy());
                             // Update window cursor position.
                             let moved_cursor_pos: Option<PhysicalPosition<f64>> = {
-                                let mut window_data = window.data.lock().unwrap();
+                                let mut window_data = window_.data.lock().unwrap();
                                 if window_data.cursor_grab_mode != CursorGrabMode::Locked {
                                     window_data.cursor_pos.x = f64::clamp(
                                         window_data.cursor_pos.x + delta.0,
@@ -268,22 +274,18 @@ fn seat_thread(
                             };
                             // FIXME: Get device IDs.
                             let device_id = DeviceId::dummy();
-                            try_send_event_or_return!(SeatThreadEvent::TranslatedWinitEvent(
-                                Event::DeviceEvent {
-                                    device_id,
-                                    event: DeviceEvent::MouseMotion { delta },
-                                }
-                            ));
+                            try_send_event_or_return!(SeatThreadEvent::TranslatedDeviceEvent {
+                                device_id,
+                                event: DeviceEvent::MouseMotion { delta },
+                            });
                             if let Some(position) = moved_cursor_pos {
-                                try_send_event_or_return!(SeatThreadEvent::TranslatedWinitEvent(
-                                    Event::WindowEvent {
-                                        window_id: WindowId(()),
-                                        event: WindowEvent::CursorMoved {
-                                            device_id,
-                                            position,
-                                        },
-                                    }
-                                ));
+                                try_send_event_or_return!(SeatThreadEvent::TranslatedWindowEvent {
+                                    window_id: WindowId(()),
+                                    event: WindowEvent::CursorMoved {
+                                        device_id,
+                                        position,
+                                    },
+                                });
                             }
                         }
                         input::event::PointerEvent::MotionAbsolute(info) => {
@@ -292,21 +294,19 @@ fn seat_thread(
                             let new_pos = PhysicalPosition { x, y };
                             // Update window cursor position.
                             {
-                                let mut window_data = window.data.lock().unwrap();
+                                let mut window_data = window_.data.lock().unwrap();
                                 if window_data.cursor_grab_mode != CursorGrabMode::Locked {
                                     window_data.cursor_pos = new_pos;
                                 }
                             }
-                            try_send_event_or_return!(SeatThreadEvent::TranslatedWinitEvent(
-                                Event::WindowEvent {
-                                    window_id: WindowId(()),
-                                    event: WindowEvent::CursorMoved {
-                                        // FIXME: Get device IDs.
-                                        device_id: DeviceId::dummy(),
-                                        position: new_pos,
-                                    },
-                                }
-                            ));
+                            try_send_event_or_return!(SeatThreadEvent::TranslatedWindowEvent {
+                                window_id: WindowId(()),
+                                event: WindowEvent::CursorMoved {
+                                    // FIXME: Get device IDs.
+                                    device_id: DeviceId::dummy(),
+                                    position: new_pos,
+                                },
+                            });
                         }
                         _ => {}
                     },
@@ -324,16 +324,14 @@ fn seat_thread(
                                 input::ffi::libinput_button_state_LIBINPUT_BUTTON_STATE_RELEASED => ElementState::Released,
                                 _ => unreachable!(),
                             };
-                            try_send_event_or_return!(SeatThreadEvent::TranslatedWinitEvent(
-                                Event::DeviceEvent {
-                                    // FIXME: Get device IDs.
-                                    device_id: DeviceId::dummy(),
-                                    event: DeviceEvent::Key(RawKeyEvent {
-                                        physical_key,
-                                        state,
-                                    }),
-                                }
-                            ));
+                            try_send_event_or_return!(SeatThreadEvent::TranslatedDeviceEvent {
+                                // FIXME: Get device IDs.
+                                device_id: DeviceId::dummy(),
+                                event: DeviceEvent::Key(RawKeyEvent {
+                                    physical_key,
+                                    state,
+                                }),
+                            });
                         },
                         _ => {}
                     },
@@ -344,14 +342,14 @@ fn seat_thread(
     }
 }
 
-pub type EventLoopWindowTarget<T> = EventLoop<T>;
+pub type ActiveEventLoop = EventLoop<()>;
 
 pub struct EventLoop<T: 'static> {
     close_next_poll: AtomicBool,
     event_recv_channel: mpsc::Receiver<SeatThreadEvent>,
-    pub(super) attached_window: RefCell<Option<Arc<Window>>>,
+    pub(super) has_window: Cell<bool>,
     /// One-shot channel, receiver will hang up after receiving a window.
-    pub(super) window_send_channel: mpsc::SyncSender<Arc<Window>>,
+    pub(super) window_send_channel: mpsc::SyncSender<Arc<WindowInner>>,
     _user_data: T,
 }
 
@@ -382,10 +380,14 @@ impl EventLoop<()> {
         Ok(Self {
             close_next_poll: AtomicBool::new(false),
             event_recv_channel,
-            attached_window: RefCell::new(None),
+            has_window: Cell::new(false),
             window_send_channel,
             _user_data: (),
         })
+    }
+
+    pub fn create_window(&self, window_attributes: WindowAttributes) -> anyhow::Result<Window> {
+        Window::create(self, window_attributes)
     }
 
     pub fn exit(&self) {
@@ -393,17 +395,12 @@ impl EventLoop<()> {
     }
 
     pub fn set_control_flow(&self, control_flow: ControlFlow) {
-        assert!(control_flow == ControlFlow::Poll)
+        assert!(control_flow == ControlFlow::Poll);
     }
 
-    pub fn run<F>(self, mut event_handler: F) -> Result<(), EventLoopError>
-    where
-        F: FnMut(Event, &Self),
-    {
-        assert!(
-            self.attached_window.borrow().is_some(),
-            "A window must have been attached",
-        );
+    pub fn run_app<A: ApplicationHandler<()>>(self, app: &mut A) -> Result<(), EventLoopError> {
+        app.new_events(&self, StartCause::Init);
+        app.resumed(&self);
         loop {
             if self.close_next_poll.load(Ordering::Relaxed) {
                 break Ok(());
@@ -411,11 +408,16 @@ impl EventLoop<()> {
             for seat_thread_event in self.event_recv_channel.try_iter() {
                 match seat_thread_event {
                     SeatThreadEvent::Error(err) => Err(err).context("Error on seat thread")?,
-                    SeatThreadEvent::TranslatedWinitEvent(event) => event_handler(event, &self),
+                    SeatThreadEvent::TranslatedWindowEvent { window_id, event } => {
+                        app.window_event(&self, window_id, event)
+                    }
+                    SeatThreadEvent::TranslatedDeviceEvent { device_id, event } => {
+                        app.device_event(&self, device_id, event)
+                    }
                     unknown => unimplemented!("Unknown seat thread event - {unknown:?}"),
                 }
             }
-            event_handler(Event::NewEvents(super::event::StartCause::Poll), &self);
+            app.new_events(&self, StartCause::Poll);
         }
     }
 }

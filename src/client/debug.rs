@@ -9,6 +9,8 @@ use crate::protocol::play::GameMode;
 use nalgebra::Point3;
 use portable_std::VecDeque;
 
+use crate::platform::libs::winit;
+
 pub struct DebugRenderOutput {
     pub egui_output: egui::FullOutput,
     pub debug_points: Vec<DebugPoint>,
@@ -18,7 +20,7 @@ pub struct DebugRenderOutput {
 
 #[expect(clippy::too_many_arguments)]
 pub fn render_debug_ui(
-    event_loop_window_target: &super::winit::event_loop::EventLoopWindowTarget<()>,
+    event_loop: &winit::event_loop::ActiveEventLoop,
     server_connection: &PlayConnection,
     play_state: &mut ClientPlayState,
     graphics_state: &mut GraphicsState,
@@ -70,7 +72,7 @@ pub fn render_debug_ui(
             // Quit button.
             // Useful for fullscreen mode and embedded platforms.
             if ui.button("Quit").clicked() {
-                event_loop_window_target.exit();
+                event_loop.exit();
             }
             // VSync
             {

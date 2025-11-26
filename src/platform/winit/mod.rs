@@ -76,19 +76,7 @@ pub fn main() -> anyhow::Result<()> {
         });
     }
     let event_loop = winit::event_loop::EventLoop::new()?;
-    let window = Arc::new(winit::window::WindowBuilder::new().build(&event_loop)?);
-    pollster::block_on(async move {
-        let graphics_state =
-            GraphicsState::new(window.clone(), resources::block::register_vanilla_blocks).await?;
-        client::window_run(
-            server_connection,
-            clientbound_rx,
-            clientbound_tx,
-            event_loop,
-            window,
-            graphics_state,
-        )
-        .await
-    })?;
+    let mut app = client::App::new(server_connection, clientbound_tx, clientbound_rx);
+    event_loop.run_app(&mut app)?;
     Ok(())
 }

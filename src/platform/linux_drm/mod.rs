@@ -98,19 +98,7 @@ pub fn main() -> anyhow::Result<()> {
     }
     let event_loop =
         libs::winit::event_loop::EventLoop::new().context("Error while creating event loop")?;
-    let window =
-        libs::winit::window::Window::new(&event_loop).context("Error while creating window")?;
-    let graphics_state = pollster::block_on(crate::client::graphics::GraphicsState::new(
-        window.clone(),
-        resources::block::register_vanilla_blocks,
-    ))?;
-    pollster::block_on(crate::client::window_run(
-        server_connection,
-        clientbound_rx,
-        clientbound_tx,
-        event_loop,
-        window,
-        graphics_state,
-    ))?;
+    let mut app = crate::client::App::new(server_connection, clientbound_tx, clientbound_rx);
+    event_loop.run_app(&mut app)?;
     Ok(())
 }

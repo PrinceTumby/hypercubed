@@ -19,9 +19,10 @@ use portable_std::sync::mpsc;
 use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 
 use crate::platform::libs::{egui, winit};
-use winit::event::{DeviceEvent, Event, RawKeyEvent, StartCause, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::Fullscreen;
+use winit::application::ApplicationHandler;
+use winit::event::{DeviceEvent, RawKeyEvent, StartCause, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::window::{Fullscreen, Window, WindowId};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "full_std")] {
@@ -112,229 +113,147 @@ pub const SUBCHUNK_AXIS_LEN_I32: i32 = SUBCHUNK_AXIS_LEN as i32;
 pub const MIN_HEIGHT_I32: i32 = -64;
 pub const MAX_HEIGHT_I32: i32 = 319;
 
-pub async fn window_run<W: AsRef<winit::window::Window> + 'static>(
+pub struct App {
+    window: Option<Arc<Window>>,
+    graphics_state: Option<GraphicsState>,
+    input_state: input::PlayControlState,
+    play_state: ClientPlayState,
     server_connection: Arc<PlayConnection>,
-    clientbound_rx: mpsc::Receiver<ClientboundPacket>,
     clientbound_tx: mpsc::Sender<ClientboundPacket>,
-    event_loop: EventLoop<()>,
-    window: W,
-    mut graphics_state: GraphicsState,
-) -> anyhow::Result<()> {
-    use input::PlayControlState;
-    let window = window.as_ref();
-    window.set_title("Hypercubed Client");
-    let window_id = window.id();
-    let mut scale_factor = window.scale_factor();
-    let mut input_state = PlayControlState::default();
-    let egui_ctx = egui::Context::default();
-    let mut play_state = ClientPlayState {
-        raw_chunks: Arc::new(FastHashMap::new()),
-        subchunks: FastHashMap::new(),
-        visible_chunks: FastHashSet::new(),
-        pending_subchunk_update_ids: FastHashMap::new(),
-        player: Player {
-            entity_id: EntityId::placeholder(),
-            game_mode: GameMode::Survival,
-            pos: Point3::origin(),
-            yaw: 0.0,
-            pitch: 0.0,
-            physics_state: PlayerPhysicsState::default(),
-        },
-        player_last_tick: Player {
-            entity_id: EntityId::placeholder(),
-            game_mode: GameMode::Survival,
-            pos: Point3::origin(),
-            yaw: 0.0,
-            pitch: 0.0,
-            physics_state: PlayerPhysicsState::default(),
-        },
-    };
-    let (play_state_update_tx, play_state_update_rx) = mpsc::channel::<ClientPlayStateUpdate>();
-    let mut last_mouse_pos = egui::Pos2::new(0.0, 0.0);
-    let mut events: Vec<egui::Event> = Vec::new();
-    let mut debug_state = graphics::DebugState::default();
-    let mut debug_output = graphics::DebugOutput {
-        subchunks_culled: 0,
-        subchunk_traversal_graph: Vec::new(),
-    };
+    clientbound_rx: mpsc::Receiver<ClientboundPacket>,
+    play_state_update_tx: mpsc::Sender<ClientPlayStateUpdate>,
+    play_state_update_rx: mpsc::Receiver<ClientPlayStateUpdate>,
+    debug_state: graphics::DebugState,
+    debug_output: graphics::DebugOutput,
+    egui_ctx: egui::Context,
+    pending_egui_events: Vec<egui::Event>,
+    last_mouse_pos: egui::Pos2,
+    current_update_id: usize,
+    previous_frame_times: VecDeque<f64>,
+    last_frame_time: Instant,
+    current_time_s: f64,
+    last_tick_time_s: f64,
+    next_tick_time_s: f64,
     #[cfg(feature = "full_std")]
-    let thread_pool = ThreadPool::new(
-        std::thread::available_parallelism()
-            .map(|num_threads_non_zero| num_threads_non_zero.get())
-            .unwrap_or(2),
-    );
-    let mut current_update_id: usize = 0;
-    let mut previous_frame_times = VecDeque::new();
-    let mut last_frame_time = Instant::now();
-    let mut current_time_s: f64 = 0.0;
-    let mut last_tick_time_s: f64 = 0.0;
-    let mut next_tick_time_s: f64 = 1.0 / 20.0;
-    let window = &window;
-    #[allow(unused)]
-    let mut debug_frame_i: usize = 0;
-    event_loop.run(move |event, window_target| {
-        window_target.set_control_flow(ControlFlow::Poll);
+    thread_pool: ThreadPool,
+}
+
+impl App {
+    pub fn new(
+        server_connection: Arc<PlayConnection>,
+        clientbound_tx: mpsc::Sender<ClientboundPacket>,
+        clientbound_rx: mpsc::Receiver<ClientboundPacket>,
+    ) -> Self {
+        let input_state = input::PlayControlState::default();
+        let play_state = ClientPlayState {
+            raw_chunks: Arc::new(FastHashMap::new()),
+            subchunks: FastHashMap::new(),
+            visible_chunks: FastHashSet::new(),
+            pending_subchunk_update_ids: FastHashMap::new(),
+            player: Player {
+                entity_id: EntityId::placeholder(),
+                game_mode: GameMode::Survival,
+                pos: Point3::origin(),
+                yaw: 0.0,
+                pitch: 0.0,
+                physics_state: PlayerPhysicsState::default(),
+            },
+            player_last_tick: Player {
+                entity_id: EntityId::placeholder(),
+                game_mode: GameMode::Survival,
+                pos: Point3::origin(),
+                yaw: 0.0,
+                pitch: 0.0,
+                physics_state: PlayerPhysicsState::default(),
+            },
+        };
+        let egui_ctx = egui::Context::default();
+        let (play_state_update_tx, play_state_update_rx) = mpsc::channel::<ClientPlayStateUpdate>();
+        let thread_pool = ThreadPool::new(
+            std::thread::available_parallelism()
+                .map(|num_threads_non_zero| num_threads_non_zero.get())
+                .unwrap_or(2),
+        );
+        Self {
+            window: None,
+            graphics_state: None,
+            input_state,
+            play_state,
+            server_connection,
+            clientbound_tx,
+            clientbound_rx,
+            play_state_update_tx,
+            play_state_update_rx,
+            debug_state: graphics::DebugState::default(),
+            debug_output: graphics::DebugOutput {
+                subchunks_culled: 0,
+                subchunk_traversal_graph: Vec::new(),
+            },
+            egui_ctx,
+            pending_egui_events: Vec::new(),
+            last_mouse_pos: egui::Pos2::new(0.0, 0.0),
+            previous_frame_times: VecDeque::new(),
+            current_update_id: 0,
+            last_frame_time: Instant::now(),
+            current_time_s: 0.0,
+            last_tick_time_s: 0.0,
+            next_tick_time_s: 1.0 / 20.0,
+            thread_pool,
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes().with_title("Hypercubed"))
+                .unwrap(),
+        );
+        let graphics_state =
+            GraphicsState::new(window.clone(), resources::block::register_vanilla_blocks).unwrap();
+        self.window = Some(window);
+        self.graphics_state = Some(graphics_state);
+        event_loop.set_control_flow(ControlFlow::Poll);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let window = self.window.as_ref().unwrap();
+        let graphics_state = self.graphics_state.as_mut().unwrap();
+        if id != window.id() {
+            return;
+        }
+        let scale_factor = window.scale_factor();
         match event {
-            Event::NewEvents(StartCause::Poll) => {
-                debug_frame_i += 1;
-                let new_time = Instant::now();
-                let delta_time_f64 =
-                    (new_time - core::mem::replace(&mut last_frame_time, new_time)).as_secs_f64();
-                previous_frame_times.push_back(delta_time_f64);
-                if previous_frame_times.len() > 100 {
-                    previous_frame_times.pop_front();
-                }
-                current_time_s += delta_time_f64;
-                let delta_time = delta_time_f64 as f32;
-                // Debug GUI
-                #[cfg(feature = "full_std")]
-                let debug::DebugRenderOutput {
-                    egui_output,
-                    debug_points,
-                    debug_lines,
-                    debug_triangles,
-                } = debug::render_debug_ui(
-                    window_target,
-                    &server_connection,
-                    &mut play_state,
-                    &mut graphics_state,
-                    &mut debug_state,
-                    &debug_output,
-                    &egui_ctx,
-                    &mut events,
-                    &previous_frame_times,
-                    scale_factor,
-                    current_time_s,
-                    delta_time_f64,
-                    delta_time,
-                );
-                // Reset cursor to middle if locked
-                if input_state.mouse_locked && window.has_focus() {
-                    let size = graphics_state.size;
-                    let physical_x = size.width as i32 / 2;
-                    let physical_y = size.height as i32 / 2;
-                    last_mouse_pos = egui::Pos2 {
-                        x: (physical_x as f64 / scale_factor) as f32,
-                        y: (physical_y as f64 / scale_factor) as f32,
-                    };
-                    _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(
-                        physical_x, physical_y,
-                    ));
-                }
-                // Main rendering
-                cfg_if::cfg_if! {
-                    if #[cfg(feature = "graphics_backend_vulkan")] {
-                        debug_output = graphics_state.render(
-                            &play_state.subchunks,
-                            &play_state.visible_chunks,
-                            &egui_ctx,
-                            egui_output,
-                            &debug_state,
-                            &debug_points,
-                            &debug_lines,
-                            &debug_triangles,
-                        )
-                        .context("Error while rendering")
-                        .unwrap();
-                    } else if #[cfg(feature = "graphics_backend_wgpu")] {
-                        match graphics_state.render(
-                            &play_state.subchunks,
-                            &play_state.visible_chunks,
-                            &egui_ctx,
-                            egui_full_output,
-                            &debug_state,
-                        ) {
-                            Ok(new_debug_output) => debug_output = new_debug_output,
-                            Err(wgpu::SurfaceError::Timeout) => {}
-                            // Reconfigure the surface if lost
-                            Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
-                                let size = graphics_state.size;
-                                graphics_state.resize(size)
-                            }
-                            Err(wgpu::SurfaceError::OutOfMemory) => window_target.exit(),
-                        }
-                    } else if #[cfg(feature = "graphics_backend_opengl")] {
-                        debug_output = graphics_state.render(
-                            &mut play_state.subchunks,
-                            &play_state.visible_chunks,
-                            &egui_ctx,
-                            egui_output,
-                            &debug_state,
-                            &debug_points,
-                            &debug_lines,
-                            &debug_triangles,
-                        )
-                        .unwrap();
-                    } else if #[cfg(feature = "graphics_backend_software")] {
-                        debug_output = graphics_state.render(
-                            &play_state.subchunks,
-                            &play_state.visible_chunks,
-                            &egui_ctx,
-                            egui_full_output,
-                            &debug_state,
-                        )
-                        .unwrap();
-                    } else {
-                        compile_error!("TODO (graphics backend): graphics_state.render(...)");
-                    }
-                }
-                // Gameplay events and updates
-                game::process_game_events(
-                    #[cfg(feature = "full_std")]
-                    &thread_pool,
-                    &mut play_state,
-                    &mut graphics_state,
-                    &mut debug_state,
-                    &mut input_state,
-                    &server_connection,
-                    &clientbound_tx,
-                    &clientbound_rx,
-                    &play_state_update_tx,
-                    &play_state_update_rx,
-                    &mut current_update_id,
-                    current_time_s,
-                    &mut last_tick_time_s,
-                    &mut next_tick_time_s,
-                    delta_time,
-                );
-                #[cfg(feature = "tracy")]
-                tracing_tracy::client::frame_mark();
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            WindowEvent::Resized(physical_size) => graphics_state.resize(physical_size),
+            // TODO: Implement egui keyboard support
+            // WindowEvent::KeyboardInput {
+            //     device_id: _,
+            //     event,
+            //     is_synthetic: _,
+            // } if !input_state.mouse_locked => {}
+            WindowEvent::CursorMoved {
+                device_id: _,
+                position,
+            } if !self.input_state.mouse_locked => {
+                self.last_mouse_pos = egui::Pos2 {
+                    x: (position.x / scale_factor) as f32,
+                    y: (position.y / scale_factor) as f32,
+                };
+                self.pending_egui_events
+                    .push(egui::Event::PointerMoved(self.last_mouse_pos));
             }
-            Event::WindowEvent {
-                window_id: event_window_id,
-                ref event,
-            } if event_window_id == window_id => match event {
-                WindowEvent::CloseRequested | WindowEvent::Destroyed => window_target.exit(),
-                WindowEvent::Resized(physical_size) => {
-                    graphics_state.resize(*physical_size);
-                }
-                WindowEvent::ScaleFactorChanged {
-                    scale_factor: new_scale_factor,
-                    inner_size_writer: _,
-                } => scale_factor = *new_scale_factor,
-                // TODO: Implement egui keyboard support
-                // WindowEvent::KeyboardInput {
-                //     device_id: _,
-                //     event,
-                //     is_synthetic: _,
-                // } if !input_state.mouse_locked => {}
-                WindowEvent::CursorMoved {
-                    device_id: _,
-                    position,
-                } if !input_state.mouse_locked => {
-                    last_mouse_pos = egui::Pos2 {
-                        x: (position.x / scale_factor) as f32,
-                        y: (position.y / scale_factor) as f32,
-                    };
-                    events.push(egui::Event::PointerMoved(last_mouse_pos));
-                }
-                WindowEvent::CursorLeft { device_id: _ } => events.push(egui::Event::PointerGone),
-                WindowEvent::MouseInput {
-                    device_id: _,
-                    state,
-                    button,
-                } if !input_state.mouse_locked => events.push(egui::Event::PointerButton {
-                    pos: last_mouse_pos,
+            WindowEvent::CursorLeft { device_id: _ } => {
+                self.pending_egui_events.push(egui::Event::PointerGone)
+            }
+            WindowEvent::MouseInput {
+                device_id: _,
+                state,
+                button,
+            } if !self.input_state.mouse_locked => {
+                self.pending_egui_events.push(egui::Event::PointerButton {
+                    pos: self.last_mouse_pos,
                     button: match button {
                         winit::event::MouseButton::Left => egui::PointerButton::Primary,
                         winit::event::MouseButton::Right => egui::PointerButton::Secondary,
@@ -349,83 +268,220 @@ pub async fn window_run<W: AsRef<winit::window::Window> + 'static>(
                     },
                     pressed: state.is_pressed(),
                     modifiers: egui::Modifiers::NONE,
-                }),
-                _ => {}
-            },
-            Event::DeviceEvent {
-                device_id: _,
-                event,
-            } if window.has_focus() => match event {
-                DeviceEvent::MouseMotion { delta } if input_state.mouse_locked => {
-                    const MOUSE_SENSITIVITY: f32 = 0.1;
-                    let camera = &mut graphics_state.camera;
-                    camera.yaw += delta.0 as f32 * MOUSE_SENSITIVITY;
-                    camera.pitch -= delta.1 as f32 * MOUSE_SENSITIVITY;
-                    camera.pitch = camera.pitch.clamp(-90.0, 90.0);
-                    while camera.yaw < 0.0 {
-                        camera.yaw += 360.0;
-                    }
-                    while camera.yaw > 360.0 {
-                        camera.yaw -= 360.0;
-                    }
-                }
-                DeviceEvent::Key(RawKeyEvent {
-                    physical_key,
-                    state,
-                }) => {
-                    let old_mouse_locked = input_state.mouse_locked;
-                    let old_fullscreen = input_state.fullscreen;
-                    input_state.update_from_input(
-                        physical_key,
-                        state,
-                        // Toggle sprint if these conditions, else just enable sprint on press.
-                        play_state.player.game_mode == GameMode::Spectator || debug_state.free_cam,
-                    );
-                    if input_state.mouse_locked != old_mouse_locked {
-                        use winit::window::CursorGrabMode;
-                        if input_state.mouse_locked {
-                            // No issue if locking the cursor doesn't work, we hide it and
-                            // keep setting the position to the centre anyway.
-                            _ = window
-                                .set_cursor_grab(CursorGrabMode::Locked)
-                                .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Confined));
-                            window.set_cursor_visible(false);
-                            // Report to egui that we've released all mouse buttons
-                            let mouse_buttons = [
-                                egui::PointerButton::Primary,
-                                egui::PointerButton::Secondary,
-                                egui::PointerButton::Middle,
-                                egui::PointerButton::Extra1,
-                                egui::PointerButton::Extra2,
-                            ];
-                            for mouse_button in mouse_buttons {
-                                events.push(egui::Event::PointerButton {
-                                    pos: last_mouse_pos,
-                                    button: mouse_button,
-                                    pressed: false,
-                                    modifiers: egui::Modifiers::NONE,
-                                });
-                            }
-                            events.push(egui::Event::PointerGone);
-                        } else {
-                            // Releasing the cursor shouldn't ever fail.
-                            _ = window.set_cursor_grab(CursorGrabMode::None);
-                            window.set_cursor_visible(true);
-                            events.push(egui::Event::PointerMoved(last_mouse_pos));
-                        }
-                    }
-                    if input_state.fullscreen != old_fullscreen {
-                        if input_state.fullscreen {
-                            window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-                        } else {
-                            window.set_fullscreen(None);
-                        }
-                    }
-                }
-                _ => {}
-            },
+                })
+            }
             _ => {}
         }
-    })?;
-    Ok(())
+    }
+
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if cause == StartCause::Init {
+            return;
+        }
+        let window = self.window.as_ref().unwrap();
+        let graphics_state = self.graphics_state.as_mut().unwrap();
+        let scale_factor = window.scale_factor();
+        let new_time = Instant::now();
+        let delta_time_f64 =
+            (new_time - core::mem::replace(&mut self.last_frame_time, new_time)).as_secs_f64();
+        self.previous_frame_times.push_back(delta_time_f64);
+        if self.previous_frame_times.len() > 100 {
+            self.previous_frame_times.pop_front();
+        }
+        self.current_time_s += delta_time_f64;
+        let delta_time = delta_time_f64 as f32;
+        // Debug GUI
+        #[cfg(feature = "full_std")]
+        let debug::DebugRenderOutput {
+            egui_output,
+            debug_points,
+            debug_lines,
+            debug_triangles,
+        } = debug::render_debug_ui(
+            event_loop,
+            &self.server_connection,
+            &mut self.play_state,
+            graphics_state,
+            &mut self.debug_state,
+            &self.debug_output,
+            &self.egui_ctx,
+            &mut self.pending_egui_events,
+            &self.previous_frame_times,
+            scale_factor,
+            self.current_time_s,
+            delta_time_f64,
+            delta_time,
+        );
+        // Reset cursor to middle if locked.
+        if self.input_state.mouse_locked && window.has_focus() {
+            let size = graphics_state.size;
+            let physical_x = size.width as i32 / 2;
+            let physical_y = size.height as i32 / 2;
+            self.last_mouse_pos = egui::Pos2 {
+                x: (physical_x as f64 / scale_factor) as f32,
+                y: (physical_y as f64 / scale_factor) as f32,
+            };
+            _ = window
+                .set_cursor_position(winit::dpi::PhysicalPosition::new(physical_x, physical_y));
+        }
+        // Main rendering
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "graphics_backend_vulkan")] {
+                self.debug_output = graphics_state.render(
+                    &self.play_state.subchunks,
+                    &self.play_state.visible_chunks,
+                    &self.egui_ctx,
+                    egui_output,
+                    &self.debug_state,
+                    &debug_points,
+                    &debug_lines,
+                    &debug_triangles,
+                )
+                .context("Error while rendering")
+                .unwrap();
+            } else if #[cfg(feature = "graphics_backend_wgpu")] {
+                match graphics_state.render(
+                    &self.play_state.subchunks,
+                    &self.play_state.visible_chunks,
+                    &self.egui_ctx,
+                    egui_output,
+                    &self.debug_state,
+                ) {
+                    Ok(new_debug_output) => self.debug_output = new_debug_output,
+                    Err(wgpu::SurfaceError::Timeout) => {}
+                    // Reconfigure the surface if lost.
+                    Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
+                        let size = graphics_state.size;
+                        graphics_state.resize(size)
+                    }
+                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                }
+            } else if #[cfg(feature = "graphics_backend_opengl")] {
+                self.debug_output = graphics_state.render(
+                    &mut self.play_state.subchunks,
+                    &self.play_state.visible_chunks,
+                    &self.egui_ctx,
+                    egui_output,
+                    &self.debug_state,
+                    &debug_points,
+                    &debug_lines,
+                    &debug_triangles,
+                )
+                .unwrap();
+            } else if #[cfg(feature = "graphics_backend_software")] {
+                self.debug_output = graphics_state.render(
+                    &self.play_state.subchunks,
+                    &self.play_state.visible_chunks,
+                    &self.egui_ctx,
+                    egui_output,
+                    &self.debug_state,
+                )
+                .unwrap();
+            } else {
+                compile_error!("TODO (graphics backend): graphics_state.render(...)");
+            }
+        }
+        // Gameplay events and updates
+        game::process_game_events(
+            #[cfg(feature = "full_std")]
+            &self.thread_pool,
+            &mut self.play_state,
+            graphics_state,
+            &mut self.debug_state,
+            &mut self.input_state,
+            &self.server_connection,
+            &self.clientbound_tx,
+            &self.clientbound_rx,
+            &self.play_state_update_tx,
+            &self.play_state_update_rx,
+            &mut self.current_update_id,
+            self.current_time_s,
+            &mut self.last_tick_time_s,
+            &mut self.next_tick_time_s,
+            delta_time,
+        );
+        #[cfg(feature = "tracy")]
+        tracing_tracy::client::frame_mark();
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        let window = self.window.as_ref().unwrap();
+        let graphics_state = self.graphics_state.as_mut().unwrap();
+        match event {
+            DeviceEvent::MouseMotion { delta } if self.input_state.mouse_locked => {
+                const MOUSE_SENSITIVITY: f32 = 0.1;
+                let camera = &mut graphics_state.camera;
+                camera.yaw += delta.0 as f32 * MOUSE_SENSITIVITY;
+                camera.pitch -= delta.1 as f32 * MOUSE_SENSITIVITY;
+                camera.pitch = camera.pitch.clamp(-90.0, 90.0);
+                while camera.yaw < 0.0 {
+                    camera.yaw += 360.0;
+                }
+                while camera.yaw > 360.0 {
+                    camera.yaw -= 360.0;
+                }
+            }
+            DeviceEvent::Key(RawKeyEvent {
+                physical_key,
+                state,
+            }) => {
+                let old_mouse_locked = self.input_state.mouse_locked;
+                let old_fullscreen = self.input_state.fullscreen;
+                self.input_state.update_from_input(
+                    physical_key,
+                    state,
+                    // Toggle sprint if these conditions, else just enable sprint on press.
+                    self.play_state.player.game_mode == GameMode::Spectator
+                        || self.debug_state.free_cam,
+                );
+                if self.input_state.mouse_locked != old_mouse_locked {
+                    use winit::window::CursorGrabMode;
+                    if self.input_state.mouse_locked {
+                        // No issue if locking the cursor doesn't work, we hide it and
+                        // keep setting the position to the centre anyway.
+                        _ = window
+                            .set_cursor_grab(CursorGrabMode::Locked)
+                            .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Confined));
+                        window.set_cursor_visible(false);
+                        // Report to egui that we've released all mouse buttons
+                        let mouse_buttons = [
+                            egui::PointerButton::Primary,
+                            egui::PointerButton::Secondary,
+                            egui::PointerButton::Middle,
+                            egui::PointerButton::Extra1,
+                            egui::PointerButton::Extra2,
+                        ];
+                        for mouse_button in mouse_buttons {
+                            self.pending_egui_events.push(egui::Event::PointerButton {
+                                pos: self.last_mouse_pos,
+                                button: mouse_button,
+                                pressed: false,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                        }
+                        self.pending_egui_events.push(egui::Event::PointerGone);
+                    } else {
+                        // Releasing the cursor shouldn't ever fail.
+                        _ = window.set_cursor_grab(CursorGrabMode::None);
+                        window.set_cursor_visible(true);
+                        self.pending_egui_events
+                            .push(egui::Event::PointerMoved(self.last_mouse_pos));
+                    }
+                }
+                if self.input_state.fullscreen != old_fullscreen {
+                    if self.input_state.fullscreen {
+                        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    } else {
+                        window.set_fullscreen(None);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }

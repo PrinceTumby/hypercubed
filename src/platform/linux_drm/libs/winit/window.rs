@@ -15,6 +15,18 @@ use std::sync::{Arc, Mutex, mpsc};
 static CURSOR_PNG_BYTES: &[u8] = include_bytes!("Mouse Pointer.png");
 static CURSOR_HOTSPOT: (i16, i16) = (4, 4);
 
+#[derive(Clone, Debug, Default)]
+pub struct WindowAttributes {
+    pub title: String,
+}
+
+impl WindowAttributes {
+    pub fn with_title<T: Into<String>>(mut self, title: T) -> Self {
+        self.title = title.into();
+        self
+    }
+}
+
 struct DrmEglDevice(std::fs::File);
 
 impl std::os::fd::AsFd for DrmEglDevice {
@@ -35,7 +47,8 @@ impl WindowContext<'_> {
     #[tracing::instrument(skip(self))]
     pub unsafe fn flip_page(self, wait_for_vsync: bool) {
         let window = self.window;
-        let window_data = self.window.data.lock().unwrap();
+        let window_inner = self.window.inner.as_ref();
+        let window_data = window_inner.data.lock().unwrap();
         // Render software cursor.
         if window_data.cursor_visible {
             let span = tracing::trace_span!("render_software_cursor");
@@ -74,8 +87,8 @@ impl WindowContext<'_> {
                 );
                 gl::matrix::switch_mode(MatrixMode::Projection);
                 gl::matrix::load_f32_matrix(screen_projection_matrix.as_matrix().as_ref());
-                gl::texture::bind(TexTarget::Texture2D, Some(window.cursor_gl_texture));
-                let (cursor_width, cursor_height) = window.cursor_size;
+                gl::texture::bind(TexTarget::Texture2D, Some(window_inner.cursor_gl_texture));
+                let (cursor_width, cursor_height) = window_inner.cursor_size;
                 let cursor_x = window_data.cursor_pos.x.round() as i16;
                 let cursor_y = window_data.cursor_pos.y.round() as i16;
                 let min_x = cursor_x - CURSOR_HOTSPOT.0;
@@ -126,14 +139,15 @@ impl WindowContext<'_> {
                 let span = tracing::trace_span!("swap_buffers");
                 let _enter = span.enter();
                 window
+                    .inner
                     .egli_display
-                    .swap_buffers(&window.egli_surface)
+                    .swap_buffers(&window_inner.egli_surface)
                     .unwrap();
             }
             let mut new_front_buffer = unsafe {
                 let span = tracing::trace_span!("lock_gbm_front_buffer");
                 let _enter = span.enter();
-                window.gbm_surface.lock_front_buffer().unwrap()
+                window_inner.gbm_surface.lock_front_buffer().unwrap()
             };
             let new_front_framebuffer = new_front_buffer
                 .userdata()
@@ -144,6 +158,7 @@ impl WindowContext<'_> {
                         let span = tracing::trace_span!("register_surface_framebuffer");
                         let _enter = span.enter();
                         let framebuffer = window
+                            .inner
                             .gbm_device
                             .add_framebuffer(&new_front_buffer, 24, 32)
                             .context(concat!(
@@ -161,6 +176,7 @@ impl WindowContext<'_> {
             let span = tracing::trace_span!("send_frame");
             let _enter = span.enter();
             window
+                .inner
                 .frame_send_channel
                 .send(QueuedFrame {
                     buffer: new_front_buffer,
@@ -174,48 +190,54 @@ impl WindowContext<'_> {
 
 impl Drop for WindowContext<'_> {
     fn drop(&mut self) {
-        _ = self.window.egli_display.make_not_current();
+        _ = self.window.inner.egli_display.make_not_current();
     }
 }
 
 /// A GBM buffer object, with an associated DRM framebuffer handle.
 type GbmSurfaceBuffer = gbm::BufferObject<drm::control::framebuffer::Handle>;
 
-pub struct WindowData {
-    pub(super) window_size: PhysicalSize<u32>,
-    pub(super) cursor_grab_mode: CursorGrabMode,
-    pub(super) cursor_visible: bool,
-    pub(super) cursor_pos: PhysicalPosition<f64>,
+pub(super) struct WindowData {
+    pub window_size: PhysicalSize<u32>,
+    pub cursor_grab_mode: CursorGrabMode,
+    pub cursor_visible: bool,
+    pub cursor_pos: PhysicalPosition<f64>,
     old_frame_recv_channel: mpsc::Receiver<GbmSurfaceBuffer>,
 }
 
 struct QueuedFrame {
-    pub buffer: GbmSurfaceBuffer,
-    pub framebuffer: drm::control::framebuffer::Handle,
-    pub wait_for_vsync: bool,
+    buffer: GbmSurfaceBuffer,
+    framebuffer: drm::control::framebuffer::Handle,
+    wait_for_vsync: bool,
 }
 
 // NOTE: The drop order matters for these fields (testing shows that we can segfault if we drop the
 //       GBM fields before the EGL fields).
-pub struct Window {
-    pub(super) data: Mutex<WindowData>,
+pub(super) struct WindowInner {
+    pub data: Mutex<WindowData>,
     frame_send_channel: mpsc::Sender<QueuedFrame>,
-    cursor_gl_texture: crate::client::graphics::gl::texture::TextureHandle,
-    cursor_size: (i16, i16),
-    egli_surface: egli::Surface,
-    egli_context: egli::Context,
-    egli_display: egli::Display,
-    drm_crtc: drm::control::crtc::Info,
-    gbm_surface: gbm::Surface<drm::control::framebuffer::Handle>,
+    pub cursor_gl_texture: crate::client::graphics::gl::texture::TextureHandle,
+    pub cursor_size: (i16, i16),
+    pub egli_surface: egli::Surface,
+    pub egli_context: egli::Context,
+    pub egli_display: egli::Display,
+    pub gbm_surface: gbm::Surface<drm::control::framebuffer::Handle>,
     gbm_device: gbm::Device<DrmEglDevice>,
 }
 
-unsafe impl Send for Window {}
+unsafe impl Send for WindowInner {}
 
-unsafe impl Sync for Window {}
+unsafe impl Sync for WindowInner {}
+
+pub struct Window {
+    inner: Arc<WindowInner>,
+}
 
 impl Window {
-    pub fn new(event_loop: &EventLoop<()>) -> anyhow::Result<Arc<Self>> {
+    pub(super) fn create(
+        event_loop: &EventLoop<()>,
+        _window_attributes: WindowAttributes,
+    ) -> anyhow::Result<Self> {
         let egl_devices =
             egl::device::Device::query_devices().context("Error while querying EGL devices")?;
         for egl_device in egl_devices {
@@ -515,7 +537,7 @@ impl Window {
             };
             let (frame_send_channel, frame_recv_channel) = mpsc::channel();
             let (old_frame_send_channel, old_frame_recv_channel) = mpsc::channel();
-            let new_self = Arc::new(Self {
+            let inner = Arc::new(WindowInner {
                 data: Mutex::new(WindowData {
                     window_size: PhysicalSize {
                         width: display_width.into(),
@@ -531,7 +553,6 @@ impl Window {
                 cursor_size,
                 gbm_device,
                 gbm_surface,
-                drm_crtc: crtc,
                 egli_display,
                 egli_context,
                 egli_surface,
@@ -540,9 +561,10 @@ impl Window {
             {
                 let frame_recv_channel = frame_recv_channel;
                 let old_frame_send_channel = old_frame_send_channel;
-                let window = new_self.clone();
+                let inner = inner.clone();
                 let connector_handle = connector.handle();
                 let mode = mode;
+                let crtc = crtc;
                 let mut current_front_buffer = initial_front_buffer;
                 std::thread::spawn(move || {
                     #[cfg(feature = "tracy")]
@@ -556,16 +578,16 @@ impl Window {
                         if wait_for_vsync {
                             let span = tracing::trace_span!("vsync_page_flip");
                             let _enter = span.enter();
-                            window
+                            inner
                                 .gbm_device
                                 .page_flip(
-                                    window.drm_crtc.handle(),
+                                    crtc.handle(),
                                     new_front_framebuffer,
                                     PageFlipFlags::EVENT,
                                     None,
                                 )
                                 .unwrap();
-                            for event in window.gbm_device.receive_events().unwrap() {
+                            for event in inner.gbm_device.receive_events().unwrap() {
                                 if matches!(event, drm::control::Event::PageFlip(_)) {
                                     break;
                                 }
@@ -577,10 +599,10 @@ impl Window {
                             //        issue.
                             // TODO: Figure out async page flipping, previous attempt just crashed
                             //       with "invalid argument".
-                            window
+                            inner
                                 .gbm_device
                                 .set_crtc(
-                                    window.drm_crtc.handle(),
+                                    crtc.handle(),
                                     Some(new_front_framebuffer),
                                     (0, 0),
                                     &[connector_handle],
@@ -601,48 +623,57 @@ impl Window {
             }
             // Attach the window to the provided event loop.
             {
-                let mut attached_window = event_loop.attached_window.borrow_mut();
                 assert!(
-                    attached_window.is_none(),
+                    !event_loop.has_window.get(),
                     "The provided event loop already has an attached window",
                 );
-                *attached_window = Some(new_self.clone());
+                event_loop.has_window.set(true);
                 event_loop
                     .window_send_channel
-                    .send(new_self.clone())
+                    .send(inner.clone())
                     .unwrap();
             }
-            return Ok(new_self);
+            return Ok(Self { inner });
         }
         bail!("Native DRM window couldn't be created, no suitable devices found")
     }
 
     #[tracing::instrument(skip_all)]
     pub unsafe fn get_context_blocking(&self) -> WindowContext<'_> {
-        let data = self.data.lock().unwrap();
+        let data = self.inner.data.lock().unwrap();
+        let inner = self.inner.as_ref();
         // Free pending old buffers that the page flipping thread has returned to us.
         for old_buffer in data.old_frame_recv_channel.try_iter() {
             drop(old_buffer);
         }
         // If the surface has no free buffers available, then we need to wait for the page flipping
         // thread to return one to us.
-        if !self.gbm_surface.has_free_buffers() {
+        if !inner.gbm_surface.has_free_buffers() {
             let span = tracing::trace_span!("gbm_surface_free_buffer_wait");
             let _enter = span.enter();
-            while !self.gbm_surface.has_free_buffers() {
+            while !inner.gbm_surface.has_free_buffers() {
                 // Wait for an old buffer to be returned, and release it.
                 drop(data.old_frame_recv_channel.recv().unwrap());
             }
         }
         // Start the OpenGL context, claiming the next free buffer on the surface.
-        self.egli_display
-            .make_current(&self.egli_surface, &self.egli_surface, &self.egli_context)
+        inner
+            .egli_display
+            .make_current(
+                &inner.egli_surface,
+                &inner.egli_surface,
+                &inner.egli_context,
+            )
             .unwrap();
         WindowContext { window: self }
     }
 }
 
 impl Window {
+    pub fn default_attributes() -> WindowAttributes {
+        WindowAttributes::default()
+    }
+
     pub fn has_focus(&self) -> bool {
         true
     }
@@ -652,7 +683,7 @@ impl Window {
     }
 
     pub fn inner_size(&self) -> PhysicalSize<u32> {
-        self.data.lock().unwrap().window_size
+        self.inner.data.lock().unwrap().window_size
     }
 
     pub fn scale_factor(&self) -> f64 {
@@ -660,7 +691,7 @@ impl Window {
     }
 
     pub fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), ExternalError> {
-        self.data.lock().unwrap().cursor_grab_mode = mode;
+        self.inner.data.lock().unwrap().cursor_grab_mode = mode;
         Ok(())
     }
 
@@ -668,7 +699,7 @@ impl Window {
         &self,
         position: PhysicalPosition<i32>,
     ) -> Result<(), ExternalError> {
-        self.data.lock().unwrap().cursor_pos = PhysicalPosition {
+        self.inner.data.lock().unwrap().cursor_pos = PhysicalPosition {
             x: position.x as f64,
             y: position.y as f64,
         };
@@ -676,7 +707,7 @@ impl Window {
     }
 
     pub fn set_cursor_visible(&self, visible: bool) {
-        self.data.lock().unwrap().cursor_visible = visible;
+        self.inner.data.lock().unwrap().cursor_visible = visible;
     }
 
     pub fn set_fullscreen(&self, _fullscreen: Option<Fullscreen>) {}

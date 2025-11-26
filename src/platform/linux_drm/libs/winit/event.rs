@@ -19,6 +19,7 @@ pub enum Event {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartCause {
+    Init,
     Poll,
 }
 
