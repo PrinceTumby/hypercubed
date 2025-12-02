@@ -1,16 +1,10 @@
-use spirv_builder::{Capability, MetadataPrintout, SpirvBuilder};
+use spirv_builder::{MetadataPrintout, SpirvBuilder};
 
 fn main() {
     println!("cargo::rerun-if-changed=../src");
-    let compiled = match SpirvBuilder::new("crate_redirect", "spirv-unknown-vulkan1.2")
-        .capability(Capability::Int8)
-        .capability(Capability::Int16)
+    let compiled = match SpirvBuilder::new("crate_redirect", "spirv-unknown-vulkan1.1")
         .multimodule(true)
         .print_metadata(MetadataPrintout::None)
-        // .shader_panic_strategy(spirv_builder::ShaderPanicStrategy::DebugPrintfThenExit {
-        //     print_inputs: false,
-        //     print_backtrace: false,
-        // })
         .build()
     {
         Ok(result) => result,

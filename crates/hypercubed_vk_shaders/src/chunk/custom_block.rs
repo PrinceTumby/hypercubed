@@ -21,15 +21,13 @@ pub fn vertex(
     // Vertex inputs
     #[spirv(vertex_index)] in_vertex_index: u32,
     // Instance inputs
-    // #[spirv(instance_index)]
-    // in_instance_index: u32,
     in_instance_pos: Vec3,
     in_tint_colour: Vec4,
     in_light_level_pairs_1: UVec4,
     in_light_level_pairs_2_and_packed_fields: UVec4,
     // Outputs
     #[spirv(invariant, position)] out_pos: &mut Vec4,
-    out_uvs: &mut Vec2,
+    out_uv: &mut Vec2,
     out_light_rgb: &mut Vec3,
 ) {
     // Pull vertex from faces buffer.
@@ -37,7 +35,8 @@ pub fn vertex(
     let face_vertex_i = BLOCK_FACE_INDICES[in_vertex_index as usize % 6];
     let in_vertex = custom_block_faces[face_i][face_vertex_i];
     let in_vertex_pos = Vec3::from(in_vertex.pos);
-    let in_uvs = UVec2::new(in_vertex.uvs[0] as u32, in_vertex.uvs[1] as u32);
+    let in_uv_raw = in_vertex.uv.get();
+    let in_uv = UVec2::from(in_uv_raw);
     let in_normal = Vec3::from(in_vertex.normal);
     let in_vertex_packed_fields = in_vertex.packed_fields;
     // Instance info
@@ -54,7 +53,7 @@ pub fn vertex(
     let global_pos = in_vertex_pos + in_instance_pos + Vec3::splat(0.5);
     *out_pos = Vec4::new(1.0, -1.0, 1.0, 1.0) * (*view_matrix * Vec4::from((global_pos, 1.0)));
     // UVs
-    *out_uvs = in_uvs.as_vec2() / *block_item_atlas_size;
+    *out_uv = in_uv.as_vec2() / *block_item_atlas_size;
     // Light RGB
     // Includes block lighting, as well as some basic per-face directional shading.
     {
@@ -103,12 +102,12 @@ pub fn fragment(
     #[spirv(descriptor_set = 1, binding = 0)] block_item_atlas: &Image2d,
     #[spirv(descriptor_set = 1, binding = 1)] block_item_atlas_sampler: &Sampler,
     // Inputs
-    in_uvs: Vec2,
+    in_uv: Vec2,
     in_light_rgb: Vec3,
     // Outputs
     out_colour: &mut Vec4,
 ) {
-    let tex_sample = block_item_atlas.sample(*block_item_atlas_sampler, in_uvs);
+    let tex_sample = block_item_atlas.sample(*block_item_atlas_sampler, in_uv);
     if tex_sample.w < 1.0 {
         spirv_std::arch::kill();
     }

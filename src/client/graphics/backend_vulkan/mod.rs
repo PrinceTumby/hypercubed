@@ -194,10 +194,6 @@ impl GraphicsState {
         let required_features = VulkanDeviceFeatures {
             vulkan_memory_model: true,
             multi_draw_indirect: true,
-            shader_int8: true,
-            shader_int16: true,
-            storage_buffer8_bit_access: true,
-            storage_buffer16_bit_access: true,
             ..VulkanDeviceFeatures::empty()
         };
         let (physical_device, render_queue_family_index, compute_queue_family_index) = instance

@@ -1,5 +1,4 @@
 use crate::client;
-use crate::client::graphics::GraphicsState;
 use crate::protocol;
 use crate::protocol::prelude::*;
 use portable_std::Arc;

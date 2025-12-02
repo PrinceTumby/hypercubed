@@ -628,10 +628,7 @@ impl Window {
                     "The provided event loop already has an attached window",
                 );
                 event_loop.has_window.set(true);
-                event_loop
-                    .window_send_channel
-                    .send(inner.clone())
-                    .unwrap();
+                event_loop.window_send_channel.send(inner.clone()).unwrap();
             }
             return Ok(Self { inner });
         }

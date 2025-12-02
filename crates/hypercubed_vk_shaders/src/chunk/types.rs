@@ -1,5 +1,23 @@
 use bitfield::bitfield;
 
+/// Stores a set of [`[u16; 2]`] UVs as a single [`u32`].
+/// Avoids needing SPIR-V "Int16" capability.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+pub struct GpuUv(u32);
+
+impl GpuUv {
+    #[cfg(not(target_arch = "spirv"))]
+    pub fn new(uvs: [u16; 2]) -> Self {
+        Self(uvs[0] as u32 | ((uvs[1] as u32) << 16))
+    }
+
+    pub fn get(&self) -> [u32; 2] {
+        [self.0 & 0xFFFF, (self.0 >> 16) & 0xFFFF]
+    }
+}
+
 // Block face
 
 #[repr(C)]
@@ -32,6 +50,7 @@ pub struct BlockFaceInstance {
     pub packed_fields: BlockFaceInstanceFields,
 }
 
+#[cfg(not(target_arch = "spirv"))]
 impl BlockFaceInstance {
     /// `packed_uv_rotation` is valid within 0..=3, specifies a rotation in increments of 90
     /// degrees.
@@ -97,6 +116,7 @@ pub struct TintedBlockFaceInstance {
     pub packed_fields: BlockFaceInstanceFields,
 }
 
+#[cfg(not(target_arch = "spirv"))]
 impl TintedBlockFaceInstance {
     /// `packed_uv_rotation` is valid within 0..=3, specifies a rotation in increments of 90
     /// degrees.
@@ -135,7 +155,7 @@ impl TintedBlockFaceInstance {
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct CustomBlockVertex {
     pub pos: [f32; 3],
-    pub uvs: [u16; 2],
+    pub uv: GpuUv,
     pub normal: [f32; 3],
     #[cfg(not(target_arch = "spirv"))]
     pub packed_fields: CustomBlockVertexFields,
@@ -145,12 +165,13 @@ pub struct CustomBlockVertex {
 
 #[cfg(not(target_arch = "spirv"))]
 impl CustomBlockVertex {
-    pub fn new(pos: [f32; 3], uvs: [u16; 2], normal: [f32; 3], is_tinted: bool) -> Self {
+    pub fn new(pos: [f32; 3], uv: [u16; 2], normal: [f32; 3], is_tinted: bool) -> Self {
+        let uv = GpuUv::new(uv);
         let mut packed_fields = CustomBlockVertexFields(0);
         packed_fields.set_is_tinted(is_tinted);
         Self {
             pos,
-            uvs,
+            uv,
             normal,
             packed_fields,
         }
@@ -196,6 +217,7 @@ pub struct CustomBlockInstance {
     pub packed_fields: CustomBlockInstanceFields,
 }
 
+#[cfg(not(target_arch = "spirv"))]
 impl CustomBlockInstance {
     pub fn new(
         pos: [f32; 3],

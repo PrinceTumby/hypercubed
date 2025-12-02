@@ -8,7 +8,7 @@ bitfield! {
     #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
     pub struct PackedFlags(u32);
     impl Debug;
-    pub ignore_depth, set_ignore_depth: 0;
+    ignore_depth_raw, set_ignore_depth_raw: 0;
 }
 
 impl PackedFlags {
@@ -17,8 +17,12 @@ impl PackedFlags {
 
     pub fn new(ignore_depth: bool) -> Self {
         let mut fields = Self::NONE;
-        fields.set_ignore_depth(ignore_depth);
+        fields.set_ignore_depth_raw(ignore_depth);
         fields
+    }
+
+    pub fn ignore_depth(&self) -> bool {
+        self.0 & 0x1 != 0
     }
 }
 

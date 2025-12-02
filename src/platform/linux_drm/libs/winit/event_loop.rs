@@ -6,7 +6,7 @@ use super::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, RawKeyEvent, StartCause, WindowEvent,
 };
 use super::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
-use super::window::{CursorGrabMode, Window, WindowId, WindowInner, WindowAttributes};
+use super::window::{CursorGrabMode, Window, WindowAttributes, WindowId, WindowInner};
 
 use anyhow::Context;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -142,10 +142,7 @@ fn seat_thread(
     drop(window_recv_channel);
     let (window_width, window_height) = {
         let window = window_.data.lock().unwrap();
-        (
-            window.window_size.width,
-            window.window_size.height,
-        )
+        (window.window_size.width, window.window_size.height)
     };
     // Now that we've got a window, start taking libinput events.
     if let Err(()) = libinput.resume() {
