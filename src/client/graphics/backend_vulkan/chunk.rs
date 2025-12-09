@@ -331,10 +331,7 @@ impl<T: bytemuck::Pod + Send + Sync, const ITEMS_PER_CHUNK: usize, const NUM_CHU
         Ok(Self {
             buffer: vulkan_new_buffer_slice_large(
                 device,
-                usage
-                    | VulkanBufferUsage::TRANSFER_DST
-                    // NOTE: RADIANCE CASCADES
-                    | VulkanBufferUsage::STORAGE_BUFFER,
+                usage | VulkanBufferUsage::TRANSFER_DST,
                 VulkanSharing::Exclusive,
                 ITEMS_PER_CHUNK * NUM_CHUNKS,
             )?,

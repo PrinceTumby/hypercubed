@@ -26,8 +26,7 @@ pub struct Subchunk {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CustomBlockGroup {
-    pub start_vertex: u32,
-    pub start_index_and_len: [u32; 2],
+    pub start_face_and_len: [u32; 2],
     pub start_instance_and_len: [u32; 2],
 }
 
@@ -180,7 +179,7 @@ impl<T: bytemuck::Pod> VertexListBuffer<T> {
         }
     }
 
-    pub fn get_slice(&self) -> BufferSlice {
+    pub fn get_slice(&self) -> BufferSlice<'_> {
         self.buffer.slice(..)
     }
 
@@ -214,7 +213,7 @@ impl<T: bytemuck::Pod> IndexListBuffer<T> {
         }
     }
 
-    pub fn get_slice(&self) -> BufferSlice {
+    pub fn get_slice(&self) -> BufferSlice<'_> {
         self.buffer.slice(..)
     }
 
@@ -399,11 +398,11 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
         }
     }
 
-    pub fn get_slice(&self) -> BufferSlice {
+    pub fn get_slice(&self) -> BufferSlice<'_> {
         self.buffer.slice(..)
     }
 
-    pub fn get_entire_binding(&self) -> wgpu::BindingResource {
+    pub fn get_entire_binding(&self) -> wgpu::BindingResource<'_> {
         self.buffer.as_entire_binding()
     }
 
@@ -452,7 +451,7 @@ impl<V: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
         self.0.free_subchunk_areas(subchunk_coords)
     }
 
-    pub fn get_slice(&self) -> wgpu::BufferSlice {
+    pub fn get_slice(&self) -> wgpu::BufferSlice<'_> {
         self.0.get_slice()
     }
 
@@ -477,10 +476,9 @@ impl<I: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
     InstanceBufferManager<I, BUFFER_SIZE, CHUNK_SIZE>
 {
     pub fn new(device: &wgpu::Device) -> Self {
-        // NOTE: RADIANCE CASCADES
         Self(BufferManager::new(
             device,
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            wgpu::BufferUsages::VERTEX,
         ))
     }
 
@@ -489,20 +487,21 @@ impl<I: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
         &mut self,
         queue: &wgpu::Queue,
         subchunk_coords: [i32; 3],
-        instances: &[I],
+        instances: impl AsRef<[I]>,
     ) -> u32 {
-        self.0.alloc_area(queue, subchunk_coords, instances)
+        self.0
+            .alloc_area(queue, subchunk_coords, instances.as_ref())
     }
 
     pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
         self.0.free_subchunk_areas(subchunk_coords)
     }
 
-    pub fn get_slice(&self) -> wgpu::BufferSlice {
+    pub fn get_slice(&self) -> wgpu::BufferSlice<'_> {
         self.0.get_slice()
     }
 
-    pub fn get_entire_binding(&self) -> wgpu::BindingResource {
+    pub fn get_entire_binding(&self) -> wgpu::BindingResource<'_> {
         self.0.get_entire_binding()
     }
 
@@ -529,13 +528,13 @@ pub mod block_face {
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
                 buffers: &[Vertex::desc(), Instance::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
@@ -746,13 +745,13 @@ pub mod tinted_block_face {
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
                 buffers: &[Vertex::desc(), Instance::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
@@ -883,13 +882,13 @@ pub mod custom_block {
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Vertex::desc(), Instance::desc()],
+                buffers: &[Instance::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
@@ -933,27 +932,6 @@ pub mod custom_block {
         pub uvs: [u16; 2],
         pub normal: [f32; 3],
         pub tint_percentage: f32,
-    }
-
-    impl Vertex {
-        const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
-            // pos
-            0 => Float32x3,
-            // uvs
-            1 => Uint16x2,
-            // normal
-            2 => Float32x3,
-            // tint_percentage
-            3 => Float32,
-        ];
-
-        pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: Self::ATTRIBUTES,
-            }
-        }
     }
 
     pub type InstanceList = VertexListBuffer<Instance>;

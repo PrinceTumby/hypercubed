@@ -4,6 +4,21 @@ pub mod chunk;
 pub mod debug;
 pub mod egui;
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+pub struct RawViewInfo {
+    pub view_matrix: [[f32; 4]; 4],
+    pub screen_size: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ViewInfo {
+    pub view_matrix: spirv_std::glam::Mat4,
+    pub screen_size: spirv_std::glam::UVec2,
+}
+
 pub type RawAtlasImage = spirv_std::image::Image!(
     2D,
     format = rgba8,

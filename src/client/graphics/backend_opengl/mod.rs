@@ -3,6 +3,7 @@ pub mod debug;
 pub mod egui_renderer;
 pub mod gl;
 
+use super::DebugState;
 use crate::client::{MIN_HEIGHT_I32, RawSubchunk, SUBCHUNK_AXIS_LEN_I32};
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
@@ -73,59 +74,6 @@ pub struct GraphicsState {
     // pub block_face_buffer_manager: BlockFaceBufferManager,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub camera: Camera,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DebugState {
-    pub visualisation_draw_method: DebugVisualisationDrawMethod,
-    pub cull_planes_active: usize,
-    pub rendering_view_frustum: bool,
-    pub free_cam: bool,
-    pub cave_cull_check_unflipped: bool,
-    pub cave_cull_check_not_backwards: bool,
-    pub cave_cull_check_frustum: bool,
-    pub cave_cull_check_connectivity: bool,
-    pub cave_cull_render_connectivity: bool,
-    pub cave_cull_render_traversal_graph: bool,
-    pub cave_cull_debug_render_dist: f32,
-    pub max_render_chunks: usize,
-    pub debug_texture_zoom: f32,
-}
-
-impl Default for DebugState {
-    fn default() -> Self {
-        Self {
-            visualisation_draw_method: DebugVisualisationDrawMethod::default(),
-            cull_planes_active: 6,
-            rendering_view_frustum: false,
-            free_cam: false,
-            cave_cull_check_unflipped: true,
-            cave_cull_check_not_backwards: false,
-            cave_cull_check_frustum: true,
-            cave_cull_check_connectivity: true,
-            cave_cull_render_connectivity: false,
-            cave_cull_render_traversal_graph: false,
-            cave_cull_debug_render_dist: 24.0,
-            max_render_chunks: 3000,
-            debug_texture_zoom: 1.0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DebugVisualisationDrawMethod {
-    #[default]
-    Egui,
-    Gpu,
-}
-
-impl DebugVisualisationDrawMethod {
-    pub fn label_text(&self) -> &'static str {
-        match *self {
-            Self::Egui => "Use egui for debug visualisation",
-            Self::Gpu => "Use the GPU directly for debug visualisation",
-        }
-    }
 }
 
 #[derive(Default)]
@@ -482,7 +430,6 @@ impl GraphicsState {
                 gl::matrix::switch_mode(MatrixMode::Projection);
                 gl::matrix::load_f32_matrix(&self.camera.generate_view_matrix_slice());
                 let camera_subchunk_coords = {
-                    // let camera_pos = debug_state.cull_camera.pos;
                     let camera_pos = self.camera.pos;
                     let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
                     let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)

@@ -106,6 +106,59 @@ impl Camera {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct DebugState {
+    pub visualisation_draw_method: DebugVisualisationDrawMethod,
+    pub cull_planes_active: usize,
+    pub rendering_view_frustum: bool,
+    pub free_cam: bool,
+    pub cave_cull_check_unflipped: bool,
+    pub cave_cull_check_not_backwards: bool,
+    pub cave_cull_check_frustum: bool,
+    pub cave_cull_check_connectivity: bool,
+    pub cave_cull_render_connectivity: bool,
+    pub cave_cull_render_traversal_graph: bool,
+    pub cave_cull_debug_render_dist: f32,
+    pub max_render_chunks: usize,
+    pub debug_texture_zoom: f32,
+}
+
+impl Default for DebugState {
+    fn default() -> Self {
+        Self {
+            visualisation_draw_method: DebugVisualisationDrawMethod::default(),
+            cull_planes_active: 6,
+            rendering_view_frustum: false,
+            free_cam: false,
+            cave_cull_check_unflipped: true,
+            cave_cull_check_not_backwards: false,
+            cave_cull_check_frustum: true,
+            cave_cull_check_connectivity: true,
+            cave_cull_render_connectivity: false,
+            cave_cull_render_traversal_graph: false,
+            cave_cull_debug_render_dist: 24.0,
+            max_render_chunks: 3000,
+            debug_texture_zoom: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DebugVisualisationDrawMethod {
+    #[default]
+    Egui,
+    Gpu,
+}
+
+impl DebugVisualisationDrawMethod {
+    pub fn label_text(&self) -> &'static str {
+        match *self {
+            Self::Egui => "Use egui for debug visualisation",
+            Self::Gpu => "Use the GPU directly for debug visualisation",
+        }
+    }
+}
+
 #[tracing::instrument(skip_all)]
 pub fn for_each_visible_subchunk<F>(
     camera: &Camera,

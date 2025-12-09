@@ -1,31 +1,30 @@
 pub mod chunk;
-pub mod chunk_rc;
 pub mod debug;
 pub mod egui_renderer;
 
-pub use super::Camera;
-
-use crate::basic_types::AxisDirection;
-use ahash::{AHashMap, AHashSet};
-use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
-use resources;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use wgpu::util::DeviceExt as _;
-use winit::window::Window;
-//use petgraph::graph::DiGraph;
+use super::{Camera, DebugState};
 use crate::client::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use chunk_rc::{
+use ahash::{AHashMap, AHashSet};
+use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
+use debug::line::Instance as DebugLineInstance;
+use debug::point::Vertex as DebugPointVertex;
+use debug::triangle::Instance as DebugTriangleInstance;
+use nalgebra::{Perspective3, Point3};
+use resources::block::model::{ModelRegistry, Tint};
+use std::sync::Arc;
+use wgpu::util::DeviceExt as _;
+use winit::window::Window;
 
 pub struct GraphicsResources {
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub block_registry: resource::block::Registry,
+    pub block_registry: resources::block::Registry,
+    pub model_registry: ModelRegistry,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,91 +55,34 @@ pub struct GraphicsBufferManagers {
     pub custom_block_instance: CustomBlockInstanceBufferManager,
 }
 
-// XXX: DEBUG
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct RadianceProbeDebugInfo {
-    pub debug_floats: [f32; 4],
-    pub debug_ints: [u32; 4],
-}
-
-pub struct RadianceCascadeState {
-    pub debug_info: Arc<Mutex<RadianceProbeDebugInfo>>,
-    pub debug_egui_texture: egui::load::SizedTexture,
-}
-
 pub struct GraphicsState {
     pub resources: Arc<GraphicsResources>,
     pub buffer_managers: GraphicsBufferManagers,
     pub config: wgpu::SurfaceConfiguration,
     pub graphics_options: GraphicsOptions,
-    pub radiance_probe_update_pipelines: [wgpu::ComputePipeline; 2],
-    pub radiance_probe_debug_pipeline: wgpu::ComputePipeline,
-    pub radiance_probe_info_bind_group_layout: wgpu::BindGroupLayout,
-    pub radiance_probe_debug_texture_storage_bind_group: wgpu::BindGroup,
-    pub radiance_probe_debug_info_buffer: Arc<wgpu::Buffer>,
-    pub radiance_cascades: RadianceCascadeState,
-    pub radiance_probe_lightmap_bind_group_layout: wgpu::BindGroupLayout,
-    // TODO:
-    // - Render to an HDR texture
-    // - Implement an HDR pipeline for tonemapping to sRGB
     pub block_render_pipeline: wgpu::RenderPipeline,
     pub tinted_block_render_pipeline: wgpu::RenderPipeline,
     pub custom_block_render_pipeline: wgpu::RenderPipeline,
+    pub debug_point_render_pipeline: wgpu::RenderPipeline,
+    pub debug_line_render_pipeline: wgpu::RenderPipeline,
+    pub debug_triangle_render_pipeline: wgpu::RenderPipeline,
     pub debug_crosshair_render_pipeline: wgpu::RenderPipeline,
     pub egui_renderer: egui_renderer::Renderer,
     pub depth_texture: Texture,
-    pub custom_block_vertices_buffer: wgpu::Buffer,
-    pub custom_block_indices_buffer: wgpu::Buffer,
-    pub block_item_atlas: resource::texture::Atlas,
+    pub custom_block_faces_buffer: wgpu::Buffer,
+    pub block_item_atlas: TextureAtlas,
     pub block_item_atlas_bind_group: wgpu::BindGroup,
     pub camera: Camera,
-    pub camera_buffer: wgpu::Buffer,
-    pub camera_bind_group: wgpu::BindGroup,
-    pub camera_bind_group_layout: wgpu::BindGroupLayout,
+    pub view_info_buffer: wgpu::Buffer,
+    pub view_info_bind_group: wgpu::BindGroup,
+    pub view_info_bind_group_layout: wgpu::BindGroupLayout,
     pub matrices_bind_group: wgpu::BindGroup,
-    pub debug_crosshair_camera_buffer: wgpu::Buffer,
-    pub debug_crosshair_camera_bind_group: wgpu::BindGroup,
+    pub custom_block_faces_bind_group: wgpu::BindGroup,
+    pub debug_crosshair_view_info_buffer: wgpu::Buffer,
+    pub debug_crosshair_view_info_bind_group: wgpu::BindGroup,
     pub debug_crosshair_vertex_buffer: wgpu::Buffer,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub clear_color: wgpu::Color,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DebugState {
-    pub cull_planes_active: usize,
-    pub rendering_view_frustum: bool,
-    pub free_cam: bool,
-    pub cave_cull_check_unflipped: bool,
-    pub cave_cull_check_not_backwards: bool,
-    pub cave_cull_check_frustum: bool,
-    pub cave_cull_check_connectivity: bool,
-    pub cave_cull_render_connectivity: bool,
-    pub cave_cull_render_traversal_graph: bool,
-    pub cave_cull_debug_render_dist: f32,
-    pub max_render_chunks: usize,
-    pub radiance_cascades_ray_visualiser: bool,
-    pub max_radiance_cascade: u32,
-}
-
-impl Default for DebugState {
-    fn default() -> Self {
-        Self {
-            cull_planes_active: 6,
-            rendering_view_frustum: false,
-            free_cam: false,
-            cave_cull_check_unflipped: true,
-            cave_cull_check_not_backwards: false,
-            cave_cull_check_frustum: true,
-            cave_cull_check_connectivity: true,
-            cave_cull_render_connectivity: false,
-            cave_cull_render_traversal_graph: false,
-            cave_cull_debug_render_dist: 24.0,
-            max_render_chunks: 3000,
-            radiance_cascades_ray_visualiser: false,
-            max_radiance_cascade: 0,
-        }
-    }
 }
 
 pub struct DebugOutput {
@@ -148,62 +90,72 @@ pub struct DebugOutput {
     pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ViewInfo {
+    view_matrix: [[f32; 4]; 4],
+    screen_size: [u32; 2],
+    padding: [u32; 2],
+}
+
+impl ViewInfo {
+    pub fn new(camera: &Camera, screen_size: winit::dpi::PhysicalSize<u32>) -> Self {
+        Self {
+            view_matrix: camera.generate_reversed_depth_view_matrix_slice(),
+            screen_size: screen_size.into(),
+            padding: [0; 2],
+        }
+    }
+
+    pub fn new_debug_crosshair(camera: &Camera) -> Self {
+        Self {
+            view_matrix: camera.generate_debug_crosshair_view_matrix_slice(),
+            screen_size: [0; 2],
+            padding: [0; 2],
+        }
+    }
+}
+
 impl GraphicsState {
     #[tracing::instrument(skip_all)]
-    pub async fn new<F>(window: &'static Window, register_blocks: F) -> anyhow::Result<Self>
+    pub fn new<F>(window: Arc<Window>, register_blocks: F) -> anyhow::Result<Self>
     where
         F: FnOnce(
-            &mut resource::block::Registry,
-            &mut resource::block::model::ModelRegistryBuilder,
-            &mut resource::texture::AtlasBuilder,
+            &mut resources::block::Registry,
+            &mut resources::block::model::ModelRegistryBuilder,
+            &mut resources::texture::AtlasBuilder,
         ) -> anyhow::Result<()>,
     {
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(Default::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        });
         let surface = instance.create_surface(window)?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
+        .unwrap();
         dbg!(adapter.get_info());
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::MULTI_DRAW_INDIRECT
-                        | wgpu::Features::INDIRECT_FIRST_INSTANCE
-                        // XXX: DEBUG
-                        | wgpu::Features::POLYGON_MODE_LINE
-                        | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
-                        // NOTE: RADIANCE CASCADES
-                        | wgpu::Features::PUSH_CONSTANTS,
-                    required_limits: wgpu::Limits {
-                        // max_push_constant_size: 24,
-                        // XXX: DEBUG
-                        max_push_constant_size: 64,
-                        // NOTE: RADIANCE CASCADES
-                        max_storage_buffers_per_shader_stage: 10,
-                        max_storage_buffer_binding_size: 1024 * 1024 * 1024,
-                        max_buffer_size: 1024 * 1024 * 1024,
-                        ..Default::default()
-                    },
-                    memory_hints: wgpu::MemoryHints::Performance,
-                },
-                None,
-            )
-            .await
-            .unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE,
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            trace: wgpu::Trace::Off,
+        }))
+        .unwrap();
         let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
+        let surface_format = surface_caps.formats[0];
+        // HACK: On Windows, the "preferred" format is an sRGB format, when this doesn't actually
+        //       seem to be correct? Just fix it up here, for now.
+        #[cfg(target_os = "windows")]
+        let surface_format = surface_format.remove_srgb_suffix();
         let graphics_options = GraphicsOptions::default();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -216,9 +168,9 @@ impl GraphicsState {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let camera_bind_group_layout =
+        let view_info_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera_bind_group_layout"),
+                label: Some("View Info Bind Group Layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -232,10 +184,10 @@ impl GraphicsState {
             });
         let matrices_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("matrices_bind_group_layout"),
+                label: Some("Matrices Group Layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -244,9 +196,23 @@ impl GraphicsState {
                     count: None,
                 }],
             });
+        let custom_block_faces_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Custom Block Faces Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
         let atlas_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("atlas_bind_group_layout"),
+                label: Some("Atlas Bind Group Layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -260,7 +226,7 @@ impl GraphicsState {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
@@ -276,54 +242,56 @@ impl GraphicsState {
                     },
                 ],
             });
-        let lightmap_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Light Map Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
         let (
             block_item_texture_atlas,
             block_item_atlas_size,
+            custom_block_faces_buffer,
             block_registry,
-            custom_block_vertices_buffer,
-            custom_block_indices_buffer,
+            model_registry,
         ) = {
             use resources;
             let size = [1024; 2];
             let square_length = 16;
             let mut atlas_builder =
-                resource::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_cache = resource::block::model::ModelRegistryBuilder::new();
-            let mut block_registry = resource::block::Registry::new();
-            register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
-            let atlas = atlas_builder.build(&device, &queue, Some("Block and Item Atlas"));
-            let custom_block_vertices_buffer =
+                resources::texture::AtlasBuilder::new(size[0], size[1], square_length);
+            let mut model_registry_builder = resources::block::model::ModelRegistryBuilder::new();
+            let mut block_registry = resources::block::Registry::new();
+            register_blocks(
+                &mut block_registry,
+                &mut model_registry_builder,
+                &mut atlas_builder,
+            )?;
+            let atlas = TextureAtlas::from_builder(
+                atlas_builder,
+                &device,
+                &queue,
+                Some("Block and Item Atlas"),
+            );
+            let model_registry = model_registry_builder.finish();
+            let custom_block_faces: Vec<_> = model_registry
+                .custom_block_faces
+                .iter()
+                .map(|face| {
+                    face.map(|v| chunk::custom_block::Vertex {
+                        pos: *v.local_pos.coords.as_ref(),
+                        uvs: v.uvs,
+                        normal: *v.normal.as_ref(),
+                        tint_percentage: matches!(v.tint, Some(Tint::Biome)) as u8 as f32,
+                    })
+                })
+                .collect();
+            let custom_block_faces_buffer =
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Custom Block Vertices Buffer"),
-                    contents: bytemuck::cast_slice(&model_cache.custom_block_vertices),
+                    contents: bytemuck::cast_slice(&custom_block_faces),
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
-                });
-            let custom_block_indices_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Custom Block Indices Buffer"),
-                    contents: bytemuck::cast_slice(&model_cache.custom_block_indices),
-                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::STORAGE,
                 });
             (
                 atlas,
                 size,
+                custom_block_faces_buffer,
                 block_registry,
-                custom_block_vertices_buffer,
-                custom_block_indices_buffer,
+                model_registry,
             )
         };
         let block_item_atlas_size_buffer =
@@ -356,256 +324,58 @@ impl GraphicsState {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Chunk Block Pipeline Layout"),
                 bind_group_layouts: &[
-                    &camera_bind_group_layout,
+                    &view_info_bind_group_layout,
                     &atlas_bind_group_layout,
                     &matrices_bind_group_layout,
-                    &lightmap_bind_group_layout,
+                    &custom_block_faces_bind_group_layout,
                 ],
                 push_constant_ranges: &[],
             });
-        let block_render_pipeline = chunk_rc::block_face::create_render_pipeline(
+        let block_render_pipeline = chunk::block_face::create_render_pipeline(
             &device,
             &config,
             &generic_block_pipeline_layout,
         );
-        let tinted_block_render_pipeline = chunk_rc::tinted_block_face::create_render_pipeline(
+        let tinted_block_render_pipeline = chunk::tinted_block_face::create_render_pipeline(
             &device,
             &config,
             &generic_block_pipeline_layout,
         );
-        let custom_block_render_pipeline = chunk_rc::custom_block::create_render_pipeline(
+        let custom_block_render_pipeline = chunk::custom_block::create_render_pipeline(
             &device,
             &config,
             &generic_block_pipeline_layout,
         );
-        let radiance_probe_info_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Radiance Probe Info Bind Group Layout"),
-                entries: &[
-                    // Subchunk Hash Map
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Block Face Instances
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Tinted Block Face Instances
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Custom Block Vertices
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Custom Block Indices
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Custom Block Instances
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Custom Block Groups
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Update Info Buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 7,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Output Lightmap Buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 8,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Previous Cascade Buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 9,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // Block and Item Luma Atlas Texture
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 10,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let radiance_probe_debug_texture_storage_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Debug Radiance Probe Texture Storage Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                }],
-            });
-        let radiance_probe_update_pipeline_layout =
+        // Debug pipelines
+        let debug_graphics_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Radiance Probe Update Pipeline Layout"),
-                bind_group_layouts: &[
-                    &atlas_bind_group_layout,
-                    &matrices_bind_group_layout,
-                    &radiance_probe_info_bind_group_layout,
-                    &radiance_probe_debug_texture_storage_layout,
-                ],
-                push_constant_ranges: &[wgpu::PushConstantRange {
-                    stages: wgpu::ShaderStages::COMPUTE,
-                    // range: 0..24,
-                    // XXX: DEBUG
-                    range: 0..64,
-                }],
-            });
-        let radiance_probe_update_pipelines = chunk_rc::compute::create_cascade_update_pipelines(
-            &device,
-            &radiance_probe_update_pipeline_layout,
-        );
-        let radiance_probe_debug_pipeline = chunk_rc::compute::create_raytracing_debug_pipeline(
-            &device,
-            &radiance_probe_update_pipeline_layout,
-        );
-        // XXX: DEBUG
-        let radiance_probe_debug_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Radiance Probe Debug Texture"),
-            size: wgpu::Extent3d {
-                width: 960,
-                height: 540,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
-        });
-        let radiance_probe_debug_texture_storage_bind_group = {
-            let view =
-                radiance_probe_debug_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let storage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Debug Radiance Probe Texture Storage Bind Group"),
-                layout: &radiance_probe_debug_texture_storage_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                }],
-            });
-            storage_bind_group
-        };
-        let radiance_probe_debug_info_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Radiance Probe Debug Info Buffer"),
-                contents: bytemuck::cast_slice(&[RadianceProbeDebugInfo::default()]),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_READ,
-            });
-        let radiance_probe_debug_info_buffer = Arc::new(radiance_probe_debug_info_buffer);
-        // Debug information pipelines
-        let debug_crosshair_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Debug Crosshair Render Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout],
+                label: Some("Debug Graphics Render Pipeline Layout"),
+                bind_group_layouts: &[&view_info_bind_group_layout],
                 push_constant_ranges: &[],
             });
+        let debug_point_render_pipeline =
+            debug::point::create_render_pipeline(&device, &config, &debug_graphics_pipeline_layout);
+        let debug_line_render_pipeline =
+            debug::line::create_render_pipeline(&device, &config, &debug_graphics_pipeline_layout);
+        let debug_triangle_render_pipeline = debug::triangle::create_render_pipeline(
+            &device,
+            &config,
+            &debug_graphics_pipeline_layout,
+        );
         let debug_crosshair_render_pipeline = debug::crosshair::create_render_pipeline(
             &device,
             &config,
-            &debug_crosshair_pipeline_layout,
+            &debug_graphics_pipeline_layout,
         );
         // egui renderer
-        let mut egui_renderer = egui_renderer::Renderer::new(&device, &config);
-        // XXX: DEBUG
-        let radiance_probe_debug_egui_texture_id = egui_renderer.register_user_texture(
-            &device,
-            radiance_probe_debug_texture,
-            egui::TextureOptions::NEAREST,
-        );
+        let egui_renderer = egui_renderer::Renderer::new(&device, &config);
         // Buffer managers
         let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device);
-        let block_face_instance_buffer_manager =
-            BlockFaceInstanceBufferManager::new(&device, "Block Face");
+        let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device);
         let tinted_block_face_vertex_buffer_manager =
             TintedBlockFaceVertexBufferManager::new(&device);
         let tinted_block_face_instance_buffer_manager =
-            TintedBlockFaceInstanceBufferManager::new(&device, "Tinted Block Face");
+            TintedBlockFaceInstanceBufferManager::new(&device);
         let custom_block_instance_buffer_manager = CustomBlockInstanceBufferManager::new(&device);
         // Buffers
         let proj_matrix = Perspective3::new(
@@ -621,48 +391,54 @@ impl GraphicsState {
             pitch: 0.0,
             roll: 0.0,
         };
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&camera.generate_reversed_depth_view_matrix_slice()),
+        let view_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("View Info Buffer"),
+            contents: bytemuck::cast_slice(&[ViewInfo::new(&camera, size)]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera_bind_group"),
-            layout: &camera_bind_group_layout,
+        let view_info_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("View Info Bind Group"),
+            layout: &view_info_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: camera_buffer.as_entire_binding(),
+                resource: view_info_buffer.as_entire_binding(),
             }],
         });
         let face_matrices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Face Matrices Buffer"),
-            contents: bytemuck::cast_slice(&chunk_rc::block_face::face_matrices::generate_array()),
+            contents: bytemuck::cast_slice(&chunk::block_face::face_matrices::generate_array()),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let matrices_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("matrices_bind_group"),
+            label: Some("Matrices Bind Group"),
             layout: &matrices_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: face_matrices_buffer.as_entire_binding(),
             }],
         });
+        let custom_block_faces_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Custom Block Faces Bind Group"),
+            layout: &custom_block_faces_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: custom_block_faces_buffer.as_entire_binding(),
+            }],
+        });
         // Debug buffers
-        let debug_crosshair_camera_buffer =
+        let debug_crosshair_view_info_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Debug Crosshair Camera Buffer"),
-                contents: bytemuck::cast_slice(
-                    &camera.generate_debug_crosshair_view_matrix_slice(),
-                ),
+                label: Some("Debug Crosshair View Info Buffer"),
+                contents: bytemuck::cast_slice(&[ViewInfo::new_debug_crosshair(&camera)]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-        let debug_crosshair_camera_bind_group =
+        let debug_crosshair_view_info_bind_group =
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Debug Crosshair Camera Bind Group"),
-                layout: &camera_bind_group_layout,
+                label: Some("Debug Crosshair View Info Bind Group"),
+                layout: &view_info_bind_group_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: debug_crosshair_camera_buffer.as_entire_binding(),
+                    resource: debug_crosshair_view_info_buffer.as_entire_binding(),
                 }],
             });
         let debug_crosshair_vertex_buffer =
@@ -677,6 +453,7 @@ impl GraphicsState {
                 device,
                 queue,
                 block_registry,
+                model_registry,
             }),
             buffer_managers: GraphicsBufferManagers {
                 block_face_vertex: block_face_vertex_buffer_manager,
@@ -687,36 +464,26 @@ impl GraphicsState {
             },
             config,
             graphics_options,
-            radiance_probe_debug_pipeline,
-            radiance_probe_update_pipelines,
-            radiance_probe_info_bind_group_layout,
-            radiance_probe_debug_texture_storage_bind_group,
-            radiance_probe_debug_info_buffer,
-            radiance_probe_lightmap_bind_group_layout: lightmap_bind_group_layout,
-            radiance_cascades: RadianceCascadeState {
-                debug_info: Arc::new(Mutex::new(RadianceProbeDebugInfo::default())),
-                debug_egui_texture: egui::load::SizedTexture {
-                    id: radiance_probe_debug_egui_texture_id,
-                    size: (960.0, 540.0).into(),
-                },
-            },
             block_render_pipeline,
             tinted_block_render_pipeline,
             custom_block_render_pipeline,
+            debug_point_render_pipeline,
+            debug_line_render_pipeline,
+            debug_triangle_render_pipeline,
             debug_crosshair_render_pipeline,
             egui_renderer,
             depth_texture,
-            custom_block_vertices_buffer,
-            custom_block_indices_buffer,
+            custom_block_faces_buffer,
             block_item_atlas: block_item_texture_atlas,
             block_item_atlas_bind_group,
             camera,
-            camera_buffer,
-            camera_bind_group,
-            camera_bind_group_layout,
+            view_info_buffer,
+            view_info_bind_group,
+            view_info_bind_group_layout,
             matrices_bind_group,
-            debug_crosshair_camera_buffer,
-            debug_crosshair_camera_bind_group,
+            custom_block_faces_bind_group,
+            debug_crosshair_view_info_buffer,
+            debug_crosshair_view_info_bind_group,
             debug_crosshair_vertex_buffer,
             size,
             // Minecraft plains biome sky color
@@ -781,21 +548,24 @@ impl GraphicsState {
     #[tracing::instrument(skip_all)]
     pub fn render(
         &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
+        subchunks: &AHashMap<[i32; 3], chunk::Subchunk>,
         loaded_chunks: &AHashSet<[i32; 2]>,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
+        debug_points: &[DebugPointVertex],
+        debug_lines: &[DebugLineInstance],
+        debug_triangles: &[DebugTriangleInstance],
     ) -> Result<DebugOutput, wgpu::SurfaceError> {
         let pixels_per_point = egui_full_output.pixels_per_point;
         let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
         self.resources.queue.write_buffer(
-            &self.camera_buffer,
+            &self.view_info_buffer,
             0,
-            bytemuck::cast_slice(&self.camera.generate_reversed_depth_view_matrix_slice()),
+            bytemuck::cast_slice(&[ViewInfo::new(&self.camera, self.size)]),
         );
         self.resources.queue.write_buffer(
-            &self.debug_crosshair_camera_buffer,
+            &self.debug_crosshair_view_info_buffer,
             0,
             bytemuck::cast_slice(&self.camera.generate_debug_crosshair_view_matrix_slice()),
         );
@@ -817,16 +587,19 @@ impl GraphicsState {
                     label: Some("Render Encoder"),
                 });
         // Main render pass
-        let subchunks_skipped;
-        let mut subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])> = Vec::new();
         let block_face_draw_args_buffer;
         let tinted_block_face_draw_args_buffer;
         let custom_block_draw_args_buffer;
+        let debug_point_buffer;
+        let debug_line_buffer;
+        let debug_triangle_buffer;
+        let debug_output;
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.clear_color),
@@ -845,51 +618,14 @@ impl GraphicsState {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            let camera_clipping_planes = self.camera.generate_clipping_planes();
-            // let camera_clipping_planes = debug_state.cull_camera.generate_clipping_planes();
-            let mut rendered_chunks: AHashSet<[i32; 3]> = AHashSet::new();
-            let mut visited_chunks: AHashSet<[i32; 3]> = AHashSet::new();
-            #[derive(Clone, Copy, Debug)]
-            struct QueuedChunk {
-                pub coords: [i32; 3],
-                pub from_dir: Option<AxisDirection>,
-                pub back_travel_amount: f32,
-                pub flipping_state: FlippingState,
-            }
-            // TODO: Come up with a better name for this, document how it works
-            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-            enum FlippingState {
-                Unflipped {
-                    x_positive: Option<bool>,
-                    y_positive: Option<bool>,
-                    z_positive: Option<bool>,
-                },
-                Flipped,
-            }
-            //let mut subchunk_graph: DiGraph<QueuedChunk, ()> = DiGraph::new();
-            let mut chunk_queue: VecDeque<QueuedChunk> = VecDeque::new();
             let camera_chunk_coords = {
-                // let camera_pos = debug_state.cull_camera.pos;
                 let camera_pos = self.camera.pos;
                 let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
                 let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
                     .div_euclid(SUBCHUNK_AXIS_LEN_I32);
                 let camera_z = (camera_pos.z.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
-                let camera_chunk_coords = [camera_x, camera_y, camera_z];
-                chunk_queue.push_back(QueuedChunk {
-                    coords: camera_chunk_coords,
-                    from_dir: None,
-                    back_travel_amount: 0.0,
-                    flipping_state: FlippingState::Unflipped {
-                        x_positive: None,
-                        y_positive: None,
-                        z_positive: None,
-                    },
-                });
-                visited_chunks.insert(camera_chunk_coords);
-                camera_chunk_coords
+                [camera_x, camera_y, camera_z]
             };
-            let mut num_subchunks_rendered = 0;
             #[repr(C)]
             #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
             pub struct DrawIndirectArgs {
@@ -898,228 +634,62 @@ impl GraphicsState {
                 pub start_vertex: u32,
                 pub start_instance: u32,
             }
-            #[repr(C)]
-            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-            pub struct DrawIndexedIndirectArgs {
-                pub num_indices: u32,
-                pub num_instances: u32,
-                pub start_index: u32,
-                pub start_vertex: u32,
-                pub start_instance: u32,
-            }
             let mut block_face_draw_args: Vec<DrawIndirectArgs> = Vec::new();
             let mut tinted_block_face_draw_args: Vec<DrawIndirectArgs> = Vec::new();
-            let mut custom_block_draw_args: Vec<DrawIndexedIndirectArgs> = Vec::new();
-            while let Some(queued_chunk) = chunk_queue.pop_front() {
-                let QueuedChunk {
-                    coords: chunk_coords,
-                    from_dir,
-                    back_travel_amount: chunk_back_travel_amount,
-                    flipping_state: chunk_flip_state,
-                } = queued_chunk;
-                let subchunk_maybe = subchunks.get(&chunk_coords);
-                // Visit neighbours
-                'neighbour_blk: {
-                    let (cur_x_flip, cur_y_flip, cur_z_flip) =
-                        if debug_state.cave_cull_check_unflipped {
-                            match chunk_flip_state {
-                                FlippingState::Unflipped {
-                                    x_positive,
-                                    y_positive,
-                                    z_positive,
-                                } => (x_positive, y_positive, z_positive),
-                                FlippingState::Flipped => break 'neighbour_blk,
-                            }
-                        } else {
-                            (None, None, None)
+            let mut custom_block_draw_args: Vec<DrawIndirectArgs> = Vec::new();
+            debug_output = super::for_each_visible_subchunk(
+                &self.camera,
+                subchunks,
+                loaded_chunks,
+                debug_state,
+                |subchunk_coords, subchunk| {
+                    for i in 0..6 {
+                        let skip_face_dir = match i {
+                            0 => subchunk_coords[1] > camera_chunk_coords[1],
+                            1 => subchunk_coords[1] < camera_chunk_coords[1],
+                            2 => subchunk_coords[2] < camera_chunk_coords[2],
+                            3 => subchunk_coords[2] > camera_chunk_coords[2],
+                            4 => subchunk_coords[0] > camera_chunk_coords[0],
+                            5 => subchunk_coords[0] < camera_chunk_coords[0],
+                            6.. => unreachable!(),
                         };
-                    let [chunk_x, chunk_y, chunk_z] = chunk_coords;
-                    let neighbour_chunks = [
-                        ([chunk_x - 1, chunk_y, chunk_z], AxisDirection::West),
-                        ([chunk_x + 1, chunk_y, chunk_z], AxisDirection::East),
-                        ([chunk_x, chunk_y, chunk_z - 1], AxisDirection::North),
-                        ([chunk_x, chunk_y, chunk_z + 1], AxisDirection::South),
-                        ([chunk_x, chunk_y - 1, chunk_z], AxisDirection::Down),
-                        ([chunk_x, chunk_y + 1, chunk_z], AxisDirection::Up),
-                    ];
-                    // let facing_dir = debug_state
-                    //     .cull_camera
-                    //     .get_rot()
-                    //     .transform_vector(&-Vector3::z());
-                    let facing_dir = self.camera.get_rot().transform_vector(&-Vector3::z());
-                    'neighbour_loop: for (neighbour_coord, to_dir) in neighbour_chunks {
-                        const WORLD_HEIGHT_I32: i32 = 384;
-                        if neighbour_coord[1] < 0 || neighbour_coord[1] > WORLD_HEIGHT_I32 / 16 {
+                        if skip_face_dir {
                             continue;
                         }
-                        if !loaded_chunks.contains(&[neighbour_coord[0], neighbour_coord[2]]) {
-                            continue;
+                        // Base block faces
+                        if subchunk.block_face_start_vertices[i] != u32::MAX {
+                            block_face_draw_args.push(DrawIndirectArgs {
+                                num_vertices: 4,
+                                num_instances: subchunk.block_face_instance_groups[i].1,
+                                start_vertex: subchunk.block_face_start_vertices[i],
+                                start_instance: subchunk.block_face_instance_groups[i].0,
+                            });
                         }
-                        // Check we're haven't gone backwards too much
-                        let back_travel_diff = -facing_dir.dot(&to_dir.as_vector());
-                        let neighbour_back_travel_amount =
-                            (chunk_back_travel_amount + back_travel_diff).max(0.0);
-                        if debug_state.cave_cull_check_not_backwards
-                            && neighbour_back_travel_amount >= 1.1
-                        {
-                            continue;
+                        // Tinted block faces
+                        if subchunk.tinted_block_face_start_vertices[i] != u32::MAX {
+                            tinted_block_face_draw_args.push(DrawIndirectArgs {
+                                num_vertices: 4,
+                                num_instances: subchunk.tinted_block_face_instance_groups[i].1,
+                                start_vertex: subchunk.tinted_block_face_start_vertices[i],
+                                start_instance: subchunk.tinted_block_face_instance_groups[i].0,
+                            });
                         }
-                        if let Some(from_dir) = from_dir {
-                            // Check we can go to the neighbour from the last subchunk through this
-                            // subchunk
-                            if debug_state.cave_cull_check_connectivity {
-                                if let Some(subchunk) = subchunk_maybe {
-                                    if !subchunk.connected_faces.connects(&from_dir, &to_dir) {
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        // Check neighbour lies in camera frustum
-                        if debug_state.cave_cull_check_frustum {
-                            // use super::MIN_HEIGHT_I32;
-                            let start_coords = [
-                                (neighbour_coord[0] * 16) as f32,
-                                (neighbour_coord[1] * 16 + MIN_HEIGHT_I32) as f32,
-                                (neighbour_coord[2] * 16) as f32,
-                            ];
-                            let end_coords = start_coords.map(|n| n + 16.0);
-                            for (i, clip_plane) in camera_clipping_planes.into_iter().enumerate() {
-                                let (normal, offset) = clip_plane;
-                                if i >= debug_state.cull_planes_active {
-                                    break;
-                                }
-                                let inward_point = Point3::new(
-                                    match normal.x > 0.0 {
-                                        false => start_coords[0],
-                                        true => end_coords[0],
-                                    },
-                                    match normal.y > 0.0 {
-                                        false => start_coords[1],
-                                        true => end_coords[1],
-                                    },
-                                    match normal.z > 0.0 {
-                                        false => start_coords[2],
-                                        true => end_coords[2],
-                                    },
-                                );
-                                if inward_point.coords.dot(&normal) + offset < 0.0 {
-                                    continue 'neighbour_loop;
-                                }
-                            }
-                        }
-                        // Check we haven't already rendered the neighbour
-                        if visited_chunks.contains(&neighbour_coord) {
-                            continue;
-                        }
-                        // Calculate flip state for neighbour
-                        visited_chunks.insert(neighbour_coord);
-                        chunk_queue.push_back(QueuedChunk {
-                            coords: neighbour_coord,
-                            from_dir: Some(to_dir.invert()),
-                            back_travel_amount: neighbour_back_travel_amount,
-                            flipping_state: {
-                                let (new_x_flip, new_y_flip, new_z_flip) = match to_dir {
-                                    AxisDirection::Down => (None, Some(false), None),
-                                    AxisDirection::Up => (None, Some(true), None),
-                                    AxisDirection::North => (None, None, Some(false)),
-                                    AxisDirection::South => (None, None, Some(true)),
-                                    AxisDirection::West => (Some(false), None, None),
-                                    AxisDirection::East => (Some(true), None, None),
-                                };
-                                if [
-                                    cur_x_flip.zip(new_x_flip),
-                                    cur_y_flip.zip(new_y_flip),
-                                    cur_z_flip.zip(new_z_flip),
-                                ]
-                                .iter()
-                                .any(|&flips| flips.is_some_and(|(x, y)| x != y))
-                                {
-                                    FlippingState::Flipped
-                                } else {
-                                    FlippingState::Unflipped {
-                                        x_positive: new_x_flip.or(cur_x_flip),
-                                        y_positive: new_y_flip.or(cur_y_flip),
-                                        z_positive: new_z_flip.or(cur_z_flip),
-                                    }
-                                }
-                            },
-                        });
-                        subchunk_traversal_graph.push((chunk_coords, neighbour_coord));
                     }
-                }
-                let Some(subchunk) = subchunk_maybe else {
-                    continue;
-                };
-                if num_subchunks_rendered >= debug_state.max_render_chunks {
-                    break;
-                } else {
-                    num_subchunks_rendered += 1;
-                }
-                rendered_chunks.insert(chunk_coords);
-                for i in 0..6 {
-                    let skip_face_dir = match i {
-                        0 => chunk_coords[1] > camera_chunk_coords[1],
-                        1 => chunk_coords[1] < camera_chunk_coords[1],
-                        2 => chunk_coords[2] < camera_chunk_coords[2],
-                        3 => chunk_coords[2] > camera_chunk_coords[2],
-                        4 => chunk_coords[0] > camera_chunk_coords[0],
-                        5 => chunk_coords[0] < camera_chunk_coords[0],
-                        6.. => unreachable!(),
-                    };
-                    if skip_face_dir {
-                        continue;
-                    }
-                    // Base block faces
-                    if subchunk.block_face_start_vertices[i] != u32::MAX {
-                        block_face_draw_args.push(DrawIndirectArgs {
-                            num_vertices: 4,
-                            num_instances: subchunk.block_face_instance_groups[i].1,
-                            start_vertex: subchunk.block_face_start_vertices[i],
-                            start_instance: subchunk.block_face_instance_groups[i].0,
+                    // Custom blocks
+                    for group in &subchunk.custom_block_groups {
+                        custom_block_draw_args.push(DrawIndirectArgs {
+                            num_vertices: group.start_face_and_len[1] * 6,
+                            num_instances: group.start_instance_and_len[1],
+                            start_vertex: group.start_face_and_len[0] * 6,
+                            start_instance: group.start_instance_and_len[0],
                         });
                     }
-                    // Tinted block faces
-                    if subchunk.tinted_block_face_start_vertices[i] != u32::MAX {
-                        tinted_block_face_draw_args.push(DrawIndirectArgs {
-                            num_vertices: 4,
-                            num_instances: subchunk.tinted_block_face_instance_groups[i].1,
-                            start_vertex: subchunk.tinted_block_face_start_vertices[i],
-                            start_instance: subchunk.tinted_block_face_instance_groups[i].0,
-                        });
-                    }
-                }
-                // Custom blocks
-                for group in &subchunk.custom_block_groups {
-                    custom_block_draw_args.push(DrawIndexedIndirectArgs {
-                        num_indices: group.start_index_and_len[1],
-                        num_instances: group.start_instance_and_len[1],
-                        start_index: group.start_index_and_len[0],
-                        start_vertex: group.start_vertex,
-                        start_instance: group.start_instance_and_len[0],
-                    });
-                }
-            }
-            {
-                let subchunk_coord_set: AHashSet<_> = subchunks.keys().copied().collect();
-                subchunks_skipped = subchunk_coord_set.difference(&rendered_chunks).count()
-            }
-            let lightmap_bind_group =
-                self.resources
-                    .device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Lightmap Bind Group"),
-                        layout: &self.radiance_probe_lightmap_bind_group_layout,
-                        entries: &[wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
-                                .as_entire_binding(),
-                        }],
-                    });
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                },
+            );
+            render_pass.set_bind_group(0, &self.view_info_bind_group, &[]);
             render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
             render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-            render_pass.set_bind_group(3, &lightmap_bind_group, &[]);
+            render_pass.set_bind_group(3, &self.custom_block_faces_bind_group, &[]);
             // Base block faces
             if !block_face_draw_args.is_empty() {
                 block_face_draw_args_buffer =
@@ -1177,29 +747,68 @@ impl GraphicsState {
                             usage: wgpu::BufferUsages::INDIRECT,
                         });
                 render_pass.set_pipeline(&self.custom_block_render_pipeline);
-                render_pass.set_vertex_buffer(0, self.custom_block_vertices_buffer.slice(..));
                 render_pass
-                    .set_vertex_buffer(1, self.buffer_managers.custom_block_instance.get_slice());
-                render_pass.set_index_buffer(
-                    self.custom_block_indices_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-                render_pass.multi_draw_indexed_indirect(
+                    .set_vertex_buffer(0, self.buffer_managers.custom_block_instance.get_slice());
+                render_pass.multi_draw_indirect(
                     &custom_block_draw_args_buffer,
                     0,
                     custom_block_draw_args.len().try_into().unwrap(),
                 );
             }
+            // Debug graphics
+            if !debug_points.is_empty() {
+                debug_point_buffer =
+                    self.resources
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Debug Points Buffer"),
+                            contents: bytemuck::cast_slice(debug_points),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                render_pass.set_pipeline(&self.debug_point_render_pipeline);
+                render_pass.set_vertex_buffer(0, debug_point_buffer.slice(..));
+                // Shader converts points to quads, so we need 4 vertices per instance.
+                render_pass.draw(0..4, 0..debug_triangles.len().try_into().unwrap());
+            }
+            if !debug_lines.is_empty() {
+                debug_line_buffer =
+                    self.resources
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Debug lines Buffer"),
+                            contents: bytemuck::cast_slice(debug_lines),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                render_pass.set_pipeline(&self.debug_line_render_pipeline);
+                render_pass.set_vertex_buffer(0, debug_line_buffer.slice(..));
+                // Shader converts lines to quads, so we need 4 vertices per instance.
+                render_pass.draw(0..4, 0..debug_lines.len().try_into().unwrap());
+            }
+            if !debug_triangles.is_empty() {
+                debug_triangle_buffer =
+                    self.resources
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Debug triangles Buffer"),
+                            contents: bytemuck::cast_slice(debug_triangles),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                render_pass.set_pipeline(&self.debug_triangle_render_pipeline);
+                render_pass.set_vertex_buffer(0, debug_triangle_buffer.slice(..));
+                render_pass.draw(0..4, 0..debug_triangles.len().try_into().unwrap());
+            }
             // Debug crosshair
             {
                 render_pass.set_pipeline(&self.debug_crosshair_render_pipeline);
-                render_pass.set_bind_group(0, &self.debug_crosshair_camera_bind_group, &[]);
+                render_pass.set_bind_group(0, &self.debug_crosshair_view_info_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.debug_crosshair_vertex_buffer.slice(..));
                 render_pass.draw(0..6, 0..1);
             }
             // egui
-            self.egui_renderer
-                .render(&mut render_pass, &egui_render_data);
+            if let Some(egui_render_data) = egui_render_data {
+                self.egui_renderer
+                    .render(&mut render_pass, egui_render_data);
+            }
         }
         self.resources
             .queue
@@ -1207,574 +816,7 @@ impl GraphicsState {
         output.present();
         self.egui_renderer
             .free_textures(&egui_full_output.textures_delta.free);
-        Ok(DebugOutput {
-            subchunks_culled: subchunks_skipped,
-            subchunk_traversal_graph,
-        })
-    }
-
-    pub fn radiance_cascades_debug_render(
-        &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
-    ) {
-        let device = &self.resources.device;
-        let (subchunk_hash_map_buffer, custom_block_group_buffer) = {
-            #[repr(C)]
-            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-            struct SubchunkHashMapEntry {
-                pub pos: [f32; 3],
-                pub block_face_instance_slices: [[u32; 2]; 6],
-                pub tinted_block_face_instance_slices: [[u32; 2]; 6],
-                pub custom_block_group_slice: [u32; 2],
-            }
-            const EMPTY_ENTRY: SubchunkHashMapEntry = SubchunkHashMapEntry {
-                pos: [0.1; 3],
-                block_face_instance_slices: [[0; 2]; 6],
-                tinted_block_face_instance_slices: [[0; 2]; 6],
-                custom_block_group_slice: [0; 2],
-            };
-            struct SubchunkHashMap {
-                pub entries: Vec<SubchunkHashMapEntry>,
-                pub num_stored_entries: usize,
-            }
-            impl SubchunkHashMap {
-                fn murmur_32_scramble(mut k: u32) -> u32 {
-                    k = k.wrapping_mul(0xCC9E2D51);
-                    k = (k << 15) | (k >> 17);
-                    k = k.wrapping_mul(0x1B873593);
-                    k
-                }
-
-                fn subchunk_hash(key: [f32; 3]) -> u32 {
-                    // Hash components of key
-                    let mut hash: u32 = 0;
-                    for component in key {
-                        hash ^= Self::murmur_32_scramble(component.to_bits());
-                        hash = (hash << 13) | (hash >> 19);
-                        hash = hash.wrapping_mul(5).wrapping_add(0xE6546B64);
-                    }
-                    // Finalise hash
-                    hash ^= hash >> 16;
-                    hash = hash.wrapping_mul(0x85EBCA6B);
-                    hash ^= hash >> 13;
-                    hash = hash.wrapping_mul(0xC2B2AE35);
-                    hash ^= hash >> 16;
-                    hash
-                }
-
-                pub fn insert(&mut self, new_entry: SubchunkHashMapEntry) {
-                    debug_assert!(self.num_stored_entries < self.entries.len() - 1);
-                    // Insert entry
-                    let mut current_slot = usize::try_from(Self::subchunk_hash(new_entry.pos))
-                        .unwrap()
-                        % self.entries.len();
-                    loop {
-                        if self.entries[current_slot].pos == [0.1; 3] {
-                            self.entries[current_slot] = new_entry;
-                            self.num_stored_entries += 1;
-                            return;
-                        }
-                        current_slot += 1;
-                        current_slot %= self.entries.len();
-                    }
-                }
-
-                pub fn lookup(&self, pos: [f32; 3]) -> Option<SubchunkHashMapEntry> {
-                    let mut entries_searched: usize = 1;
-                    let mut current_slot =
-                        usize::try_from(Self::subchunk_hash(pos)).unwrap() % self.entries.len();
-                    loop {
-                        let entry = &self.entries[current_slot];
-                        if entry.pos == pos {
-                            dbg!(entries_searched);
-                            return Some(*entry);
-                        } else if self.entries[current_slot].pos == [0.1; 3] {
-                            dbg!(entries_searched);
-                            return None;
-                        }
-                        current_slot += 1;
-                        current_slot %= self.entries.len();
-                        entries_searched += 1;
-                    }
-                }
-            }
-            let subchunk_hash_map_capacity = if subchunks.len().is_power_of_two() {
-                (subchunks.len() + 1).next_power_of_two()
-            } else {
-                subchunks.len().next_power_of_two()
-            };
-            let mut subchunk_hash_map = SubchunkHashMap {
-                entries: vec![EMPTY_ENTRY; subchunk_hash_map_capacity],
-                num_stored_entries: 0,
-            };
-            let mut custom_block_groups: Vec<chunk_rc::CustomBlockGroup> = Vec::new();
-            for (_subchunk_pos, subchunk) in subchunks {
-                let custom_block_group_slice = if !subchunk.custom_block_groups.is_empty() {
-                    let group_start: u32 = custom_block_groups.len().try_into().unwrap();
-                    let group_len: u32 = subchunk.custom_block_groups.len().try_into().unwrap();
-                    custom_block_groups.extend(&subchunk.custom_block_groups);
-                    [group_start, group_len]
-                } else {
-                    [0; 2]
-                };
-                subchunk_hash_map.insert(SubchunkHashMapEntry {
-                    pos: subchunk.start_coords.map(|n| (n / 16) as f32),
-                    block_face_instance_slices: subchunk
-                        .block_face_instance_groups
-                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
-                    tinted_block_face_instance_slices: subchunk
-                        .tinted_block_face_instance_groups
-                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
-                    custom_block_group_slice,
-                });
-            }
-            let hash_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Subchunk Hash Map Buffer"),
-                contents: bytemuck::cast_slice(&subchunk_hash_map.entries),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            let group_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Custom Block Group Buffer"),
-                contents: bytemuck::cast_slice(&custom_block_groups),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            (hash_map_buffer, group_buffer)
-        };
-        let radiance_probe_info_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Radiance Probe Info Bind Group"),
-            layout: &self.radiance_probe_info_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: subchunk_hash_map_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self
-                        .buffer_managers
-                        .block_face_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self
-                        .buffer_managers
-                        .tinted_block_face_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.custom_block_vertices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.custom_block_indices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: self
-                        .buffer_managers
-                        .custom_block_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: custom_block_group_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: self.radiance_probe_debug_info_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
-                        .as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[1]
-                        .as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 10,
-                    resource: wgpu::BindingResource::TextureView(&self.block_item_atlas.luma_view),
-                },
-            ],
-        });
-        let mut encoder =
-            self.resources
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Compute Encoder"),
-                });
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Subchunk Radiance Cascade Update Compute Pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(&self.radiance_probe_debug_pipeline);
-            compute_pass.set_bind_group(0, &self.block_item_atlas_bind_group, &[]);
-            compute_pass.set_bind_group(1, &self.matrices_bind_group, &[]);
-            compute_pass.set_bind_group(2, &radiance_probe_info_bind_group, &[]);
-            compute_pass.set_bind_group(
-                3,
-                &self.radiance_probe_debug_texture_storage_bind_group,
-                &[],
-            );
-            #[repr(C)]
-            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-            struct UpdateInfo {
-                pub inv_view_matrix: [[f32; 4]; 4],
-            }
-            compute_pass.set_push_constants(
-                0,
-                bytemuck::cast_slice(&[UpdateInfo {
-                    inv_view_matrix: *self
-                        .camera
-                        .generate_view_matrix()
-                        .try_inverse()
-                        .unwrap()
-                        .as_ref(),
-                }]),
-            );
-            // compute_pass.dispatch_workgroups(1, 1, 1);
-            compute_pass.dispatch_workgroups(960 / 16, 540 / 4, 1);
-        }
-        self.resources
-            .queue
-            .submit(std::iter::once(encoder.finish()));
-        // Read back debug info
-        {
-            let buffer = &self.radiance_probe_debug_info_buffer;
-            let buffer_capturable = buffer.clone();
-            let debug_info = self.radiance_cascades.debug_info.clone();
-            buffer
-                .slice(..)
-                .map_async(wgpu::MapMode::Read, move |result| {
-                    if result.is_ok() {
-                        let view = buffer_capturable.slice(..).get_mapped_range();
-                        let info_slice: &[RadianceProbeDebugInfo] = bytemuck::cast_slice(&view);
-                        let info = info_slice[0];
-                        drop(view);
-                        buffer_capturable.unmap();
-                        *debug_info.lock().unwrap() = info;
-                    }
-                });
-        }
-        self.resources.queue.submit([]);
-    }
-
-    pub fn update_all_subchunks_radiance_lighting(
-        &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
-    ) {
-        let device = &self.resources.device;
-        let (subchunk_hash_map_buffer, custom_block_group_buffer) = {
-            #[repr(C)]
-            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-            struct SubchunkHashMapEntry {
-                pub pos: [f32; 3],
-                pub block_face_instance_slices: [[u32; 2]; 6],
-                pub tinted_block_face_instance_slices: [[u32; 2]; 6],
-                pub custom_block_group_slice: [u32; 2],
-            }
-            const EMPTY_ENTRY: SubchunkHashMapEntry = SubchunkHashMapEntry {
-                pos: [0.1; 3],
-                block_face_instance_slices: [[0; 2]; 6],
-                tinted_block_face_instance_slices: [[0; 2]; 6],
-                custom_block_group_slice: [0; 2],
-            };
-            struct SubchunkHashMap {
-                pub entries: Vec<SubchunkHashMapEntry>,
-                pub num_stored_entries: usize,
-            }
-            impl SubchunkHashMap {
-                fn murmur_32_scramble(mut k: u32) -> u32 {
-                    k = k.wrapping_mul(0xCC9E2D51);
-                    k = (k << 15) | (k >> 17);
-                    k = k.wrapping_mul(0x1B873593);
-                    k
-                }
-
-                fn subchunk_hash(key: [f32; 3]) -> u32 {
-                    // Hash components of key
-                    let mut hash: u32 = 0;
-                    for component in key {
-                        hash ^= Self::murmur_32_scramble(component.to_bits());
-                        hash = (hash << 13) | (hash >> 19);
-                        hash = hash.wrapping_mul(5).wrapping_add(0xE6546B64);
-                    }
-                    // Finalise hash
-                    hash ^= hash >> 16;
-                    hash = hash.wrapping_mul(0x85EBCA6B);
-                    hash ^= hash >> 13;
-                    hash = hash.wrapping_mul(0xC2B2AE35);
-                    hash ^= hash >> 16;
-                    hash
-                }
-
-                pub fn insert(&mut self, new_entry: SubchunkHashMapEntry) {
-                    debug_assert!(self.num_stored_entries < self.entries.len() - 1);
-                    // Insert entry
-                    let mut current_slot = usize::try_from(Self::subchunk_hash(new_entry.pos))
-                        .unwrap()
-                        % self.entries.len();
-                    loop {
-                        if self.entries[current_slot].pos == [0.1; 3] {
-                            self.entries[current_slot] = new_entry;
-                            self.num_stored_entries += 1;
-                            return;
-                        }
-                        current_slot += 1;
-                        current_slot %= self.entries.len();
-                    }
-                }
-            }
-            let subchunk_hash_map_capacity = if subchunks.len().is_power_of_two() {
-                (subchunks.len() + 1).next_power_of_two()
-            } else {
-                subchunks.len().next_power_of_two()
-            };
-            let mut subchunk_hash_map = SubchunkHashMap {
-                entries: vec![EMPTY_ENTRY; subchunk_hash_map_capacity],
-                num_stored_entries: 0,
-            };
-            let mut custom_block_groups: Vec<chunk_rc::CustomBlockGroup> = Vec::new();
-            for (_subchunk_pos, subchunk) in subchunks {
-                let custom_block_group_slice = if !subchunk.custom_block_groups.is_empty() {
-                    let group_start: u32 = custom_block_groups.len().try_into().unwrap();
-                    let group_len: u32 = subchunk.custom_block_groups.len().try_into().unwrap();
-                    custom_block_groups.extend(&subchunk.custom_block_groups);
-                    [group_start, group_len]
-                } else {
-                    [0; 2]
-                };
-                subchunk_hash_map.insert(SubchunkHashMapEntry {
-                    pos: subchunk.start_coords.map(|n| (n / 16) as f32),
-                    block_face_instance_slices: subchunk
-                        .block_face_instance_groups
-                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
-                    tinted_block_face_instance_slices: subchunk
-                        .tinted_block_face_instance_groups
-                        .map(|(start, len)| [start.try_into().unwrap(), len.try_into().unwrap()]),
-                    custom_block_group_slice,
-                });
-            }
-            let hash_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Subchunk Hash Map Buffer"),
-                contents: bytemuck::cast_slice(&subchunk_hash_map.entries),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            let group_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Custom Block Group Buffer"),
-                contents: bytemuck::cast_slice(&custom_block_groups),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            (hash_map_buffer, group_buffer)
-        };
-        // XXX: DEBUG
-        {
-            let block_face_buffer_usage =
-                self.buffer_managers.block_face_instance.usage_fraction() * 100.0;
-            let tinted_block_face_buffer_usage = self
-                .buffer_managers
-                .tinted_block_face_instance
-                .usage_fraction()
-                * 100.0;
-            println!("Block Face Buffer Usage: {block_face_buffer_usage:.1}%");
-            println!("Tinted Block Face Buffer Usage: {tinted_block_face_buffer_usage:.1}%");
-        }
-        let (update_info_buffer, num_updates, max_dispatch_width) = {
-            #[repr(C)]
-            #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-            struct UpdateInfo {
-                pub subchunk_start_coords: [f32; 3],
-                pub faces_start: u32,
-                pub faces_len: u32,
-                pub faces_dir_i: u32,
-            }
-            let mut updates = Vec::new();
-            let mut max_dispatch_width = 0;
-            for subchunk in subchunks.values() {
-                for dir_i in 0..6 {
-                    if subchunk.block_face_start_vertices[dir_i] != u32::MAX {
-                        let instance_group = &subchunk.block_face_instance_groups[dir_i];
-                        updates.push(UpdateInfo {
-                            subchunk_start_coords: subchunk.start_coords.map(|n| n as f32),
-                            faces_start: instance_group.0,
-                            faces_len: instance_group.1,
-                            faces_dir_i: dir_i.try_into().unwrap(),
-                        });
-                        let dispatch_width = instance_group.1;
-                        if dispatch_width > max_dispatch_width {
-                            max_dispatch_width = dispatch_width;
-                        }
-                    }
-                }
-            }
-            let update_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Subchunk Hash Map Buffer"),
-                contents: bytemuck::cast_slice(&updates),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            (
-                update_info_buffer,
-                u32::try_from(updates.len()).unwrap(),
-                max_dispatch_width,
-            )
-        };
-        let radiance_probe_info_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Radiance Probe Info Bind Group"),
-            layout: &self.radiance_probe_info_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: subchunk_hash_map_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self
-                        .buffer_managers
-                        .block_face_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self
-                        .buffer_managers
-                        .tinted_block_face_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.custom_block_vertices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.custom_block_indices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: self
-                        .buffer_managers
-                        .custom_block_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: custom_block_group_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: update_info_buffer.as_entire_binding(),
-                },
-                // TODO: Move input and output buffers into a new bind group
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
-                        .as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[1]
-                        .as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 10,
-                    resource: wgpu::BindingResource::TextureView(&self.block_item_atlas.luma_view),
-                },
-            ],
-        });
-        let cascade_1_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Cascade 1 Radiance Probe Info Bind Group"),
-            layout: &self.radiance_probe_info_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: subchunk_hash_map_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self
-                        .buffer_managers
-                        .block_face_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self
-                        .buffer_managers
-                        .tinted_block_face_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.custom_block_vertices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.custom_block_indices_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: self
-                        .buffer_managers
-                        .custom_block_instance
-                        .get_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: custom_block_group_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: update_info_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[1]
-                        .as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: self.buffer_managers.block_face_instance.get_lightmaps()[0]
-                        .as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 10,
-                    resource: wgpu::BindingResource::TextureView(&self.block_item_atlas.luma_view),
-                },
-            ],
-        });
-        let mut encoder =
-            self.resources
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Compute Encoder"),
-                });
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Subchunk Radiance Cascade Update Compute Pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(&self.radiance_probe_update_pipelines[1]);
-            compute_pass.set_bind_group(0, &self.block_item_atlas_bind_group, &[]);
-            compute_pass.set_bind_group(1, &self.matrices_bind_group, &[]);
-            compute_pass.set_bind_group(2, &cascade_1_bind_group, &[]);
-            compute_pass.set_bind_group(
-                3,
-                &self.radiance_probe_debug_texture_storage_bind_group,
-                &[],
-            );
-            compute_pass.dispatch_workgroups(max_dispatch_width, num_updates, 1);
-            compute_pass.set_pipeline(&self.radiance_probe_update_pipelines[0]);
-            compute_pass.set_bind_group(2, &radiance_probe_info_bind_group, &[]);
-            compute_pass.dispatch_workgroups(max_dispatch_width, num_updates, 1);
-        }
-        self.resources
-            .queue
-            .submit(std::iter::once(encoder.finish()));
-        self.resources.queue.submit([]);
+        Ok(debug_output)
     }
 }
 
@@ -1834,9 +876,7 @@ impl Texture {
 #[derive(Debug)]
 pub struct TextureAtlas {
     pub texture: wgpu::Texture,
-    pub luma_texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    pub luma_view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
 }
 
@@ -1849,7 +889,6 @@ impl TextureAtlas {
     ) -> Self {
         let (width, height) = (builder.texture.width(), builder.texture.height());
         let bytes = builder.texture.into_vec();
-        let luma_bytes = builder.luma_texture.into_vec();
         let size = wgpu::Extent3d {
             width,
             height,
@@ -1861,19 +900,19 @@ impl TextureAtlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfoBase {
                 aspect: wgpu::TextureAspect::All,
                 texture: &texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
             &bytes,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(width * 4),
                 rows_per_image: Some(height),
@@ -1881,38 +920,10 @@ impl TextureAtlas {
             size,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let luma_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label,
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                aspect: wgpu::TextureAspect::All,
-                texture: &luma_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-            },
-            &luma_bytes,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(width),
-                rows_per_image: Some(height),
-            },
-            size,
-        );
-        let luma_view = luma_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
         Self {
             texture,
-            luma_texture,
             view,
-            luma_view,
             sampler,
         }
     }

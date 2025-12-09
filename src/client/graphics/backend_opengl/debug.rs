@@ -30,7 +30,7 @@ pub mod point {
         pub pos: [f32; 3],
         pub color: [u8; 4],
         pub size: f32,
-        pub packed_fields: PackedFlags,
+        pub flags: PackedFlags,
     }
 }
 
@@ -42,8 +42,9 @@ pub mod line {
     pub struct Instance {
         pub p1: [f32; 3],
         pub p2: [f32; 3],
+        pub size: f32,
         pub color: [u8; 4],
-        pub packed_fields: PackedFlags,
+        pub flags: PackedFlags,
     }
 }
 
@@ -57,6 +58,6 @@ pub mod triangle {
         pub p2: [f32; 3],
         pub p3: [f32; 3],
         pub color: [u8; 4],
-        pub packed_fields: PackedFlags,
+        pub flags: PackedFlags,
     }
 }

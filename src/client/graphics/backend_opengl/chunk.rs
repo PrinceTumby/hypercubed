@@ -241,7 +241,6 @@ impl BlockFace {
         };
         let rotated_uvs = rotated_uv_indices.map(|i| base_uvs[i]);
         // Calculate block lighting.
-        // TODO: Per-face directional lighting.
         let block_light_rgb_vec3 = Self::calculate_light_rgb_vec3(light_levels);
         // Calculate per-face directional lighting.
         let face_normal = face_matrix.transform_vector(&Vector3::y());
@@ -249,7 +248,6 @@ impl BlockFace {
         // Calculate final face colour.
         let colour_rgb_vec3 = block_light_rgb_vec3 * dir_light_coef;
         let colour_rgba_vec4 = colour_rgb_vec3.push(1.0);
-        // TODO: Figure out sRGB textures, remove `fast-srgb` crate dependency.
         let colour_rgba: [u8; 4] = colour_rgba_vec4.map(|n| (n * 255.0).round() as u8).into();
         // Assemble the 4 vertices making up a face.
         let face_vertices: [BlockVertex; 4] = core::array::from_fn(|i| BlockVertex {
@@ -308,10 +306,13 @@ impl BlockFace {
             RightAngleRotation::TwoSeventy => [2, 0, 3, 1],
         };
         let rotated_uvs = rotated_uv_indices.map(|i| base_uvs[i]);
-        // Calculate the face RGBA colour (duplicated for all vertices).
-        // For a tinted face, this is based on the light levels, and the tint colour.
-        // TODO: Per-face directional lighting.
-        let light_rgb_vec3 = Self::calculate_light_rgb_vec3(light_levels);
+        // Calculate block lighting.
+        let block_light_rgb_vec3 = Self::calculate_light_rgb_vec3(light_levels);
+        // Calculate per-face directional lighting.
+        let face_normal = face_matrix.transform_vector(&Vector3::y());
+        let dir_light_coef = Self::calculate_dir_light_coef(face_normal);
+        // Calculate final face colour.
+        let light_rgb_vec3 = block_light_rgb_vec3 * dir_light_coef;
         let light_rgba_vec4 = light_rgb_vec3.push(1.0);
         let tint_rgba_vec4 = Vector4::from(tint_rgba.map(|x| x as f32 / 255.0));
         let colour_rgba_vec4 = light_rgba_vec4.component_mul(&tint_rgba_vec4);

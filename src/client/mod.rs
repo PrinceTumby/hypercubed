@@ -33,6 +33,10 @@ cfg_if::cfg_if! {
     }
 }
 
+// TODO: Update winit! Give Render Bundles a go as an alternative for MDI!
+// TODO: (^) First, try out secondary command buffers in Vulkan. Nice way to get started on
+//       graphics settings that need specialisation.
+
 pub struct ClientPlayState {
     pub raw_chunks: Arc<FastHashMap<[i32; 2], Arc<RawChunk>>>,
     // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
@@ -346,6 +350,9 @@ impl ApplicationHandler for App {
                     &self.egui_ctx,
                     egui_output,
                     &self.debug_state,
+                    &debug_points,
+                    &debug_lines,
+                    &debug_triangles,
                 ) {
                     Ok(new_debug_output) => self.debug_output = new_debug_output,
                     Err(wgpu::SurfaceError::Timeout) => {}
@@ -355,6 +362,7 @@ impl ApplicationHandler for App {
                         graphics_state.resize(size)
                     }
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                    Err(other) => panic!("Rendering error: {other}"),
                 }
             } else if #[cfg(feature = "graphics_backend_opengl")] {
                 self.debug_output = graphics_state.render(

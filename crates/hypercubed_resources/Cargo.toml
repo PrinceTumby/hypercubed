@@ -21,7 +21,6 @@ std = [
 # we need this as a separate feature.
 # Can be removed once we've removed lazy_static.
 no_std = ["lazy_static/spin_no_std"]
-luma_textures = ["std"]
 
 # Data embedding
 use_embedded_cache = []

@@ -19,15 +19,18 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
 
 @_default:
     just --list
-    
-# Winit (default)
 
-@build-winit-vulkan *BUILD_FLAGS:
+@build-vk-shaders:
     echo - Compiling Vulkan shaders...
     cd crates/hypercubed_vk_shaders/builder && cargo build
+
+# Winit (default)
+
+@build-winit-vulkan *BUILD_FLAGS: build-vk-shaders
     echo - Compiling hypercubed...
     cargo build \
         --bin hypercubed \
+        --no-default-features \
         --features=platform_winit,graphics_backend_vulkan \
         {{BUILD_FLAGS}}
 

@@ -59,7 +59,6 @@ impl BlockFaceInstance {
         uvs: [u16; 4],
         packed_uv_rotation: u8,
         light_levels: [u8; 2],
-        emits_light: bool,
     ) -> Self {
         debug_assert!(subchunk_xyz[0] < 16);
         debug_assert!(subchunk_xyz[1] < 16);
@@ -72,7 +71,6 @@ impl BlockFaceInstance {
         packed_fields.set_y_offset(subchunk_xyz[1] as u32);
         packed_fields.set_z_offset(subchunk_xyz[2] as u32);
         packed_fields.set_uv_rotation(packed_uv_rotation as u32);
-        packed_fields.set_emits_light(emits_light);
         packed_fields.set_sky_light_level(light_levels[0] as u32);
         packed_fields.set_block_light_level(light_levels[1] as u32);
         Self { uvs, packed_fields }
@@ -84,8 +82,7 @@ bitfield! {
     // 4-7: Y offset
     // 8-11: Z offset
     // 12-13: UV rotation
-    // 14: Emits light?
-    // 15-19: Unused
+    // 14-19: Unused
     // 20-23: Sky light level
     // 24-27: Block light level
     // 28-31: Unused
@@ -98,7 +95,6 @@ bitfield! {
     pub y_offset, set_y_offset: 7, 4;
     pub z_offset, set_z_offset: 11, 8;
     pub uv_rotation, set_uv_rotation: 13, 12;
-    pub emits_light, set_emits_light: 14;
     pub sky_light_level, set_sky_light_level: 23, 20;
     pub block_light_level, set_block_light_level: 27, 24;
 }
@@ -126,7 +122,6 @@ impl TintedBlockFaceInstance {
         packed_uv_rotation: u8,
         light_levels: [u8; 2],
         tint_color: [u8; 4],
-        emits_light: bool,
     ) -> Self {
         debug_assert!(subchunk_xyz[0] < 16);
         debug_assert!(subchunk_xyz[1] < 16);
@@ -139,7 +134,6 @@ impl TintedBlockFaceInstance {
         packed_fields.set_y_offset(subchunk_xyz[1] as u32);
         packed_fields.set_z_offset(subchunk_xyz[2] as u32);
         packed_fields.set_uv_rotation(packed_uv_rotation as u32);
-        packed_fields.set_emits_light(emits_light);
         packed_fields.set_sky_light_level(light_levels[0] as u32);
         packed_fields.set_block_light_level(light_levels[1] as u32);
         Self {
@@ -224,7 +218,6 @@ impl CustomBlockInstance {
         tint_color: [u8; 4],
         centre_light_levels: [u8; 2],
         neighbour_light_levels: [[u8; 2]; 6],
-        emits_light: bool,
     ) -> Self {
         debug_assert!(centre_light_levels[0] < 16);
         debug_assert!(centre_light_levels[1] < 16);
@@ -237,26 +230,22 @@ impl CustomBlockInstance {
         for (i, pair) in neighbour_light_levels.into_iter().enumerate() {
             converted_light_level_pairs[i + 1] = pair[0] | (pair[1] << 4);
         }
-        let mut packed_fields = CustomBlockInstanceFields(0);
-        packed_fields.set_emits_light(emits_light);
         Self {
             pos,
             tint_color,
             light_level_pairs: converted_light_level_pairs,
-            packed_fields,
+            packed_fields: CustomBlockInstanceFields(0),
         }
     }
 }
 
 bitfield! {
-    // 0: Emits light?
-    // 1-7: Unused
+    // 0-7: Unused
     #[repr(transparent)]
     #[derive(Clone, Copy)]
     #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
     pub struct CustomBlockInstanceFields(u8);
     impl Debug;
-    pub emits_light, set_emits_light: 0;
 }
 
 #[cfg(feature = "vulkano")]

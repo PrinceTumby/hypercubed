@@ -144,13 +144,13 @@ impl Renderer {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
                 buffers: &[Vertex::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: None,
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
@@ -229,12 +229,6 @@ impl Renderer {
                     assert_eq!(width * height, image.pixels.len());
                     std::borrow::Cow::Borrowed(&image.pixels)
                 }
-                epaint::ImageData::Font(image) => {
-                    assert_eq!(width * height, image.pixels.len());
-                    std::borrow::Cow::Owned(
-                        image.srgba_pixels(None).collect::<Vec<egui::Color32>>(),
-                    )
-                }
             };
             let rgba_bytes: &[u8] = bytemuck::cast_slice(rgba_pixels.as_slice());
             if let Some(pos) = texture_data.pos {
@@ -246,14 +240,14 @@ impl Renderer {
                     z: 0,
                 };
                 queue.write_texture(
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfoBase {
                         texture: &current_texture.texture,
                         mip_level: 0,
                         origin,
                         aspect: wgpu::TextureAspect::All,
                     },
                     rgba_bytes,
-                    wgpu::ImageDataLayout {
+                    wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(4 * width as u32),
                         rows_per_image: Some(height as u32),
@@ -268,9 +262,9 @@ impl Renderer {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+                    view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
                 });
                 let sampler = self
                     .sampler_cache
@@ -314,14 +308,14 @@ impl Renderer {
                     ],
                 });
                 queue.write_texture(
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfoBase {
                         texture: &texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
                     rgba_bytes,
-                    wgpu::ImageDataLayout {
+                    wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(4 * width as u32),
                         rows_per_image: Some(height as u32),
@@ -346,7 +340,7 @@ impl Renderer {
         texture_updates: Vec<(egui::TextureId, epaint::image::ImageDelta)>,
         primitives: Vec<egui::ClippedPrimitive>,
         pixels_per_point: f32,
-    ) -> RenderData {
+    ) -> Option<RenderData> {
         let device = &graphics_resources.device;
         let queue = &graphics_resources.queue;
         let width = physical_size.width as f32;
@@ -393,41 +387,9 @@ impl Renderer {
                 index_slice: indices_start..indices_end,
                 texture_id: mesh.texture_id,
             });
-            //vertices.extend_from_slice(&[
-            //    Vertex {
-            //        pos: [0., 0.],
-            //        uvs: [0., 0.],
-            //        color: [0xFF, 0xFF, 0xFF, 0xFF],
-            //    },
-            //    Vertex {
-            //        pos: [400., 0.],
-            //        uvs: [0., 0.],
-            //        color: [0xFF, 0xFF, 0xFF, 0xFF],
-            //    },
-            //    Vertex {
-            //        pos: [0., 400.],
-            //        uvs: [0., 0.],
-            //        color: [0xFF, 0xFF, 0xFF, 0xFF],
-            //    },
-            //    Vertex {
-            //        pos: [400., 400.],
-            //        uvs: [0., 0.],
-            //        color: [0xFF, 0xFF, 0xFF, 0xFF],
-            //    },
-            //]);
-            //indices.extend_from_slice(&[0, 1, 2, 2, 1, 3]);
-            //meshes.push(RenderMeshInfo {
-            //    scissor_rect: ScissorRect {
-            //        x: 0,
-            //        y: 0,
-            //        width: physical_size.width,
-            //        height: physical_size.height,
-            //    },
-            //    base_vertex: 0,
-            //    index_slice: 0..indices.len() as u32,
-            //    texture_id: mesh.texture_id,
-            //});
-            //break;
+        }
+        if vertices.is_empty() {
+            return None;
         }
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("egui Vertex Buffer"),
@@ -439,18 +401,18 @@ impl Renderer {
             contents: bytemuck::cast_slice(indices.as_slice()),
             usage: wgpu::BufferUsages::INDEX,
         });
-        RenderData {
+        Some(RenderData {
             meshes,
             vertex_buffer,
             index_buffer,
-        }
+        })
     }
 
     /// Clobbers the render pass scissor rect.
     pub fn render<'a: 'pass, 'pass>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'pass>,
-        render_data: &'pass RenderData,
+        render_data: RenderData,
     ) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.screen_size_bind_group, &[]);

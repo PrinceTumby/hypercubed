@@ -33,7 +33,7 @@ pub struct PointVertex {
     pub pos: [f32; 3],
     pub color: [u8; 4],
     pub size: f32,
-    pub packed_fields: PackedFlags,
+    pub flags: PackedFlags,
 }
 
 #[repr(C)]
@@ -43,7 +43,8 @@ pub struct LineInstance {
     pub p1: [f32; 3],
     pub p2: [f32; 3],
     pub color: [u8; 4],
-    pub packed_fields: PackedFlags,
+    pub size: f32,
+    pub flags: PackedFlags,
 }
 
 #[repr(C)]
@@ -54,7 +55,7 @@ pub struct TriangleInstance {
     pub p2: [f32; 3],
     pub p3: [f32; 3],
     pub color: [u8; 4],
-    pub packed_fields: PackedFlags,
+    pub flags: PackedFlags,
 }
 
 #[cfg(feature = "vulkano")]
@@ -74,7 +75,7 @@ pub mod vertex_input_state {
                 [1 <- 0] => R8G8B8A8_UNORM,
                 // size
                 [2 <- 0] => R32_SFLOAT,
-                // packed_fields
+                // flags
                 [3 <- 0] => R32_UINT,
             ]),
             ..Default::default()
@@ -93,8 +94,10 @@ pub mod vertex_input_state {
                 [1 <- 0] => R32G32B32_SFLOAT,
                 // color
                 [2 <- 0] => R8G8B8A8_UNORM,
-                // packed_fields
-                [3 <- 0] => R32_UINT,
+                // size
+                [3 <- 0] => R32_SFLOAT,
+                // flags
+                [4 <- 0] => R32_UINT,
             ]),
             ..Default::default()
         }
@@ -114,7 +117,7 @@ pub mod vertex_input_state {
                 [2 <- 0] => R32G32B32_SFLOAT,
                 // color
                 [3 <- 0] => R8G8B8A8_UNORM,
-                // packed_fields
+                // flags
                 [4 <- 0] => R32_UINT,
             ]),
             ..Default::default()

@@ -87,17 +87,6 @@ lazy_static! {
     };
     pub static ref TEXTURES: AHashMap<Identifier, &'static [u8]> = AHashMap::new();
     pub static ref TEXTURE_METAS: AHashMap<Identifier, &'static [u8]> = AHashMap::new();
-    pub static ref TEXTURE_LUMAS: AHashMap<Identifier, &'static [u8]> = {
-        let mut map = AHashMap::new();
-        make_entry_macro!(map, "luma_textures", ".png");
-        entry!("block/torch");
-        entry!("block/glowstone");
-        entry!("block/jack_o_lantern");
-        entry!("block/redstone_lamp_on");
-        entry!("block/redstone_torch");
-        map.shrink_to_fit();
-        map
-    };
 }
 
 pub struct InternalOverlayFilesystem;
@@ -113,7 +102,6 @@ impl Filesystem for InternalOverlayFilesystem {
             ResourceType::Model => &*MODELS,
             ResourceType::Texture => &*TEXTURES,
             ResourceType::TextureMeta => &*TEXTURE_METAS,
-            ResourceType::TextureLuma => &*TEXTURE_LUMAS,
         }
         .get(identifier)
         .map(|&file| Cow::Borrowed(file))

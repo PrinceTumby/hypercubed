@@ -82,6 +82,7 @@ name = "hypercubed"
 
 [features]
 default = ["platform_winit", "graphics_backend_vulkan"]
+# default = ["platform_winit", "graphics_backend_wgpu"]
 # default = ["platform_winit", "graphics_backend_opengl"]
 # default = ["platform_linux_drm", "graphics_backend_opengl"]
 
@@ -95,13 +96,13 @@ full_std = [
 # Represents platforms which don't require `no_std`, but that don't necessarily have access to a
 # fully featured standard library.
 # For example, the "wasm32-unknown-unknown" target has `std`, but it isn't useful for any I/O.
+# These platforms are expected to provide their own I/O abstractions.
 mini_std = [
     # Dependencies
     "dep:egui",
     "dep:egui_plot",
     "dep:env_logger",
     "dep:image",
-    "dep:petgraph",
     "dep:pollster",
     "dep:threadpool",
     # Dependency features
@@ -153,7 +154,6 @@ graphics_backend_vulkan = [
     "dep:vulkano",
     "dep:vulkan_prelude",
     "dep:hypercubed_vk_shaders",
-    "resources/luma_textures",
 ]
 
 graphics_backend_opengl = [
@@ -251,7 +251,6 @@ nom = { version = "8", default-features = false, features = ["alloc"] }
 nom_locate = { version = "5", default-features = false, features = ["alloc"] }
 once_cell.workspace = true
 ordered-float = { version = "4.5", default-features = false }
-petgraph = { version = "0.6", optional = true }
 pixels = { version = "0.15", optional = true }
 pollster = { version = "0.3", optional = true }
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
@@ -271,7 +270,7 @@ tracing = { version = "0.1", default-features = false, features = ["attributes"]
 uuid = { version = "1", default-features = false, features = ["serde", "v3"] }
 vulkan_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
-wgpu = { version = "24.0.3", optional = true }
+wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "af91efa", optional = true }
 wide = { version = "0.7", optional = true }
 winit = { version = "0.30", optional = true }
 

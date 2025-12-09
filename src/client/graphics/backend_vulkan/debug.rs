@@ -107,7 +107,9 @@ pub mod line {
                 ],
                 vertex_input_state: Some(&vertex_input_state::line()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {
-                    topology: VulkanPrimitiveTopology::LineList,
+                    // Vulkan doesn't support line widths, so we internally convert to quads in the
+                    // shader.
+                    topology: VulkanPrimitiveTopology::TriangleStrip,
                     primitive_restart_enable: false,
                     ..Default::default()
                 }),

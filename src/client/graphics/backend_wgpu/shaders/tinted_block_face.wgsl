@@ -148,6 +148,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     tex_sample *= in.tint_color;
     let light_source_dir = normalize(vec3(2.0, 5.0, 1.0));
     let lighting = dot(in.normal, light_source_dir);
-    let light_coef = fma(lighting, 0.3, 0.4);
+    let light_coef = fma(lighting, 0.3, 0.7);
     return vec4(tex_sample.rgb * light_coef * in.light_rgb, 1.0);
 }

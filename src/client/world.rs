@@ -626,7 +626,6 @@ fn process_subchunk_model(
                             #[cfg(not(feature = "graphics_backend_vulkan"))]
                             info.per_face_uv_rotations[i],
                             face_light_map[i],
-                            blockstate_info.extra_info.light_info.emission_level > 0,
                         ));
                     }
                 }
@@ -652,7 +651,6 @@ fn process_subchunk_model(
                                 // Block doesn't have any tint, so just use opaque
                                 // white as a null value.
                                 [0xFF; 4],
-                                blockstate_info.extra_info.light_info.emission_level > 0,
                             ),
                         );
                     }
@@ -678,7 +676,6 @@ fn process_subchunk_model(
                     info.per_face_uv_rotations[i],
                     face_light_map[i],
                     tint_color,
-                    blockstate_info.extra_info.light_info.emission_level > 0,
                 ));
             }
         }
@@ -704,7 +701,6 @@ fn process_subchunk_model(
                             face.uv_rotation,
                             face_light_map[face.face_i as usize],
                             tint_color,
-                            blockstate_info.extra_info.light_info.emission_level > 0,
                         ),
                     );
                 } else {
@@ -722,7 +718,6 @@ fn process_subchunk_model(
                             #[cfg(not(feature = "graphics_backend_vulkan"))]
                             face.uv_rotation,
                             face_light_map[face.face_i as usize],
-                            blockstate_info.extra_info.light_info.emission_level > 0,
                         ),
                     );
                 }
@@ -748,7 +743,6 @@ fn process_subchunk_model(
                 tint_color,
                 light_section.get(x, y, z),
                 face_light_map,
-                blockstate_info.extra_info.light_info.emission_level > 0,
             ));
         }
         ModelType::Composite(parts) => {

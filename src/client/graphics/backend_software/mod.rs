@@ -3,6 +3,7 @@ pub mod chunk_rc;
 pub mod egui_renderer;
 pub mod render;
 
+use super::DebugState;
 use ahash::{AHashMap, AHashSet};
 use image::{GrayImage, RgbaImage};
 use nalgebra::{Perspective3, Point3};
@@ -35,45 +36,6 @@ pub struct GraphicsState {
     pub egui_renderer: egui_renderer::Renderer,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub camera: Camera,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DebugState {
-    pub cull_planes_active: usize,
-    pub rendering_view_frustum: bool,
-    pub free_cam: bool,
-    pub cave_cull_check_unflipped: bool,
-    pub cave_cull_check_not_backwards: bool,
-    pub cave_cull_check_frustum: bool,
-    pub cave_cull_check_connectivity: bool,
-    pub cave_cull_render_connectivity: bool,
-    pub cave_cull_render_traversal_graph: bool,
-    pub cave_cull_debug_render_dist: f32,
-    pub max_render_chunks: usize,
-    pub radiance_cascades_ray_visualiser: bool,
-    pub max_radiance_cascade: u32,
-    pub debug_texture_zoom: f32,
-}
-
-impl Default for DebugState {
-    fn default() -> Self {
-        Self {
-            cull_planes_active: 6,
-            rendering_view_frustum: false,
-            free_cam: false,
-            cave_cull_check_unflipped: true,
-            cave_cull_check_not_backwards: false,
-            cave_cull_check_frustum: true,
-            cave_cull_check_connectivity: true,
-            cave_cull_render_connectivity: false,
-            cave_cull_render_traversal_graph: false,
-            cave_cull_debug_render_dist: 24.0,
-            max_render_chunks: 3000,
-            radiance_cascades_ray_visualiser: false,
-            max_radiance_cascade: 0,
-            debug_texture_zoom: 1.0,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -210,34 +172,17 @@ impl GraphicsState {
             .free_textures(&egui_full_output.textures_delta.free);
         Ok(DebugOutput::default())
     }
-
-    pub fn radiance_cascades_debug_render(
-        &mut self,
-        _subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
-    ) {
-        todo!();
-    }
-
-    pub fn update_all_subchunks_radiance_lighting(
-        &mut self,
-        _thread_pool: &ThreadPool,
-        _subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
-    ) {
-        todo!();
-    }
 }
 
 #[derive(Debug)]
 pub struct TextureAtlas {
     pub texture: RgbaImage,
-    pub luma_texture: GrayImage,
 }
 
 impl TextureAtlas {
     pub fn from_builder(builder: resources::texture::AtlasBuilder) -> Self {
         Self {
             texture: builder.texture,
-            luma_texture: builder.luma_texture,
         }
     }
 }

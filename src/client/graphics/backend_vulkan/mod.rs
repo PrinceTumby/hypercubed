@@ -8,7 +8,6 @@ pub mod debug;
 pub mod egui_renderer;
 pub mod shader_exports;
 
-use crate::basic_types::AxisDirection;
 use crate::client::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, anyhow};
@@ -20,67 +19,14 @@ use chunk::{
 use debug::line::Instance as DebugLineInstance;
 use debug::point::Vertex as DebugPointVertex;
 use debug::triangle::Instance as DebugTriangleInstance;
-use nalgebra::{Perspective3, Point3, Vector3};
+use nalgebra::{Perspective3, Point3};
 use resources::block::model::{ModelRegistry, Tint};
-use std::collections::VecDeque;
 use std::sync::Arc;
 use vulkan_prelude::*;
 use winit::window::Window;
+use shader_exports::RawViewInfo;
 
-pub use super::Camera;
-
-#[derive(Clone, Copy, Debug)]
-pub struct DebugState {
-    pub visualisation_draw_method: DebugVisualisationDrawMethod,
-    pub cull_planes_active: usize,
-    pub rendering_view_frustum: bool,
-    pub free_cam: bool,
-    pub cave_cull_check_unflipped: bool,
-    pub cave_cull_check_not_backwards: bool,
-    pub cave_cull_check_frustum: bool,
-    pub cave_cull_check_connectivity: bool,
-    pub cave_cull_render_connectivity: bool,
-    pub cave_cull_render_traversal_graph: bool,
-    pub cave_cull_debug_render_dist: f32,
-    pub max_render_chunks: usize,
-    pub debug_texture_zoom: f32,
-}
-
-impl Default for DebugState {
-    fn default() -> Self {
-        Self {
-            visualisation_draw_method: DebugVisualisationDrawMethod::default(),
-            cull_planes_active: 6,
-            rendering_view_frustum: false,
-            free_cam: false,
-            cave_cull_check_unflipped: true,
-            cave_cull_check_not_backwards: false,
-            cave_cull_check_frustum: true,
-            cave_cull_check_connectivity: true,
-            cave_cull_render_connectivity: false,
-            cave_cull_render_traversal_graph: false,
-            cave_cull_debug_render_dist: 24.0,
-            max_render_chunks: 3000,
-            debug_texture_zoom: 1.0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DebugVisualisationDrawMethod {
-    #[default]
-    Egui,
-    Gpu,
-}
-
-impl DebugVisualisationDrawMethod {
-    pub fn label_text(&self) -> &'static str {
-        match *self {
-            Self::Egui => "Use egui for debug visualisation",
-            Self::Gpu => "Use the GPU directly for debug visualisation",
-        }
-    }
-}
+pub use super::{Camera, DebugState};
 
 #[derive(Default)]
 pub struct DebugOutput {
@@ -142,7 +88,7 @@ pub struct GraphicsState {
     pub custom_block_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
     pub custom_block_faces_buffer: VulkanSubbuffer<[[chunk::custom_block::Vertex; 4]]>,
     pub custom_block_faces_descriptor_set: Arc<VulkanDescriptorSet>,
-    pub camera_buffer: VulkanSubbuffer<[[f32; 4]; 4]>,
+    pub view_info_buffer: VulkanSubbuffer<RawViewInfo>,
     pub camera_descriptor_set: Arc<VulkanDescriptorSet>,
     pub matrices_descriptor_set: Arc<VulkanDescriptorSet>,
     pub block_item_atlas: TextureAtlas,
@@ -512,7 +458,7 @@ impl GraphicsState {
         )
         .context("Error while creating image descriptor set layout")?;
         // Block graphics buffers and descriptor sets
-        let camera_buffer: VulkanSubbuffer<[[f32; 4]; 4]> = VulkanBuffer::new_sized(
+        let view_info_buffer: VulkanSubbuffer<RawViewInfo> = VulkanBuffer::new_sized(
             &memory_allocator,
             &VulkanBufferCreateInfo {
                 usage: VulkanBufferUsage::UNIFORM_BUFFER | VulkanBufferUsage::TRANSFER_DST,
@@ -523,14 +469,14 @@ impl GraphicsState {
                 ..Default::default()
             },
         )
-        .context("Error while creating camera buffer")?;
-        let camera_descriptor_set = VulkanDescriptorSet::new(
+        .context("Error while creating view info buffer")?;
+        let view_info_descriptor_set = VulkanDescriptorSet::new(
             descriptor_set_allocator.clone(),
             camera_descriptor_set_layout.clone(),
-            [VulkanWriteDescriptorSet::buffer(0, camera_buffer.clone())],
+            [VulkanWriteDescriptorSet::buffer(0, view_info_buffer.clone())],
             [],
         )
-        .context("Error while creating camera descriptor set")?;
+        .context("Error while creating view info descriptor set")?;
         let matrices_buffer = VulkanBuffer::from_data(
             &memory_allocator,
             &VulkanBufferCreateInfo {
@@ -672,8 +618,8 @@ impl GraphicsState {
             custom_block_graphics_pipeline,
             custom_block_faces_buffer,
             custom_block_faces_descriptor_set,
-            camera_buffer,
-            camera_descriptor_set,
+            view_info_buffer,
+            camera_descriptor_set: view_info_descriptor_set,
             matrices_descriptor_set,
             block_item_atlas: block_item_texture_atlas,
             block_item_atlas_descriptor_set,
@@ -775,8 +721,11 @@ impl GraphicsState {
         .context("Error while creating command buffer builder")?;
         command_buffer
             .update_buffer(
-                self.camera_buffer.clone(),
-                Box::new(self.camera.generate_reversed_depth_view_matrix_slice()),
+                self.view_info_buffer.clone(),
+                Box::new(RawViewInfo {
+                    view_matrix: self.camera.generate_reversed_depth_view_matrix_slice(),
+                    screen_size: self.size.into(),
+                }),
             )
             .unwrap();
         let egui_render_data = self
@@ -844,35 +793,11 @@ impl GraphicsState {
             )
             .unwrap();
         // Block rendering
-        let subchunks_skipped;
-        let mut subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])> = Vec::new();
         let mut block_face_draw_commands_buffer = None;
         let mut tinted_block_face_draw_commands_buffer = None;
         let mut custom_block_draw_commands_buffer = None;
+        let debug_output;
         {
-            let camera_clipping_planes = self.camera.generate_clipping_planes();
-            // let camera_clipping_planes = debug_state.cull_camera.generate_clipping_planes();
-            let mut rendered_chunks: AHashSet<[i32; 3]> = AHashSet::new();
-            let mut visited_chunks: AHashSet<[i32; 3]> = AHashSet::new();
-            #[derive(Clone, Copy, Debug)]
-            struct QueuedChunk {
-                pub coords: [i32; 3],
-                pub from_dir: Option<AxisDirection>,
-                pub back_travel_amount: f32,
-                pub flipping_state: FlippingState,
-            }
-            // TODO: Come up with a better name for this, document how it works
-            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-            enum FlippingState {
-                Unflipped {
-                    x_positive: Option<bool>,
-                    y_positive: Option<bool>,
-                    z_positive: Option<bool>,
-                },
-                Flipped,
-            }
-            //let mut subchunk_graph: DiGraph<QueuedChunk, ()> = DiGraph::new();
-            let mut chunk_queue: VecDeque<QueuedChunk> = VecDeque::new();
             let camera_chunk_coords = {
                 // let camera_pos = debug_state.cull_camera.pos;
                 let camera_pos = self.camera.pos;
@@ -880,216 +805,60 @@ impl GraphicsState {
                 let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
                     .div_euclid(SUBCHUNK_AXIS_LEN_I32);
                 let camera_z = (camera_pos.z.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
-                let camera_chunk_coords = [camera_x, camera_y, camera_z];
-                chunk_queue.push_back(QueuedChunk {
-                    coords: camera_chunk_coords,
-                    from_dir: None,
-                    back_travel_amount: 0.0,
-                    flipping_state: FlippingState::Unflipped {
-                        x_positive: None,
-                        y_positive: None,
-                        z_positive: None,
-                    },
-                });
-                visited_chunks.insert(camera_chunk_coords);
-                camera_chunk_coords
+                [camera_x, camera_y, camera_z]
             };
-            let mut num_subchunks_rendered = 0;
             let mut block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
             let mut tinted_block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
             let mut custom_block_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
-            while let Some(queued_chunk) = chunk_queue.pop_front() {
-                let QueuedChunk {
-                    coords: chunk_coords,
-                    from_dir,
-                    back_travel_amount: chunk_back_travel_amount,
-                    flipping_state: chunk_flip_state,
-                } = queued_chunk;
-                let subchunk_maybe = subchunks.get(&chunk_coords);
-                // Visit neighbours
-                'neighbour_blk: {
-                    let (cur_x_flip, cur_y_flip, cur_z_flip) =
-                        if debug_state.cave_cull_check_unflipped {
-                            match chunk_flip_state {
-                                FlippingState::Unflipped {
-                                    x_positive,
-                                    y_positive,
-                                    z_positive,
-                                } => (x_positive, y_positive, z_positive),
-                                FlippingState::Flipped => break 'neighbour_blk,
-                            }
-                        } else {
-                            (None, None, None)
+            debug_output = super::for_each_visible_subchunk(
+                &self.camera,
+                subchunks,
+                loaded_chunks,
+                debug_state,
+                |subchunk_coords, subchunk| {
+                    for i in 0..6 {
+                        let skip_face_dir = match i {
+                            0 => subchunk_coords[1] > camera_chunk_coords[1],
+                            1 => subchunk_coords[1] < camera_chunk_coords[1],
+                            2 => subchunk_coords[2] < camera_chunk_coords[2],
+                            3 => subchunk_coords[2] > camera_chunk_coords[2],
+                            4 => subchunk_coords[0] > camera_chunk_coords[0],
+                            5 => subchunk_coords[0] < camera_chunk_coords[0],
+                            6.. => unreachable!(),
                         };
-                    let [chunk_x, chunk_y, chunk_z] = chunk_coords;
-                    let neighbour_chunks = [
-                        ([chunk_x - 1, chunk_y, chunk_z], AxisDirection::West),
-                        ([chunk_x + 1, chunk_y, chunk_z], AxisDirection::East),
-                        ([chunk_x, chunk_y, chunk_z - 1], AxisDirection::North),
-                        ([chunk_x, chunk_y, chunk_z + 1], AxisDirection::South),
-                        ([chunk_x, chunk_y - 1, chunk_z], AxisDirection::Down),
-                        ([chunk_x, chunk_y + 1, chunk_z], AxisDirection::Up),
-                    ];
-                    // let facing_dir = debug_state
-                    //     .cull_camera
-                    //     .get_rot()
-                    //     .transform_vector(&-Vector3::z());
-                    let facing_dir = self.camera.get_rot().transform_vector(&-Vector3::z());
-                    'neighbour_loop: for (neighbour_coord, to_dir) in neighbour_chunks {
-                        const WORLD_HEIGHT_I32: i32 = 384;
-                        if neighbour_coord[1] < 0 || neighbour_coord[1] > WORLD_HEIGHT_I32 / 16 {
+                        if skip_face_dir {
                             continue;
                         }
-                        if !loaded_chunks.contains(&[neighbour_coord[0], neighbour_coord[2]]) {
-                            continue;
+                        // Base block faces
+                        if subchunk.block_face_start_vertices[i] != u32::MAX {
+                            block_face_draw_commands.push(VulkanDrawIndirectCommand {
+                                vertex_count: 4,
+                                instance_count: subchunk.block_face_instance_groups[i].1,
+                                first_vertex: subchunk.block_face_start_vertices[i],
+                                first_instance: subchunk.block_face_instance_groups[i].0,
+                            });
                         }
-                        // Check we're haven't gone backwards too much
-                        let back_travel_diff = -facing_dir.dot(&to_dir.as_vector());
-                        let neighbour_back_travel_amount =
-                            (chunk_back_travel_amount + back_travel_diff).max(0.0);
-                        if debug_state.cave_cull_check_not_backwards
-                            && neighbour_back_travel_amount >= 1.1
-                        {
-                            continue;
+                        // Tinted block faces
+                        if subchunk.tinted_block_face_start_vertices[i] != u32::MAX {
+                            tinted_block_face_draw_commands.push(VulkanDrawIndirectCommand {
+                                vertex_count: 4,
+                                instance_count: subchunk.tinted_block_face_instance_groups[i].1,
+                                first_vertex: subchunk.tinted_block_face_start_vertices[i],
+                                first_instance: subchunk.tinted_block_face_instance_groups[i].0,
+                            });
                         }
-                        if let Some(from_dir) = from_dir {
-                            // Check we can go to the neighbour from the last subchunk through this
-                            // subchunk
-                            if debug_state.cave_cull_check_connectivity
-                                && let Some(subchunk) = subchunk_maybe
-                                && !subchunk.connected_faces.connects(&from_dir, &to_dir)
-                            {
-                                continue;
-                            }
-                        }
-                        // Check neighbour lies in camera frustum
-                        if debug_state.cave_cull_check_frustum {
-                            // use super::MIN_HEIGHT_I32;
-                            let start_coords = [
-                                (neighbour_coord[0] * 16) as f32,
-                                (neighbour_coord[1] * 16 + MIN_HEIGHT_I32) as f32,
-                                (neighbour_coord[2] * 16) as f32,
-                            ];
-                            let end_coords = start_coords.map(|n| n + 16.0);
-                            for (i, clip_plane) in camera_clipping_planes.into_iter().enumerate() {
-                                let (normal, offset) = clip_plane;
-                                if i >= debug_state.cull_planes_active {
-                                    break;
-                                }
-                                let inward_point = Point3::new(
-                                    match normal.x > 0.0 {
-                                        false => start_coords[0],
-                                        true => end_coords[0],
-                                    },
-                                    match normal.y > 0.0 {
-                                        false => start_coords[1],
-                                        true => end_coords[1],
-                                    },
-                                    match normal.z > 0.0 {
-                                        false => start_coords[2],
-                                        true => end_coords[2],
-                                    },
-                                );
-                                if inward_point.coords.dot(&normal) + offset < 0.0 {
-                                    continue 'neighbour_loop;
-                                }
-                            }
-                        }
-                        // Check we haven't already rendered the neighbour
-                        if visited_chunks.contains(&neighbour_coord) {
-                            continue;
-                        }
-                        // Calculate flip state for neighbour
-                        visited_chunks.insert(neighbour_coord);
-                        chunk_queue.push_back(QueuedChunk {
-                            coords: neighbour_coord,
-                            from_dir: Some(to_dir.invert()),
-                            back_travel_amount: neighbour_back_travel_amount,
-                            flipping_state: {
-                                let (new_x_flip, new_y_flip, new_z_flip) = match to_dir {
-                                    AxisDirection::Down => (None, Some(false), None),
-                                    AxisDirection::Up => (None, Some(true), None),
-                                    AxisDirection::North => (None, None, Some(false)),
-                                    AxisDirection::South => (None, None, Some(true)),
-                                    AxisDirection::West => (Some(false), None, None),
-                                    AxisDirection::East => (Some(true), None, None),
-                                };
-                                if [
-                                    cur_x_flip.zip(new_x_flip),
-                                    cur_y_flip.zip(new_y_flip),
-                                    cur_z_flip.zip(new_z_flip),
-                                ]
-                                .iter()
-                                .any(|&flips| flips.is_some_and(|(x, y)| x != y))
-                                {
-                                    FlippingState::Flipped
-                                } else {
-                                    FlippingState::Unflipped {
-                                        x_positive: new_x_flip.or(cur_x_flip),
-                                        y_positive: new_y_flip.or(cur_y_flip),
-                                        z_positive: new_z_flip.or(cur_z_flip),
-                                    }
-                                }
-                            },
-                        });
-                        subchunk_traversal_graph.push((chunk_coords, neighbour_coord));
                     }
-                }
-                let Some(subchunk) = subchunk_maybe else {
-                    continue;
-                };
-                if num_subchunks_rendered >= debug_state.max_render_chunks {
-                    break;
-                } else {
-                    num_subchunks_rendered += 1;
-                }
-                rendered_chunks.insert(chunk_coords);
-                for i in 0..6 {
-                    let skip_face_dir = match i {
-                        0 => chunk_coords[1] > camera_chunk_coords[1],
-                        1 => chunk_coords[1] < camera_chunk_coords[1],
-                        2 => chunk_coords[2] < camera_chunk_coords[2],
-                        3 => chunk_coords[2] > camera_chunk_coords[2],
-                        4 => chunk_coords[0] > camera_chunk_coords[0],
-                        5 => chunk_coords[0] < camera_chunk_coords[0],
-                        6.. => unreachable!(),
-                    };
-                    if skip_face_dir {
-                        continue;
-                    }
-                    // Base block faces
-                    if subchunk.block_face_start_vertices[i] != u32::MAX {
-                        block_face_draw_commands.push(VulkanDrawIndirectCommand {
-                            vertex_count: 4,
-                            instance_count: subchunk.block_face_instance_groups[i].1,
-                            first_vertex: subchunk.block_face_start_vertices[i],
-                            first_instance: subchunk.block_face_instance_groups[i].0,
+                    // Custom blocks
+                    for group in &subchunk.custom_block_groups {
+                        custom_block_draw_commands.push(VulkanDrawIndirectCommand {
+                            vertex_count: group.start_face_and_len[1] * 6,
+                            instance_count: group.start_instance_and_len[1],
+                            first_vertex: group.start_face_and_len[0] * 6,
+                            first_instance: group.start_instance_and_len[0],
                         });
                     }
-                    // Tinted block faces
-                    if subchunk.tinted_block_face_start_vertices[i] != u32::MAX {
-                        tinted_block_face_draw_commands.push(VulkanDrawIndirectCommand {
-                            vertex_count: 4,
-                            instance_count: subchunk.tinted_block_face_instance_groups[i].1,
-                            first_vertex: subchunk.tinted_block_face_start_vertices[i],
-                            first_instance: subchunk.tinted_block_face_instance_groups[i].0,
-                        });
-                    }
-                }
-                // Custom blocks
-                for group in &subchunk.custom_block_groups {
-                    custom_block_draw_commands.push(VulkanDrawIndirectCommand {
-                        vertex_count: group.start_face_and_len[1] * 6,
-                        instance_count: group.start_instance_and_len[1],
-                        first_vertex: group.start_face_and_len[0] * 6,
-                        first_instance: group.start_instance_and_len[0],
-                    });
-                }
-            }
-            {
-                let subchunk_coord_set: AHashSet<_> = subchunks.keys().copied().collect();
-                subchunks_skipped = subchunk_coord_set.difference(&rendered_chunks).count()
-            }
+                },
+            );
             if !block_face_draw_commands.is_empty() {
                 block_face_draw_commands_buffer = Some(
                     VulkanBuffer::from_iter(
@@ -1293,7 +1062,8 @@ impl GraphicsState {
                     .unwrap()
                     .bind_vertex_buffers(0, (buffer,))
                     .unwrap()
-                    .draw(2, debug_lines.len().try_into().unwrap(), 0, 0)
+                    // Shader converts lines to quads, so we need 4 vertices per instance.
+                    .draw(4, debug_lines.len().try_into().unwrap(), 0, 0)
                     .unwrap();
             }
         }
@@ -1385,19 +1155,14 @@ impl GraphicsState {
                 .recreate(&self.swapchain.create_info())
                 .context("Error while recreating swapchain")?;
         }
-        Ok(DebugOutput {
-            subchunks_culled: subchunks_skipped,
-            subchunk_traversal_graph,
-        })
+        Ok(debug_output)
     }
 }
 
 #[derive(Debug)]
 pub struct TextureAtlas {
     pub image: Arc<VulkanImage>,
-    pub luma_image: Arc<VulkanImage>,
     pub view: Arc<VulkanImageView>,
-    pub luma_view: Arc<VulkanImageView>,
     pub sampler: Arc<VulkanSampler>,
 }
 
@@ -1411,7 +1176,6 @@ impl TextureAtlas {
     ) -> anyhow::Result<Self> {
         let (width, height) = (atlas.texture.width(), atlas.texture.height());
         let bytes = atlas.texture.into_vec();
-        let luma_bytes = atlas.luma_texture.into_vec();
         let image = VulkanImage::new(
             memory_allocator,
             &VulkanImageCreateInfo {
@@ -1428,22 +1192,6 @@ impl TextureAtlas {
             },
         )
         .context("Failed while creating atlas image")?;
-        let luma_image = VulkanImage::new(
-            memory_allocator,
-            &VulkanImageCreateInfo {
-                image_type: VulkanImageType::Dim2d,
-                format: VulkanFormat::R8_UNORM,
-                extent: [width, height, 1],
-                usage: VulkanImageUsage::SAMPLED | VulkanImageUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            &VulkanAllocationCreateInfo {
-                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
-                allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
-                ..Default::default()
-            },
-        )
-        .context("Failed while creating atlas luma image")?;
         let staging_buffer = VulkanBuffer::from_iter(
             memory_allocator,
             &VulkanBufferCreateInfo {
@@ -1458,20 +1206,6 @@ impl TextureAtlas {
             bytes,
         )
         .context("Error while creating atlas pixel staging buffer")?;
-        let luma_staging_buffer = VulkanBuffer::from_iter(
-            memory_allocator,
-            &VulkanBufferCreateInfo {
-                usage: VulkanBufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            &VulkanAllocationCreateInfo {
-                memory_type_filter: VulkanMemoryTypeFilter::PREFER_HOST
-                    | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            luma_bytes,
-        )
-        .context("Error while creating luma pixel staging buffer")?;
         let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
             command_buffer_allocator,
             queue.queue_family_index(),
@@ -1484,12 +1218,6 @@ impl TextureAtlas {
                 image.clone(),
             ))
             .unwrap();
-        command_buffer
-            .copy_buffer_to_image(VulkanCopyBufferToImageInfo::new(
-                luma_staging_buffer,
-                luma_image.clone(),
-            ))
-            .unwrap();
         let command_buffer = command_buffer.build().unwrap();
         vulkano::sync::now(device.clone())
             .then_execute(queue.clone(), command_buffer)
@@ -1498,15 +1226,11 @@ impl TextureAtlas {
             .unwrap();
         let view = VulkanImageView::new_default(&image)
             .context("Failed while creating Vulkan atlas image view")?;
-        let luma_view = VulkanImageView::new_default(&luma_image)
-            .context("Failed while creating Vulkan atlas luma image view")?;
         let sampler = VulkanSampler::new(device, &VulkanSamplerCreateInfo::default())
             .context("Failed while creating Vulkan atlas sampler")?;
         Ok(Self {
             image,
-            luma_image,
             view,
-            luma_view,
             sampler,
         })
     }

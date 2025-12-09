@@ -422,19 +422,15 @@ pub fn render_debug_ui(
                         };
                         let centre_dist = (graphics_camera.pos - subchunk_centre).magnitude();
                         let alpha = (1.0 - (centre_dist / max_dist.max(0.01))).max(0.0);
-                        painter.add(Shape::line_segment(
-                            line.map(|p| {
-                                Pos2::new(
-                                    (p.x + 1.0) / 2.0 * width_f32,
-                                    (-p.y + 1.0) / 2.0 * height_f32,
-                                )
-                            }),
-                            (
-                                5.0 * alpha,
-                                Color32::from_rgba_unmultiplied(0xFF, 0x00, 0xFF, 0xFF)
-                                    .gamma_multiply(alpha),
-                            ),
-                        ));
+                        debug_lines.push(DebugLine {
+                            p1: line[0].into(),
+                            p2: line[1].into(),
+                            color: Color32::from_rgba_unmultiplied(0xFF, 0x00, 0xFF, 0xFF)
+                                .gamma_multiply(alpha)
+                                .to_srgba_unmultiplied(),
+                            size: 5.0 * alpha,
+                            flags: graphics::debug::PackedFlags::IGNORE_DEPTH,
+                        });
                     }
                 }
                 for (i, ([dir_1, dir_2], pair_connected)) in pairs.into_iter().enumerate() {
@@ -454,33 +450,20 @@ pub fn render_debug_ui(
                     }
                     let average_dist = (end_1_dist + end_2_dist) / 2.0;
                     let alpha = (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
-                    // TODO: Implement raw GPU rendering for this
-                    if let Some(line_1) =
-                        debug_clip_and_project_line([pair_centre, end_1], graphics_camera)
-                    {
-                        painter.add(Shape::line_segment(
-                            line_1.map(|p| {
-                                Pos2::new(
-                                    (p.x + 1.0) / 2.0 * width_f32,
-                                    (-p.y + 1.0) / 2.0 * height_f32,
-                                )
-                            }),
-                            (5.0 * alpha, colour.gamma_multiply(alpha)),
-                        ));
-                    }
-                    if let Some(line_2) =
-                        debug_clip_and_project_line([pair_centre, end_2], graphics_camera)
-                    {
-                        painter.add(Shape::line_segment(
-                            line_2.map(|p| {
-                                Pos2::new(
-                                    (p.x + 1.0) / 2.0 * width_f32,
-                                    (-p.y + 1.0) / 2.0 * height_f32,
-                                )
-                            }),
-                            (5.0 * alpha, colour.gamma_multiply(alpha)),
-                        ));
-                    }
+                    debug_lines.push(DebugLine {
+                        p1: pair_centre.into(),
+                        p2: end_1.into(),
+                        color: colour.gamma_multiply(alpha).to_srgba_unmultiplied(),
+                        size: 5.0 * alpha,
+                        flags: graphics::debug::PackedFlags::IGNORE_DEPTH,
+                    });
+                    debug_lines.push(DebugLine {
+                        p1: pair_centre.into(),
+                        p2: end_2.into(),
+                        color: colour.gamma_multiply(alpha).to_srgba_unmultiplied(),
+                        size: 5.0 * alpha,
+                        flags: graphics::debug::PackedFlags::IGNORE_DEPTH,
+                    });
                 }
             }
         }
@@ -504,20 +487,21 @@ pub fn render_debug_ui(
                 }
                 let average_dist = (from_centre_dist + to_centre_dist) / 2.0;
                 let alpha = (1.0 - (average_dist / max_dist.max(0.01))).max(0.0);
-                if let Some(line) = debug_clip_and_project_line(chunk_centres, graphics_camera) {
-                    painter.add(Shape::line_segment(
-                        line.map(|p| {
-                            Pos2::new(
-                                (p.x + 1.0) / 2.0 * width_f32,
-                                (-p.y + 1.0) / 2.0 * height_f32,
-                            )
-                        }),
-                        (5.0 * alpha, Color32::YELLOW.gamma_multiply(alpha)),
-                    ));
-                }
+                debug_lines.push(DebugLine {
+                    p1: chunk_centres[0].into(),
+                    p2: chunk_centres[1].into(),
+                    color: Color32::YELLOW
+                        .gamma_multiply(alpha)
+                        .to_srgba_unmultiplied(),
+                    size: 5.0 * alpha,
+                    flags: graphics::debug::PackedFlags::IGNORE_DEPTH,
+                });
             }
         }
-        // Draw world debug visuals with egui, or pass through for GPU rendering
+        {
+            // TODO: Sort debug lines, points and triangles by camera distance.
+        }
+        // Draw world debug visuals with egui, or pass through for GPU rendering.
         match debug_state.visualisation_draw_method {
             DebugVisualisationDrawMethod::Egui => {
                 let graphics_camera = &graphics_state.camera;
