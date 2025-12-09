@@ -1,18 +1,18 @@
 // XXX: DEBUG
 #![cfg_attr(feature = "graphics_backend_software", expect(unused))]
 
-use crate::basic_types::AxisDirection;
 #[cfg(not(feature = "graphics_backend_opengl"))]
-use crate::client::RawCustomBlockGroup;
-use crate::client::graphics::{self, GraphicsResources};
-use crate::client::{
-    ClientPlayStateUpdate, MAX_HEIGHT_I32, MIN_HEIGHT_I32, RawChunk, RawSubchunk,
-    SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32,
-};
+use crate::RawCustomBlockGroup;
+use crate::basic_types::AxisDirection;
+use crate::graphics::{self, GraphicsResources};
 #[cfg(feature = "graphics_backend_vulkan")]
 use crate::portable_prelude::*;
 use crate::protocol::chunk::{
     self as protocol_chunk, ChunkSection, ChunkSectionLightChannelInfoMut, LightType,
+};
+use crate::{
+    ClientPlayStateUpdate, MAX_HEIGHT_I32, MIN_HEIGHT_I32, RawChunk, RawSubchunk,
+    SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32,
 };
 use ahash::AHasher;
 use core::hash::Hasher;

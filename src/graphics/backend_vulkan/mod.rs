@@ -8,7 +8,7 @@ pub mod debug;
 pub mod egui_renderer;
 pub mod shader_exports;
 
-use crate::client::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, anyhow};
 use chunk::{
@@ -21,10 +21,10 @@ use debug::point::Vertex as DebugPointVertex;
 use debug::triangle::Instance as DebugTriangleInstance;
 use nalgebra::{Perspective3, Point3};
 use resources::block::model::{ModelRegistry, Tint};
+use shader_exports::RawViewInfo;
 use std::sync::Arc;
 use vulkan_prelude::*;
 use winit::window::Window;
-use shader_exports::RawViewInfo;
 
 pub use super::{Camera, DebugState};
 
@@ -473,7 +473,10 @@ impl GraphicsState {
         let view_info_descriptor_set = VulkanDescriptorSet::new(
             descriptor_set_allocator.clone(),
             camera_descriptor_set_layout.clone(),
-            [VulkanWriteDescriptorSet::buffer(0, view_info_buffer.clone())],
+            [VulkanWriteDescriptorSet::buffer(
+                0,
+                view_info_buffer.clone(),
+            )],
             [],
         )
         .context("Error while creating view info descriptor set")?;

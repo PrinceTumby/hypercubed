@@ -4,9 +4,9 @@ pub mod egui_renderer;
 pub mod gl;
 
 use super::DebugState;
-use crate::client::{MIN_HEIGHT_I32, RawSubchunk, SUBCHUNK_AXIS_LEN_I32};
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
+use crate::{MIN_HEIGHT_I32, RawSubchunk, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::Context;
 use debug::line::Instance as DebugLineInstance;
 use debug::point::Vertex as DebugPointVertex;

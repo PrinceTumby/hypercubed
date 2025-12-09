@@ -1,6 +1,6 @@
-use crate::client::{MIN_HEIGHT_I32, Player, RawChunk, SUBCHUNK_AXIS_LEN_I32};
 use crate::portable_prelude::*;
 use crate::protocol::chunk::ChunkSection;
+use crate::{MIN_HEIGHT_I32, Player, RawChunk, SUBCHUNK_AXIS_LEN_I32};
 use nalgebra::{Point3, Vector3};
 use portable_std::{Arc, FastHashMap};
 use resources::aabb::AABB;

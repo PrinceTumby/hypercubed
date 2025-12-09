@@ -3,7 +3,7 @@ pub mod debug;
 pub mod egui_renderer;
 
 use super::{Camera, DebugState};
-use crate::client::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use ahash::{AHashMap, AHashSet};
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},

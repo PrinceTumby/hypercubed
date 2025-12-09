@@ -1,4 +1,3 @@
-use crate::client;
 use crate::protocol;
 use crate::protocol::prelude::*;
 use portable_std::Arc;
@@ -75,7 +74,7 @@ pub fn main() -> anyhow::Result<()> {
         });
     }
     let event_loop = winit::event_loop::EventLoop::new()?;
-    let mut app = client::App::new(server_connection, clientbound_tx, clientbound_rx);
+    let mut app = crate::App::new(server_connection, clientbound_tx, clientbound_rx);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

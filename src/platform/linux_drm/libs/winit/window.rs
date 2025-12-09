@@ -54,7 +54,7 @@ impl WindowContext<'_> {
             let span = tracing::trace_span!("render_software_cursor");
             let _enter = span.enter();
             unsafe {
-                use crate::client::graphics::gl;
+                use crate::graphics::gl;
                 use gl::array::{TextureCoordPointerType, VertexPointerType};
                 use gl::buffer::BufferType;
                 use gl::client_state::ClientArrayType;
@@ -129,7 +129,7 @@ impl WindowContext<'_> {
         //       get the frame presentation to be delayed until the frame's finished rendering.
         if !wait_for_vsync {
             unsafe {
-                crate::client::graphics::gl::finish();
+                crate::graphics::gl::finish();
             }
         }
         let (new_front_buffer, new_front_framebuffer) = {
@@ -216,7 +216,7 @@ struct QueuedFrame {
 pub(super) struct WindowInner {
     pub data: Mutex<WindowData>,
     frame_send_channel: mpsc::Sender<QueuedFrame>,
-    pub cursor_gl_texture: crate::client::graphics::gl::texture::TextureHandle,
+    pub cursor_gl_texture: crate::graphics::gl::texture::TextureHandle,
     pub cursor_size: (i16, i16),
     pub egli_surface: egli::Surface,
     pub egli_context: egli::Context,
@@ -379,7 +379,7 @@ impl Window {
             }
             // Now that we've bound an OpenGL API, we can load in all the functions we use.
             unsafe {
-                crate::client::graphics::gl::load_with(|name| {
+                crate::graphics::gl::load_with(|name| {
                     egli::egl::get_proc_address(name) as *const ()
                 });
             }
@@ -445,7 +445,7 @@ impl Window {
             // TODO: Implement a hardware cursor.
             //       Think this needs atomic modesetting (see above).
             let (cursor_gl_texture, cursor_size) = unsafe {
-                use crate::client::graphics::gl;
+                use crate::graphics::gl;
                 use gl::texture::{
                     TexEnvMode, TexEnvTarget, TexFilterMode, TexTarget, TexWrapMode,
                     Texture2dFormat, Texture2dTarget, TextureDataType, TextureInternalFormat,

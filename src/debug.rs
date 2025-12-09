@@ -1,15 +1,14 @@
-use crate::client::graphics::debug::line::Instance as DebugLine;
-use crate::client::graphics::debug::point::Vertex as DebugPoint;
-use crate::client::graphics::debug::triangle::Instance as DebugTriangle;
-use crate::client::graphics::{self, Camera, DebugVisualisationDrawMethod, GraphicsState};
-use crate::client::{ClientPlayState, MIN_HEIGHT_I32};
+use crate::graphics::debug::line::Instance as DebugLine;
+use crate::graphics::debug::point::Vertex as DebugPoint;
+use crate::graphics::debug::triangle::Instance as DebugTriangle;
+use crate::graphics::{self, Camera, DebugVisualisationDrawMethod, GraphicsState};
+use crate::platform::libs::winit;
 use crate::portable_prelude::*;
 use crate::protocol::PlayConnection;
 use crate::protocol::play::GameMode;
+use crate::{ClientPlayState, MIN_HEIGHT_I32};
 use nalgebra::Point3;
 use portable_std::VecDeque;
-
-use crate::platform::libs::winit;
 
 pub struct DebugRenderOutput {
     pub egui_output: egui::FullOutput,
@@ -601,8 +600,8 @@ fn debug_clip_and_project_points(points: &[Point3<f32>], camera: &Camera) -> Vec
     clip_edge_pair!(
         z,
         clip_intersection_z,
-        -crate::client::graphics::DEFAULT_ZFAR,
-        -crate::client::graphics::DEFAULT_ZNEAR
+        -crate::graphics::DEFAULT_ZFAR,
+        -crate::graphics::DEFAULT_ZNEAR
     );
     for point in &mut vec1 {
         *point = camera.proj_matrix.project_point(point);
@@ -670,8 +669,8 @@ fn debug_clip_and_project_line(
     clip_edge_pair!(
         z,
         clip_intersection_z,
-        -crate::client::graphics::DEFAULT_ZFAR,
-        -crate::client::graphics::DEFAULT_ZNEAR
+        -crate::graphics::DEFAULT_ZFAR,
+        -crate::graphics::DEFAULT_ZNEAR
     );
     line = line.map(|p| camera.proj_matrix.project_point(&p));
     clip_edge_pair!(x, clip_intersection_x, -1.0, 1.0);

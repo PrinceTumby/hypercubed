@@ -1,9 +1,5 @@
-use crate::client::graphics::{self, DEFAULT_FOV, GraphicsState};
-use crate::client::input::PlayControlState;
-use crate::client::{
-    ClientPlayState, ClientPlayStateUpdate, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32, world,
-};
-use crate::physics;
+use crate::graphics::{self, DEFAULT_FOV, GraphicsState};
+use crate::input::PlayControlState;
 use crate::portable_prelude::{println, *};
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{
@@ -11,6 +7,10 @@ use crate::protocol::play::{
     serverbound as serverbound_packets,
 };
 use crate::protocol::prelude::*;
+use crate::{
+    ClientPlayState, ClientPlayStateUpdate, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32,
+    physics, world,
+};
 #[cfg(feature = "graphics_backend_vulkan")]
 use anyhow::Context;
 use nalgebra::Vector3;

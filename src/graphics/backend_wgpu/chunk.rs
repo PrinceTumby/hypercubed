@@ -476,10 +476,7 @@ impl<I: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
     InstanceBufferManager<I, BUFFER_SIZE, CHUNK_SIZE>
 {
     pub fn new(device: &wgpu::Device) -> Self {
-        Self(BufferManager::new(
-            device,
-            wgpu::BufferUsages::VERTEX,
-        ))
+        Self(BufferManager::new(device, wgpu::BufferUsages::VERTEX))
     }
 
     /// Returns the `first_instance` indirect draw argument.

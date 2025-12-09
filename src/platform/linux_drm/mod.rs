@@ -98,7 +98,7 @@ pub fn main() -> anyhow::Result<()> {
     }
     let event_loop =
         libs::winit::event_loop::EventLoop::new().context("Error while creating event loop")?;
-    let mut app = crate::client::App::new(server_connection, clientbound_tx, clientbound_rx);
+    let mut app = crate::App::new(server_connection, clientbound_tx, clientbound_rx);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

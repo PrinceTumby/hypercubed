@@ -1,6 +1,6 @@
 use super::types::PackedFlags;
 use crate::ViewInfo;
-use spirv_std::glam::{Vec2, Vec3, Vec4, Vec4Swizzles, Vec2Swizzles};
+use spirv_std::glam::{Vec2, Vec2Swizzles, Vec3, Vec4, Vec4Swizzles};
 use spirv_std::spirv;
 
 #[spirv(vertex)]
@@ -25,8 +25,16 @@ pub fn vertex(
     // Calculate the perpendicular vector offset.
     let screen_size_f32 = view_info.screen_size.as_vec2();
     let offset_right = clip_diff_norm.yx() * Vec2::new(-1.0, 1.0) * in_size / screen_size_f32;
-    let offset = if in_vertex_i % 2 == 0 { offset_right } else { -offset_right };
-    let mut vertex_pos = if in_vertex_i / 2 != 0 { p1_clip_pos } else { p2_clip_pos };
+    let offset = if in_vertex_i % 2 == 0 {
+        offset_right
+    } else {
+        -offset_right
+    };
+    let mut vertex_pos = if in_vertex_i / 2 != 0 {
+        p1_clip_pos
+    } else {
+        p2_clip_pos
+    };
     vertex_pos += Vec4::from((offset * vertex_pos.w, 0.0, 0.0));
     *out_pos = Vec4::new(1.0, -1.0, 1.0, 1.0) * vertex_pos;
     *out_colour = in_colour;
@@ -43,6 +51,10 @@ pub fn fragment(
     #[spirv(frag_depth)] out_depth: &mut f32,
     out_colour: &mut Vec4,
 ) {
-    *out_depth = if in_flags.ignore_depth() { 1.0 } else { in_pos.z };
+    *out_depth = if in_flags.ignore_depth() {
+        1.0
+    } else {
+        in_pos.z
+    };
     *out_colour = Vec4::from((in_colour.xyz() * in_colour.w, in_colour.w));
 }

@@ -17,7 +17,7 @@ cfg_if::cfg_if! {
 }
 
 use crate::basic_types::AxisDirection;
-use crate::client::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use portable_std::{FastHashMap, FastHashSet};
 use std::collections::VecDeque;
