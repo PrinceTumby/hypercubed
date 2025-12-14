@@ -1,4 +1,8 @@
-#[cfg(not(feature = "graphics_backend_opengl"))]
+#[cfg(any(
+    not(feature = "graphics_backend_opengl"),
+    feature = "graphics_backend_vulkan",
+    feature = "graphics_backend_wgpu",
+))]
 compile_error!("The Linux DRM platform currently only supports the OpenGL graphics backend.");
 
 pub mod libs;
@@ -19,6 +23,8 @@ const DEFAULT_PORT: u16 = 25565;
 struct Args {
     #[arg(default_value_t = String::from(DEFAULT_SERVER_ADDRESS))]
     server_address: String,
+    #[arg(long, short, value_enum, default_value_t)]
+    graphics_backend: crate::graphics::SelectedGraphicsBackend,
 }
 
 pub fn main() -> anyhow::Result<()> {
@@ -98,7 +104,12 @@ pub fn main() -> anyhow::Result<()> {
     }
     let event_loop =
         libs::winit::event_loop::EventLoop::new().context("Error while creating event loop")?;
-    let mut app = crate::App::new(server_connection, clientbound_tx, clientbound_rx);
+    let mut app = crate::App::new(
+        server_connection,
+        clientbound_tx,
+        clientbound_rx,
+        Some(args.graphics_backend),
+    );
     event_loop.run_app(&mut app)?;
     Ok(())
 }

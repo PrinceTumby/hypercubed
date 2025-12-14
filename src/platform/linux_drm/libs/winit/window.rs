@@ -11,6 +11,12 @@ use gbm::AsRaw;
 use glutin::api::egl;
 use std::sync::{Arc, Mutex, mpsc};
 
+cfg_if::cfg_if! {
+    if #[cfg(feature = "graphics_backend_opengl")] {
+        use crate::graphics::backend_opengl::gl;
+    }
+}
+
 /// Currently a 32x32 cursor from [https://www.kenney.nl/assets/cursor-pack].
 static CURSOR_PNG_BYTES: &[u8] = include_bytes!("Mouse Pointer.png");
 static CURSOR_HOTSPOT: (i16, i16) = (4, 4);
@@ -54,7 +60,6 @@ impl WindowContext<'_> {
             let span = tracing::trace_span!("render_software_cursor");
             let _enter = span.enter();
             unsafe {
-                use crate::graphics::gl;
                 use gl::array::{TextureCoordPointerType, VertexPointerType};
                 use gl::buffer::BufferType;
                 use gl::client_state::ClientArrayType;
@@ -129,7 +134,7 @@ impl WindowContext<'_> {
         //       get the frame presentation to be delayed until the frame's finished rendering.
         if !wait_for_vsync {
             unsafe {
-                crate::graphics::gl::finish();
+                gl::finish();
             }
         }
         let (new_front_buffer, new_front_framebuffer) = {
@@ -216,7 +221,7 @@ struct QueuedFrame {
 pub(super) struct WindowInner {
     pub data: Mutex<WindowData>,
     frame_send_channel: mpsc::Sender<QueuedFrame>,
-    pub cursor_gl_texture: crate::graphics::gl::texture::TextureHandle,
+    pub cursor_gl_texture: gl::texture::TextureHandle,
     pub cursor_size: (i16, i16),
     pub egli_surface: egli::Surface,
     pub egli_context: egli::Context,
@@ -379,7 +384,7 @@ impl Window {
             }
             // Now that we've bound an OpenGL API, we can load in all the functions we use.
             unsafe {
-                crate::graphics::gl::load_with(|name| {
+                gl::load_with(|name| {
                     egli::egl::get_proc_address(name) as *const ()
                 });
             }
@@ -445,7 +450,6 @@ impl Window {
             // TODO: Implement a hardware cursor.
             //       Think this needs atomic modesetting (see above).
             let (cursor_gl_texture, cursor_size) = unsafe {
-                use crate::graphics::gl;
                 use gl::texture::{
                     TexEnvMode, TexEnvTarget, TexFilterMode, TexTarget, TexWrapMode,
                     Texture2dFormat, Texture2dTarget, TextureDataType, TextureInternalFormat,

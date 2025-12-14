@@ -1,7 +1,3 @@
-use crate::protocol;
-use crate::protocol::prelude::*;
-use portable_std::Arc;
-
 pub mod exports {
     pub use super::{libs, main};
 }
@@ -10,8 +6,23 @@ pub mod libs {
     pub use {egui, winit};
 }
 
-const SERVER_ADDRESS: &str = "localhost";
-const SERVER_PORT: u16 = 25565;
+use crate::protocol;
+use crate::protocol::prelude::*;
+use anyhow::{Context, bail};
+use clap::Parser;
+use portable_std::Arc;
+
+static DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:25565";
+const DEFAULT_PORT: u16 = 25565;
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(default_value_t = String::from(DEFAULT_SERVER_ADDRESS))]
+    server_address: String,
+    #[arg(long, short, value_enum, default_value_t)]
+    graphics_backend: crate::graphics::SelectedGraphicsBackend,
+}
 
 pub fn main() -> anyhow::Result<()> {
     use protocol::configuration;
@@ -24,17 +35,36 @@ pub fn main() -> anyhow::Result<()> {
         )
         .unwrap();
     }
+    let args = Args::parse();
+    let server_socket_address = 'blk: {
+        use core::net::{IpAddr, SocketAddr};
+        // First, try parsing as an "IP:PORT" socket address.
+        let server_socket_address: Result<SocketAddr, _> = args.server_address.parse();
+        match server_socket_address {
+            Ok(address) => break 'blk address,
+            Err(_) => {}
+        }
+        // If it doesn't parse correctly as a full socket address, try parsing as an IP address.
+        let server_ip_address: Result<IpAddr, _> = args.server_address.parse();
+        match server_ip_address {
+            Ok(ip) => break 'blk SocketAddr::new(ip, DEFAULT_PORT),
+            Err(_) => {}
+        }
+        bail!("Unable to parse server address as either a socket address, or as an IP address");
+    };
+    let server_ip_string = server_socket_address.ip().to_string();
+    let server_port = server_socket_address.port();
     println!(
         "{}",
-        request_status(PROTOCOL_VERSION, SERVER_ADDRESS, SERVER_PORT)?
+        request_status(PROTOCOL_VERSION, &server_ip_string, server_port)?
     );
     let session_info: Option<protocol::login::SessionInfo> =
         std::fs::read_to_string("session.json")
             .map(|session_json| serde_json::from_str(&session_json).unwrap())
             .ok();
     let (server_connection, login_success_packet) = pollster::block_on(protocol::login::login(
-        SERVER_ADDRESS,
-        SERVER_PORT,
+        &server_ip_string,
+        server_port,
         configuration::ClientInformation {
             locale: "en_GB",
             view_distance: 1,
@@ -59,6 +89,8 @@ pub fn main() -> anyhow::Result<()> {
         let clientbound_tx = clientbound_tx.clone();
         let server_connection = server_connection.clone();
         std::thread::spawn(move || {
+            #[cfg(feature = "tracy")]
+            tracing_tracy::client::set_thread_name!("Packet Thread");
             loop {
                 let packet = match server_connection.read_packet() {
                     Ok(packet) => packet,
@@ -73,8 +105,14 @@ pub fn main() -> anyhow::Result<()> {
             }
         });
     }
-    let event_loop = winit::event_loop::EventLoop::new()?;
-    let mut app = crate::App::new(server_connection, clientbound_tx, clientbound_rx);
+    let event_loop =
+        winit::event_loop::EventLoop::new().context("Error while creating event loop")?;
+    let mut app = crate::App::new(
+        server_connection,
+        clientbound_tx,
+        clientbound_rx,
+        Some(args.graphics_backend),
+    );
     event_loop.run_app(&mut app)?;
     Ok(())
 }

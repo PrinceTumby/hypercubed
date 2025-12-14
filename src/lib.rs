@@ -55,7 +55,7 @@ use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode};
 use crate::protocol::prelude::*;
 #[allow(unused)]
 use anyhow::Context;
-use graphics::GraphicsState;
+use graphics::{Camera, GraphicsBackend, SelectedGraphicsBackend};
 use nalgebra::Point3;
 use portable_std::sync::mpsc;
 #[allow(unused)]
@@ -81,11 +81,8 @@ cfg_if::cfg_if! {
 //       graphics settings that need specialisation.
 
 pub struct ClientPlayState {
+    pub camera: Camera,
     pub raw_chunks: Arc<FastHashMap<[i32; 2], Arc<RawChunk>>>,
-    // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
-    //       coordinate. Consider changing to actually be the Y coordinate.
-    pub subchunks: FastHashMap<[i32; 3], graphics::chunk::Subchunk>,
-    pub visible_chunks: FastHashSet<[i32; 2]>,
     pub pending_subchunk_update_ids: FastHashMap<[i32; 3], usize>,
     pub player: Player,
     pub player_last_tick: Player,
@@ -118,43 +115,6 @@ pub struct RawChunk {
     pub lighting: protocol_chunk::ChunkLightInfo,
 }
 
-#[derive(Debug)]
-pub enum ClientPlayStateUpdate {
-    RemoveChunk([i32; 2]),
-    PlaceSubchunks {
-        update_id: usize,
-        new_raw_subchunks: Vec<([i32; 3], RawSubchunk)>,
-    },
-}
-
-cfg_if::cfg_if! {
-    if #[cfg(feature = "graphics_backend_opengl")] {
-        #[derive(Debug)]
-        pub struct RawSubchunk {
-            pub start_coords: [i32; 3],
-            pub face_groups: [Vec<graphics::chunk::BlockFace>; 7],
-            pub connected_faces: graphics::chunk::SubchunkConnectivity,
-        }
-    } else {
-        #[derive(Debug)]
-        pub struct RawSubchunk {
-            pub start_coords: [i32; 3],
-            pub block_face_quads: [Option<[graphics::chunk::block_face::Vertex; 4]>; 6],
-            pub block_face_instance_groups: [Vec<graphics::chunk::block_face::Instance>; 6],
-            pub tinted_block_face_quads: [Option<[graphics::chunk::tinted_block_face::Vertex; 4]>; 6],
-            pub tinted_block_face_instance_groups: [Vec<graphics::chunk::tinted_block_face::Instance>; 6],
-            pub custom_block_groups: Vec<RawCustomBlockGroup>,
-            pub connected_faces: graphics::chunk::SubchunkConnectivity,
-        }
-
-        #[derive(Debug)]
-        pub struct RawCustomBlockGroup {
-            pub start_face_and_len: [u32; 2],
-            pub instances: Vec<graphics::chunk::custom_block::Instance>,
-        }
-    }
-}
-
 pub const SUBCHUNK_AXIS_LEN: usize = 16;
 pub const SUBCHUNK_AXIS_LEN_I32: i32 = SUBCHUNK_AXIS_LEN as i32;
 pub const MIN_HEIGHT_I32: i32 = -64;
@@ -162,20 +122,19 @@ pub const MAX_HEIGHT_I32: i32 = 319;
 
 pub struct App {
     window: Option<Arc<Window>>,
-    graphics_state: Option<GraphicsState>,
+    #[cfg(any(feature = "platform_winit", feature = "platform_linux_drm"))]
+    selected_graphics_backend: SelectedGraphicsBackend,
+    graphics_backend: Option<Box<dyn GraphicsBackend>>,
     input_state: input::PlayControlState,
     play_state: ClientPlayState,
     server_connection: Arc<PlayConnection>,
     clientbound_tx: mpsc::Sender<ClientboundPacket>,
     clientbound_rx: mpsc::Receiver<ClientboundPacket>,
-    play_state_update_tx: mpsc::Sender<ClientPlayStateUpdate>,
-    play_state_update_rx: mpsc::Receiver<ClientPlayStateUpdate>,
     debug_state: graphics::DebugState,
     debug_output: graphics::DebugOutput,
     egui_ctx: egui::Context,
     pending_egui_events: Vec<egui::Event>,
     last_mouse_pos: egui::Pos2,
-    current_update_id: usize,
     previous_frame_times: VecDeque<f64>,
     last_frame_time: Instant,
     current_time_s: f64,
@@ -190,12 +149,13 @@ impl App {
         server_connection: Arc<PlayConnection>,
         clientbound_tx: mpsc::Sender<ClientboundPacket>,
         clientbound_rx: mpsc::Receiver<ClientboundPacket>,
+        #[cfg(any(feature = "platform_winit", feature = "platform_linux_drm"))]
+        selected_graphics_backend: Option<SelectedGraphicsBackend>,
     ) -> Self {
         let input_state = input::PlayControlState::default();
         let play_state = ClientPlayState {
+            camera: Camera::dummy(),
             raw_chunks: Arc::new(FastHashMap::new()),
-            subchunks: FastHashMap::new(),
-            visible_chunks: FastHashSet::new(),
             pending_subchunk_update_ids: FastHashMap::new(),
             player: Player {
                 entity_id: EntityId::placeholder(),
@@ -215,22 +175,30 @@ impl App {
             },
         };
         let egui_ctx = egui::Context::default();
-        let (play_state_update_tx, play_state_update_rx) = mpsc::channel::<ClientPlayStateUpdate>();
+        #[cfg(feature = "full_std")]
         let thread_pool = ThreadPool::new(
             std::thread::available_parallelism()
                 .map(|num_threads_non_zero| num_threads_non_zero.get())
-                .unwrap_or(2),
+                .unwrap_or(1),
         );
+        #[cfg(all(feature = "full_std", feature = "tracy"))]
+        for thread_i in 0..thread_pool.max_count() {
+            thread_pool.execute(move || {
+                let tracy_client = tracing_tracy::client::Client::running().unwrap();
+                let thread_name = format!("Thread Pool Worker {thread_i}");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                tracy_client.set_thread_name(&thread_name);
+            });
+        }
         Self {
+            selected_graphics_backend: selected_graphics_backend.unwrap_or_default(),
             window: None,
-            graphics_state: None,
+            graphics_backend: None,
             input_state,
             play_state,
             server_connection,
             clientbound_tx,
             clientbound_rx,
-            play_state_update_tx,
-            play_state_update_rx,
             debug_state: graphics::DebugState::default(),
             debug_output: graphics::DebugOutput {
                 subchunks_culled: 0,
@@ -240,11 +208,11 @@ impl App {
             pending_egui_events: Vec::new(),
             last_mouse_pos: egui::Pos2::new(0.0, 0.0),
             previous_frame_times: VecDeque::new(),
-            current_update_id: 0,
             last_frame_time: Instant::now(),
             current_time_s: 0.0,
             last_tick_time_s: 0.0,
             next_tick_time_s: 1.0 / 20.0,
+            #[cfg(feature = "full_std")]
             thread_pool,
         }
     }
@@ -257,23 +225,65 @@ impl ApplicationHandler for App {
                 .create_window(Window::default_attributes().with_title("Hypercubed"))
                 .unwrap(),
         );
-        let graphics_state =
-            GraphicsState::new(window.clone(), resources::block::register_vanilla_blocks).unwrap();
+        cfg_if::cfg_if! {
+            if #[cfg(any(feature = "platform_winit", feature = "platform_linux_drm"))] {
+                let graphics_backend: Box<dyn GraphicsBackend> =
+                    match self.selected_graphics_backend {
+                        #[cfg(feature = "graphics_backend_opengl")]
+                        SelectedGraphicsBackend::OpenGL => {
+                            graphics::backend_opengl::GraphicsState::new(
+                                window.clone(),
+                                resources::block::register_vanilla_blocks,
+                            )
+                            .unwrap()
+                        }
+                        #[cfg(feature = "graphics_backend_vulkan")]
+                        SelectedGraphicsBackend::Vulkan => {
+                            graphics::backend_vulkan::GraphicsState::new(
+                                window.clone(),
+                                resources::block::register_vanilla_blocks,
+                            )
+                            .unwrap()
+                        }
+                        #[cfg(feature = "graphics_backend_wgpu")]
+                        SelectedGraphicsBackend::Wgpu => graphics::backend_wgpu::GraphicsState::new(
+                            window.clone(),
+                            resources::block::register_vanilla_blocks,
+                        )
+                        .unwrap(),
+                    };
+            } else {
+                let graphics_backend =
+                    platform::create_graphics_backend(window.clone()).unwrap();
+            }
+        }
+        let graphics_size = graphics_backend.get_size();
+        self.play_state
+            .camera
+            .proj_matrix
+            .set_aspect((graphics_size.width as f32) / (graphics_size.height as f32));
+        self.graphics_backend = Some(graphics_backend);
         self.window = Some(window);
-        self.graphics_state = Some(graphics_state);
         event_loop.set_control_flow(ControlFlow::Poll);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let window = self.window.as_ref().unwrap();
-        let graphics_state = self.graphics_state.as_mut().unwrap();
+        let graphics_backend = self.graphics_backend.as_mut().unwrap();
         if id != window.id() {
             return;
         }
         let scale_factor = window.scale_factor();
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
-            WindowEvent::Resized(physical_size) => graphics_state.resize(physical_size),
+            WindowEvent::Resized(physical_size) => {
+                graphics_backend.resize(physical_size);
+                let graphics_size = graphics_backend.get_size();
+                self.play_state
+                    .camera
+                    .proj_matrix
+                    .set_aspect((graphics_size.width as f32) / (graphics_size.height as f32));
+            }
             // TODO: Implement egui keyboard support
             // WindowEvent::KeyboardInput {
             //     device_id: _,
@@ -326,7 +336,7 @@ impl ApplicationHandler for App {
             return;
         }
         let window = self.window.as_ref().unwrap();
-        let graphics_state = self.graphics_state.as_mut().unwrap();
+        let graphics_backend = self.graphics_backend.as_mut().unwrap();
         let scale_factor = window.scale_factor();
         let new_time = Instant::now();
         let delta_time_f64 =
@@ -348,7 +358,7 @@ impl ApplicationHandler for App {
             event_loop,
             &self.server_connection,
             &mut self.play_state,
-            graphics_state,
+            graphics_backend.as_mut(),
             &mut self.debug_state,
             &self.debug_output,
             &self.egui_ctx,
@@ -361,7 +371,7 @@ impl ApplicationHandler for App {
         );
         // Reset cursor to middle if locked.
         if self.input_state.mouse_locked && window.has_focus() {
-            let size = graphics_state.size;
+            let size = graphics_backend.get_size();
             let physical_x = size.width as i32 / 2;
             let physical_y = size.height as i32 / 2;
             self.last_mouse_pos = egui::Pos2 {
@@ -372,80 +382,32 @@ impl ApplicationHandler for App {
                 .set_cursor_position(winit::dpi::PhysicalPosition::new(physical_x, physical_y));
         }
         // Main rendering
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "graphics_backend_vulkan")] {
-                self.debug_output = graphics_state.render(
-                    &self.play_state.subchunks,
-                    &self.play_state.visible_chunks,
-                    &self.egui_ctx,
-                    egui_output,
-                    &self.debug_state,
-                    &debug_points,
-                    &debug_lines,
-                    &debug_triangles,
-                )
-                .context("Error while rendering")
-                .unwrap();
-            } else if #[cfg(feature = "graphics_backend_wgpu")] {
-                match graphics_state.render(
-                    &self.play_state.subchunks,
-                    &self.play_state.visible_chunks,
-                    &self.egui_ctx,
-                    egui_output,
-                    &self.debug_state,
-                    &debug_points,
-                    &debug_lines,
-                    &debug_triangles,
-                ) {
-                    Ok(new_debug_output) => self.debug_output = new_debug_output,
-                    Err(wgpu::SurfaceError::Timeout) => {}
-                    // Reconfigure the surface if lost.
-                    Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
-                        let size = graphics_state.size;
-                        graphics_state.resize(size)
-                    }
-                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                    Err(other) => panic!("Rendering error: {other}"),
-                }
-            } else if #[cfg(feature = "graphics_backend_opengl")] {
-                self.debug_output = graphics_state.render(
-                    &mut self.play_state.subchunks,
-                    &self.play_state.visible_chunks,
-                    &self.egui_ctx,
-                    egui_output,
-                    &self.debug_state,
-                    &debug_points,
-                    &debug_lines,
-                    &debug_triangles,
-                )
-                .unwrap();
-            } else if #[cfg(feature = "graphics_backend_software")] {
-                self.debug_output = graphics_state.render(
-                    &self.play_state.subchunks,
-                    &self.play_state.visible_chunks,
-                    &self.egui_ctx,
-                    egui_output,
-                    &self.debug_state,
-                )
-                .unwrap();
-            } else {
-                compile_error!("TODO (graphics backend): graphics_state.render(...)");
-            }
+        let maybe_new_debug_output = graphics_backend
+            .render(
+                &self.play_state.camera,
+                &self.egui_ctx,
+                egui_output,
+                &self.debug_state,
+                &debug_points,
+                &debug_lines,
+                &debug_triangles,
+            )
+            .context("Error while rendering")
+            .unwrap();
+        if let Some(new_debug_output) = maybe_new_debug_output {
+            self.debug_output = new_debug_output;
         }
         // Gameplay events and updates
         game::process_game_events(
             #[cfg(feature = "full_std")]
             &self.thread_pool,
             &mut self.play_state,
-            graphics_state,
+            graphics_backend.as_mut(),
             &mut self.debug_state,
             &mut self.input_state,
             &self.server_connection,
             &self.clientbound_tx,
             &self.clientbound_rx,
-            &self.play_state_update_tx,
-            &self.play_state_update_rx,
-            &mut self.current_update_id,
             self.current_time_s,
             &mut self.last_tick_time_s,
             &mut self.next_tick_time_s,
@@ -462,11 +424,10 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         let window = self.window.as_ref().unwrap();
-        let graphics_state = self.graphics_state.as_mut().unwrap();
         match event {
             DeviceEvent::MouseMotion { delta } if self.input_state.mouse_locked => {
                 const MOUSE_SENSITIVITY: f32 = 0.1;
-                let camera = &mut graphics_state.camera;
+                let camera = &mut self.play_state.camera;
                 camera.yaw += delta.0 as f32 * MOUSE_SENSITIVITY;
                 camera.pitch -= delta.1 as f32 * MOUSE_SENSITIVITY;
                 camera.pitch = camera.pitch.clamp(-90.0, 90.0);

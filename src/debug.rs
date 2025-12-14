@@ -1,12 +1,12 @@
-use crate::graphics::debug::line::Instance as DebugLine;
-use crate::graphics::debug::point::Vertex as DebugPoint;
-use crate::graphics::debug::triangle::Instance as DebugTriangle;
-use crate::graphics::{self, Camera, DebugVisualisationDrawMethod, GraphicsState};
+use crate::ClientPlayState;
+use crate::graphics::debug::Line as DebugLine;
+use crate::graphics::debug::Point as DebugPoint;
+use crate::graphics::debug::Triangle as DebugTriangle;
+use crate::graphics::{self, Camera, DebugVisualisationDrawMethod, GraphicsBackend};
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
 use crate::protocol::PlayConnection;
 use crate::protocol::play::GameMode;
-use crate::{ClientPlayState, MIN_HEIGHT_I32};
 use nalgebra::Point3;
 use portable_std::VecDeque;
 
@@ -22,7 +22,7 @@ pub fn render_debug_ui(
     event_loop: &winit::event_loop::ActiveEventLoop,
     server_connection: &PlayConnection,
     play_state: &mut ClientPlayState,
-    graphics_state: &mut GraphicsState,
+    graphics_backend: &mut dyn GraphicsBackend,
     debug_state: &mut graphics::DebugState,
     debug_output: &graphics::DebugOutput,
     egui_ctx: &egui::Context,
@@ -33,7 +33,8 @@ pub fn render_debug_ui(
     delta_time_f64: f64,
     delta_time: f32,
 ) -> DebugRenderOutput {
-    let subchunks = &play_state.subchunks;
+    let subchunks = graphics_backend.get_subchunks_data();
+    let graphics_size = graphics_backend.get_size();
     let raw_input = egui::RawInput {
         viewport_id: egui::viewport::ViewportId::ROOT,
         viewports: egui::viewport::ViewportIdMap::from_iter([(
@@ -46,8 +47,8 @@ pub fn render_debug_ui(
         screen_rect: Some(egui::Rect {
             min: egui::Pos2::ZERO,
             max: egui::Pos2::new(
-                graphics_state.size.width as f32 / scale_factor as f32,
-                graphics_state.size.height as f32 / scale_factor as f32,
+                graphics_size.width as f32 / scale_factor as f32,
+                graphics_size.height as f32 / scale_factor as f32,
             ),
         }),
         time: Some(current_time_s),
@@ -63,8 +64,8 @@ pub fn render_debug_ui(
     let mut debug_triangles: Vec<DebugTriangle> = Vec::new();
     let egui_output = egui_ctx.run(raw_input, |ctx| {
         use egui::*;
-        let width_f32 = graphics_state.size.width as f32 / scale_factor as f32;
-        let height_f32 = graphics_state.size.height as f32 / scale_factor as f32;
+        let width_f32 = graphics_size.width as f32 / scale_factor as f32;
+        let height_f32 = graphics_size.height as f32 / scale_factor as f32;
         let painter = Painter::new(ctx.clone(), LayerId::background(), Rect::EVERYTHING);
         Window::new("Debug Info").resizable(false).show(ctx, |ui| {
             ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
@@ -75,13 +76,14 @@ pub fn render_debug_ui(
             }
             // VSync
             {
-                let mut new_graphics_options = graphics_state.graphics_options;
+                let old_graphics_options = graphics_backend.get_graphics_options();
+                let mut new_graphics_options = old_graphics_options;
                 ui.checkbox(&mut new_graphics_options.vsync, "VSync");
-                if new_graphics_options != graphics_state.graphics_options {
-                    graphics_state.apply_new_graphics_options(new_graphics_options);
+                if new_graphics_options != old_graphics_options {
+                    graphics_backend.apply_new_graphics_options(new_graphics_options);
                 }
             }
-            ui.label(format!("Position: {:.2?}", graphics_state.camera.pos));
+            ui.label(format!("Position: {:.2?}", play_state.camera.pos));
             ui.label(format!(
                 "Subchunks Culled: {}",
                 debug_output.subchunks_culled
@@ -106,7 +108,7 @@ pub fn render_debug_ui(
                 // Position is fixed later, so no need to change here.
                 if old_free_cam && !debug_state.free_cam {
                     let player = &play_state.player;
-                    let camera = &mut graphics_state.camera;
+                    let camera = &mut play_state.camera;
                     camera.yaw = player.yaw;
                     camera.pitch = player.pitch;
                 }
@@ -174,8 +176,9 @@ pub fn render_debug_ui(
                 );
             });
             ui.collapsing("Block Info", |ui| {
+                let block_registry = graphics_backend.get_block_registry();
                 let raw_chunks = &play_state.raw_chunks;
-                let pos = graphics_state.camera.pos.coords;
+                let pos = play_state.camera.pos.coords;
                 let chunk_x = (pos.x.floor() as i32).div_euclid(16);
                 let chunk_z = (pos.z.floor() as i32).div_euclid(16);
                 let section_i = ((pos.y.floor() + 64.0).div_euclid(16.0)) as usize;
@@ -190,11 +193,8 @@ pub fn render_debug_ui(
                     } else {
                         let chunk_section = &chunk.sections[section_i];
                         let global_palette_index = chunk_section.block_states.get(x, y, z);
-                        let blockstate =
-                            &graphics_state.resources.block_registry[global_palette_index];
-                        let identifier = graphics_state
-                            .resources
-                            .block_registry
+                        let blockstate = &block_registry[global_palette_index];
+                        let identifier = block_registry
                             .get_identifier_from_index(blockstate.block_index)
                             .unwrap();
                         ui.label(format!(
@@ -207,26 +207,6 @@ pub fn render_debug_ui(
                 } else {
                     ui.label("Global Palette ID: N/A");
                     ui.label("Blockstate data: N/A");
-                }
-            });
-            ui.collapsing("Chunk Info", |ui| {
-                let pos = graphics_state.camera.pos;
-                let x = (pos.x.floor() as i32).div_euclid(16);
-                let y = (pos.y.floor() as i32 - MIN_HEIGHT_I32).div_euclid(16);
-                let z = (pos.z.floor() as i32).div_euclid(16);
-                ui.label(format!("{x}, {y}, {z}"));
-                if let Some(subchunk) = subchunks.get(&[x, y, z]) {
-                    ui.label(format!(
-                        "Subchunk start coords: {:?}",
-                        subchunk.start_coords
-                    ));
-                    ui.label(format!(
-                        "Subchunk connectivity info: {:?}",
-                        subchunk.connected_faces,
-                    ));
-                } else {
-                    ui.label("Subchunk connectivity info: N/A");
-                    ui.label("Subchunk start coords: N/A");
                 }
             });
             ui.collapsing("Frametimes", |ui| {
@@ -256,7 +236,7 @@ pub fn render_debug_ui(
         });
         if debug_state.rendering_view_frustum {
             use nalgebra::Point3;
-            let camera = &graphics_state.camera;
+            let camera = &play_state.camera;
             let inv_cull_view_mat = camera.generate_view_matrix().try_inverse().unwrap();
             let plane_point_groups: [[Point3<f32>; 4]; 6] = [
                 [
@@ -324,7 +304,7 @@ pub fn render_debug_ui(
         }
         if debug_state.cave_cull_render_connectivity {
             use nalgebra::{Point3, Vector3};
-            let graphics_camera = &graphics_state.camera;
+            let graphics_camera = &play_state.camera;
             let colours = [
                 Color32::GRAY,
                 Color32::LIGHT_GRAY,
@@ -370,7 +350,7 @@ pub fn render_debug_ui(
                 Vector3::new(0.0, 0.0, 0.0),
             ];
             for subchunk in subchunks.values() {
-                let pairs = subchunk.connected_faces.get_pairs();
+                let pairs = subchunk.connectivity.get_pairs();
                 let subchunk_centre = subchunk.start_coords.map(|n| (n + 8) as f32);
                 let subchunk_centre =
                     Point3::new(subchunk_centre[0], subchunk_centre[1], subchunk_centre[2]);
@@ -424,7 +404,7 @@ pub fn render_debug_ui(
                         debug_lines.push(DebugLine {
                             p1: line[0].into(),
                             p2: line[1].into(),
-                            color: Color32::from_rgba_unmultiplied(0xFF, 0x00, 0xFF, 0xFF)
+                            colour: Color32::from_rgba_unmultiplied(0xFF, 0x00, 0xFF, 0xFF)
                                 .gamma_multiply(alpha)
                                 .to_srgba_unmultiplied(),
                             size: 5.0 * alpha,
@@ -452,14 +432,14 @@ pub fn render_debug_ui(
                     debug_lines.push(DebugLine {
                         p1: pair_centre.into(),
                         p2: end_1.into(),
-                        color: colour.gamma_multiply(alpha).to_srgba_unmultiplied(),
+                        colour: colour.gamma_multiply(alpha).to_srgba_unmultiplied(),
                         size: 5.0 * alpha,
                         flags: graphics::debug::PackedFlags::IGNORE_DEPTH,
                     });
                     debug_lines.push(DebugLine {
                         p1: pair_centre.into(),
                         p2: end_2.into(),
-                        color: colour.gamma_multiply(alpha).to_srgba_unmultiplied(),
+                        colour: colour.gamma_multiply(alpha).to_srgba_unmultiplied(),
                         size: 5.0 * alpha,
                         flags: graphics::debug::PackedFlags::IGNORE_DEPTH,
                     });
@@ -468,7 +448,7 @@ pub fn render_debug_ui(
         }
         if debug_state.cave_cull_render_traversal_graph {
             use nalgebra::Point3;
-            let graphics_camera = &graphics_state.camera;
+            let graphics_camera = &play_state.camera;
             for (from_chunk, to_chunk) in &debug_output.subchunk_traversal_graph {
                 let chunks = [from_chunk, to_chunk];
                 let chunk_centres = chunks.map(|chunk_coords| {
@@ -489,7 +469,7 @@ pub fn render_debug_ui(
                 debug_lines.push(DebugLine {
                     p1: chunk_centres[0].into(),
                     p2: chunk_centres[1].into(),
-                    color: Color32::YELLOW
+                    colour: Color32::YELLOW
                         .gamma_multiply(alpha)
                         .to_srgba_unmultiplied(),
                     size: 5.0 * alpha,
@@ -503,13 +483,13 @@ pub fn render_debug_ui(
         // Draw world debug visuals with egui, or pass through for GPU rendering.
         match debug_state.visualisation_draw_method {
             DebugVisualisationDrawMethod::Egui => {
-                let graphics_camera = &graphics_state.camera;
+                let graphics_camera = &play_state.camera;
                 // TODO: Points and triangles
                 for line in debug_lines.drain(..) {
                     let points = [line.p1, line.p2].map(Point3::from);
                     if let Some(screen_line) = debug_clip_and_project_line(points, graphics_camera)
                     {
-                        let [r, g, b, a] = line.color;
+                        let [r, g, b, a] = line.colour;
                         painter.add(Shape::line_segment(
                             screen_line.map(|p| {
                                 Pos2::new(

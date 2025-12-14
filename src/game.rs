@@ -1,4 +1,4 @@
-use crate::graphics::{self, DEFAULT_FOV, GraphicsState};
+use crate::graphics::{self, DEFAULT_FOV, GraphicsBackend};
 use crate::input::PlayControlState;
 use crate::portable_prelude::{println, *};
 use crate::protocol::chunk as protocol_chunk;
@@ -7,34 +7,25 @@ use crate::protocol::play::{
     serverbound as serverbound_packets,
 };
 use crate::protocol::prelude::*;
-use crate::{
-    ClientPlayState, ClientPlayStateUpdate, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32,
-    physics, world,
-};
-#[cfg(feature = "graphics_backend_vulkan")]
-use anyhow::Context;
+use crate::{ClientPlayState, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32, physics, world};
 use nalgebra::Vector3;
-use portable_std::{Arc, FastHashMap, FastHashSet, IndexMap, sync};
+use portable_std::{Arc, FastHashMap, FastHashSet, sync};
 use resources::block::GlobalPaletteIndex;
 use resources::identifier;
 #[cfg(feature = "full_std")]
 use threadpool::ThreadPool;
-#[cfg(feature = "graphics_backend_vulkan")]
-use vulkan_prelude::*;
 
 #[expect(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all)]
 pub fn process_game_events(
     #[cfg(feature = "full_std")] thread_pool: &ThreadPool,
     play_state: &mut ClientPlayState,
-    graphics_state: &mut GraphicsState,
+    graphics_backend: &mut dyn GraphicsBackend,
     debug_state: &mut graphics::DebugState,
     input_state: &mut PlayControlState,
     server_connection: &PlayConnection,
     clientbound_tx: &sync::mpsc::Sender<ClientboundPacket>,
     clientbound_rx: &sync::mpsc::Receiver<ClientboundPacket>,
-    play_state_update_tx: &sync::mpsc::Sender<ClientPlayStateUpdate>,
-    play_state_update_rx: &sync::mpsc::Receiver<ClientPlayStateUpdate>,
-    current_update_id: &mut usize,
     current_time_s: f64,
     last_tick_time_s: &mut f64,
     next_tick_time_s: &mut f64,
@@ -42,9 +33,8 @@ pub fn process_game_events(
 ) {
     let span = tracing::trace_span!("process_game_events");
     let _enter = span.enter();
-    let visible_chunks = &play_state.visible_chunks;
     let mut raw_chunks;
-    let mut subchunks_to_dispatch: FastHashMap<[i32; 3], usize> = FastHashMap::new();
+    let mut subchunks_to_dispatch: FastHashSet<[i32; 3]> = FastHashSet::new();
     loop {
         let packet = match clientbound_rx.try_recv() {
             Ok(packet) => packet,
@@ -115,7 +105,7 @@ pub fn process_game_events(
                 // to use half of available bandwidth
                 server_connection
                     .send_packet(serverbound_packets::ChunkBatchReceived {
-                        desired_chunks_per_tick: 4.0,
+                        desired_chunks_per_tick: 8.0,
                     })
                     .unwrap();
             }
@@ -140,16 +130,8 @@ pub fn process_game_events(
                         lighting,
                     }),
                 );
-                {
-                    let update_id = *current_update_id;
-                    *current_update_id = current_update_id.wrapping_add(1);
-                    for subchunk_y in 0..24 {
-                        let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
-                        subchunks_to_dispatch.insert(subchunk_coords, update_id);
-                        play_state
-                            .pending_subchunk_update_ids
-                            .insert(subchunk_coords, update_id);
-                    }
+                for subchunk_y in 0..24 {
+                    subchunks_to_dispatch.insert([chunk_x, subchunk_y, chunk_z]);
                 }
                 let neighbouring_chunks = [
                     [chunk_x - 1, chunk_z],
@@ -158,17 +140,10 @@ pub fn process_game_events(
                     [chunk_x, chunk_z + 1],
                 ];
                 for neighbour_chunk_coords in neighbouring_chunks {
-                    if raw_chunks.contains_key(&neighbour_chunk_coords)
-                        && !visible_chunks.contains(&neighbour_chunk_coords)
-                    {
-                        let update_id = *current_update_id;
-                        *current_update_id = current_update_id.wrapping_add(1);
+                    if raw_chunks.contains_key(&neighbour_chunk_coords) {
                         let [x, z] = neighbour_chunk_coords;
                         for y in 0..24 {
-                            subchunks_to_dispatch.insert([x, y, z], update_id);
-                            play_state
-                                .pending_subchunk_update_ids
-                                .insert([x, y, z], update_id);
+                            subchunks_to_dispatch.insert([x, y, z]);
                         }
                     }
                 }
@@ -215,13 +190,11 @@ pub fn process_game_events(
                         chunk_section
                             .block_states
                             .replace(x_usize, y_usize, z_usize, new_block_id);
-                    let old_block_air = graphics_state
-                        .resources
-                        .block_registry
+                    let old_block_air = graphics_backend
+                        .get_block_registry()
                         .is_blockstate_air_like(old_block_id);
-                    let new_block_air = graphics_state
-                        .resources
-                        .block_registry
+                    let new_block_air = graphics_backend
+                        .get_block_registry()
                         .is_blockstate_air_like(new_block_id);
                     match (old_block_air, new_block_air) {
                         (true, false) => chunk_section.block_count += 1,
@@ -231,7 +204,7 @@ pub fn process_game_events(
                     }
                     // Update lighting
                     world::recalculate_light(
-                        &graphics_state.resources,
+                        &graphics_backend.get_block_registry(),
                         raw_chunks,
                         &mut subchunks_to_relight,
                         [pos.x, pos.y, pos.z],
@@ -240,17 +213,9 @@ pub fn process_game_events(
                     );
                 }
                 let subchunk_y = section_i as i32;
-                let update_id = *current_update_id;
-                *current_update_id = current_update_id.wrapping_add(1);
-                subchunks_to_dispatch.insert([chunk_x, subchunk_y, chunk_z], update_id);
-                play_state
-                    .pending_subchunk_update_ids
-                    .insert([chunk_x, subchunk_y, chunk_z], update_id);
+                subchunks_to_dispatch.insert([chunk_x, subchunk_y, chunk_z]);
                 for subchunk_coords in subchunks_to_relight {
-                    subchunks_to_dispatch.insert(subchunk_coords, update_id);
-                    play_state
-                        .pending_subchunk_update_ids
-                        .insert(subchunk_coords, update_id);
+                    subchunks_to_dispatch.insert(subchunk_coords);
                 }
                 // Update neighbours
                 let in_chunk_coords = [x, y, z];
@@ -259,16 +224,10 @@ pub fn process_game_events(
                     let mut subchunk_coords = [chunk_x, subchunk_y, chunk_z];
                     if axis == 0 {
                         subchunk_coords[axis_i] -= 1;
-                        subchunks_to_dispatch.insert(subchunk_coords, update_id);
-                        play_state
-                            .pending_subchunk_update_ids
-                            .insert(subchunk_coords, update_id);
+                        subchunks_to_dispatch.insert(subchunk_coords);
                     } else if axis == 15 {
                         subchunk_coords[axis_i] += 1;
-                        subchunks_to_dispatch.insert(subchunk_coords, update_id);
-                        play_state
-                            .pending_subchunk_update_ids
-                            .insert(subchunk_coords, update_id);
+                        subchunks_to_dispatch.insert(subchunk_coords);
                     }
                 }
             }
@@ -284,13 +243,8 @@ pub fn process_game_events(
                 };
                 let chunk_mut = Arc::make_mut(chunk);
                 let chunk_section = &mut chunk_mut.sections[section_i];
-                let update_id = *current_update_id;
-                *current_update_id = current_update_id.wrapping_add(1);
                 let subchunk_y = section_i as i32;
-                subchunks_to_dispatch.insert([chunk_x, subchunk_y, chunk_z], update_id);
-                play_state
-                    .pending_subchunk_update_ids
-                    .insert([chunk_x, subchunk_y, chunk_z], update_id);
+                subchunks_to_dispatch.insert([chunk_x, subchunk_y, chunk_z]);
                 let mut old_block_ids = Vec::new();
                 for &([x, y, z], new_block_id) in &update.blocks {
                     // Update block section, increment or decrement block count
@@ -302,13 +256,11 @@ pub fn process_game_events(
                             new_block_id,
                         );
                         old_block_ids.push(old_block_id);
-                        let is_old_block_air = graphics_state
-                            .resources
-                            .block_registry
+                        let is_old_block_air = graphics_backend
+                            .get_block_registry()
                             .is_blockstate_air_like(old_block_id);
-                        let is_new_block_air = graphics_state
-                            .resources
-                            .block_registry
+                        let is_new_block_air = graphics_backend
+                            .get_block_registry()
                             .is_blockstate_air_like(new_block_id);
                         match (is_old_block_air, is_new_block_air) {
                             (true, false) => chunk_section.block_count += 1,
@@ -324,16 +276,10 @@ pub fn process_game_events(
                         let mut subchunk_coords = [chunk_x, subchunk_y, chunk_z];
                         if axis == 0 {
                             subchunk_coords[axis_i] -= 1;
-                            subchunks_to_dispatch.insert(subchunk_coords, update_id);
-                            play_state
-                                .pending_subchunk_update_ids
-                                .insert(subchunk_coords, update_id);
+                            subchunks_to_dispatch.insert(subchunk_coords);
                         } else if axis == 15 {
                             subchunk_coords[axis_i] += 1;
-                            subchunks_to_dispatch.insert(subchunk_coords, update_id);
-                            play_state
-                                .pending_subchunk_update_ids
-                                .insert(subchunk_coords, update_id);
+                            subchunks_to_dispatch.insert(subchunk_coords);
                         }
                     }
                 }
@@ -348,7 +294,7 @@ pub fn process_game_events(
                         section_i as i32 * SUBCHUNK_AXIS_LEN_I32 + y as i32 + MIN_HEIGHT_I32;
                     let global_z = chunk_z * SUBCHUNK_AXIS_LEN_I32 + z as i32;
                     world::recalculate_light(
-                        &graphics_state.resources,
+                        &graphics_backend.get_block_registry(),
                         raw_chunks,
                         &mut subchunks_to_relight,
                         [global_x, global_y, global_z],
@@ -357,19 +303,14 @@ pub fn process_game_events(
                     );
                 }
                 for subchunk_coords in subchunks_to_relight {
-                    subchunks_to_dispatch.insert(subchunk_coords, update_id);
-                    play_state
-                        .pending_subchunk_update_ids
-                        .insert(subchunk_coords, update_id);
+                    subchunks_to_dispatch.insert(subchunk_coords);
                 }
             }
             ClientboundPacket::UnloadChunk { chunk_x, chunk_z } => {
                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
                 let chunk_coords = [chunk_x, chunk_z];
                 raw_chunks.remove(&chunk_coords);
-                play_state_update_tx
-                    .send(ClientPlayStateUpdate::RemoveChunk(chunk_coords))
-                    .unwrap();
+                graphics_backend.remove_chunk(chunk_coords);
                 let neighbouring_chunks = [
                     [chunk_x - 1, chunk_z],
                     [chunk_x + 1, chunk_z],
@@ -377,17 +318,13 @@ pub fn process_game_events(
                     [chunk_x, chunk_z + 1],
                 ];
                 for neighbour_chunk_coords in neighbouring_chunks {
-                    if visible_chunks.contains(&neighbour_chunk_coords) {
-                        play_state_update_tx
-                            .send(ClientPlayStateUpdate::RemoveChunk(neighbour_chunk_coords))
-                            .unwrap();
-                    }
+                    graphics_backend.remove_chunk(neighbour_chunk_coords);
                 }
             }
             ClientboundPacket::SynchronizePlayerPosition(pos_info) => {
                 use crate::protocol::play::{PositionChange, RotationChange};
                 let player = &mut play_state.player;
-                let camera = &mut graphics_state.camera;
+                let camera = &mut play_state.camera;
                 player.pos.x = match pos_info.x {
                     PositionChange::Absolute(new_x) => new_x as f32,
                     PositionChange::Relative(x_diff) => player.pos.x + x_diff as f32,
@@ -433,9 +370,8 @@ pub fn process_game_events(
             } => {
                 // Reconvert explosion block updates into a series of
                 // `UpdateSectionBlocks` updates.
-                let air_global_palette_index = graphics_state
-                    .resources
-                    .block_registry
+                let air_global_palette_index = graphics_backend
+                    .get_block_registry()
                     .get_entry_from_identifier(&identifier!("minecraft:air"))
                     .unwrap()
                     .default_blockstate;
@@ -481,304 +417,16 @@ pub fn process_game_events(
     if thread_pool.panic_count() > 0 {
         panic!("Thread pool panic");
     }
-    // Dispatch subchunk processing
+    // Dispatch subchunk processing.
     {
         let span = tracing::trace_span!("dispatch_subchunk_processing");
         let _enter = span.enter();
-        // We're using an IndexMap here to dispatch the updates in order of update
-        // ID. Shouldn't have any effect on correctness, but might make updates
-        // appear in a more intuitive order.
-        let mut subchunk_update_groups: IndexMap<usize, Vec<[i32; 3]>> = IndexMap::default();
-        for (subchunk_coords, update_id) in subchunks_to_dispatch {
-            let update_group = subchunk_update_groups.entry(update_id).or_default();
-            update_group.push(subchunk_coords);
-        }
-        subchunk_update_groups.sort_unstable_keys();
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "full_std")] {
-                for (update_id, subchunks) in subchunk_update_groups {
-                    let graphics_resources = graphics_state.resources.clone();
-                    let raw_chunks = play_state.raw_chunks.clone();
-                    let play_state_update_tx = play_state_update_tx.clone();
-                    thread_pool.execute(move || {
-                        world::process_subchunks(
-                            &graphics_resources,
-                            &raw_chunks,
-                            play_state_update_tx,
-                            &subchunks,
-                            update_id,
-                        )
-                    });
-                }
-            } else {
-                for (update_id, subchunks) in subchunk_update_groups {
-                    let graphics_resources = graphics_state.resources.clone();
-                    let raw_chunks = play_state.raw_chunks.clone();
-                    let play_state_update_tx = play_state_update_tx.clone();
-                    world::process_subchunks(
-                        &graphics_state.resources,
-                        &play_state.raw_chunks,
-                        play_state_update_tx,
-                        &subchunks,
-                        update_id,
-                    );
-                }
-            }
-        }
+        graphics_backend.dispatch_subchunk_updates(
+            thread_pool,
+            play_state.raw_chunks.clone(),
+            subchunks_to_dispatch,
+        );
     }
-    // Receive play state updates
-    #[cfg(feature = "graphics_backend_vulkan")]
-    let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
-        graphics_state.resources.command_buffer_allocator.clone(),
-        graphics_state.resources.render_queue.queue_family_index(),
-        VulkanCommandBufferUsage::OneTimeSubmit,
-    )
-    .unwrap();
-    let mut subchunks_processed_this_frame = 0;
-    loop {
-        if subchunks_processed_this_frame >= 12 {
-            break;
-        }
-        let update = match play_state_update_rx.try_recv() {
-            Ok(update) => update,
-            Err(sync::mpsc::TryRecvError::Empty) => break,
-            Err(other_err) => {
-                panic!("Error while trying to receive play state update: {other_err:?}")
-            }
-        };
-        let span = tracing::trace_span!("dispatch_play_state_update");
-        let _enter = span.enter();
-        match update {
-            ClientPlayStateUpdate::RemoveChunk(chunk_coords) => {
-                let [chunk_x, chunk_z] = chunk_coords;
-                // Remove old subchunks
-                if play_state.visible_chunks.contains(&chunk_coords) {
-                    let span = tracing::trace_span!("remove_subchunks", ?chunk_coords);
-                    let _enter = span.enter();
-                    for subchunk_y in 0..24 {
-                        use portable_std::FastHashMapEntry;
-                        let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
-                        let span = tracing::trace_span!("remove_subchunk", ?subchunk_coords);
-                        let _enter = span.enter();
-                        if let FastHashMapEntry::Occupied(entry) =
-                            play_state.subchunks.entry(subchunk_coords)
-                        {
-                            entry.remove();
-                            play_state
-                                .pending_subchunk_update_ids
-                                .remove(&subchunk_coords);
-                            graphics_state.free_subchunk_data(subchunk_coords);
-                            subchunks_processed_this_frame += 1;
-                        }
-                    }
-                }
-                // Mark chunk as invisible
-                play_state.visible_chunks.remove(&chunk_coords);
-            }
-            ClientPlayStateUpdate::PlaceSubchunks {
-                update_id,
-                new_raw_subchunks,
-            } => {
-                let span = tracing::trace_span!("add_new_subchunks");
-                let _enter = span.enter();
-                for (subchunk_coords, raw_subchunk) in new_raw_subchunks {
-                    use std::collections::hash_map::Entry;
-                    let [subchunk_x, _, subchunk_z] = subchunk_coords;
-                    match play_state
-                        .pending_subchunk_update_ids
-                        .entry(subchunk_coords)
-                    {
-                        Entry::Occupied(update_id_entry) => {
-                            // If this is the most recent pending update, mark
-                            // the update as completed so older updates that
-                            // may have taken longer to process don't replace
-                            // this one.
-                            if *update_id_entry.get() == update_id {
-                                update_id_entry.remove();
-                            }
-                        }
-                        // Skip subchunk update if we've already done a more
-                        // recent one.
-                        Entry::Vacant(_) => continue,
-                    }
-                    // Remove old subchunk
-                    if play_state
-                        .visible_chunks
-                        .contains(&[subchunk_x, subchunk_z])
-                    {
-                        let span = tracing::trace_span!("remove_old_subchunk", ?subchunk_coords);
-                        let _enter = span.enter();
-                        let span = tracing::trace_span!("remove_old_subchunk", ?subchunk_coords);
-                        let _enter = span.enter();
-                        if let Entry::Occupied(entry) = play_state.subchunks.entry(subchunk_coords)
-                        {
-                            entry.remove();
-                            graphics_state.free_subchunk_data(subchunk_coords);
-                        }
-                    }
-                    cfg_if::cfg_if! {
-                        if #[cfg(feature = "graphics_backend_vulkan")] {
-                            let buffer_managers = &mut graphics_state.buffer_managers;
-                            macro_rules! alloc_area {
-                                (
-                                    $buffer_manager:ident,
-                                    $subchunk_coords:expr,
-                                    $data:expr $(,)?
-                                ) => {
-                                    buffer_managers.$buffer_manager.alloc_area(
-                                        &mut command_buffer,
-                                        $subchunk_coords,
-                                        $data,
-                                    )
-                                };
-                            }
-                            // TODO:
-                            // - Define a function here to upload
-                        } else if #[cfg(feature = "graphics_backend_wgpu")] {
-                            let buffer_managers = &mut graphics_state.buffer_managers;
-                            macro_rules! alloc_area {
-                                (
-                                    $buffer_manager:ident,
-                                    $subchunk_coords:expr,
-                                    $data:expr $(,)?
-                                ) => {
-                                    buffer_managers.$buffer_manager.alloc_area(
-                                        &graphics_state.resources.queue,
-                                        $subchunk_coords,
-                                        $data,
-                                    )
-                                };
-                            }
-                        }
-                    }
-                    #[cfg(any(
-                        feature = "graphics_backend_wgpu",
-                        feature = "graphics_backend_vulkan",
-                    ))]
-                    {
-                        // Base block faces
-                        let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-                        let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
-                        for (i, instance_group) in raw_subchunk
-                            .block_face_instance_groups
-                            .into_iter()
-                            .enumerate()
-                        {
-                            let Some(base_quad) = raw_subchunk.block_face_quads[i] else {
-                                continue;
-                            };
-                            let quad_start_vertex =
-                                alloc_area!(block_face_vertex, subchunk_coords, base_quad);
-                            let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-                            let instance_group_start = alloc_area!(
-                                block_face_instance,
-                                subchunk_coords,
-                                instance_group.into_boxed_slice(),
-                            );
-                            block_face_start_vertices[i] = quad_start_vertex;
-                            block_face_instance_groups[i] =
-                                (instance_group_start, instance_group_len);
-                        }
-                        // Tinted block faces
-                        let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-                        let mut tinted_block_face_instance_groups: [(u32, u32); 6] =
-                            Default::default();
-                        for (i, instance_group) in raw_subchunk
-                            .tinted_block_face_instance_groups
-                            .into_iter()
-                            .enumerate()
-                        {
-                            let Some(base_quad) = raw_subchunk.tinted_block_face_quads[i] else {
-                                continue;
-                            };
-                            let quad_start_vertex =
-                                alloc_area!(tinted_block_face_vertex, subchunk_coords, base_quad);
-                            let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-                            let instance_group_start = alloc_area!(
-                                tinted_block_face_instance,
-                                subchunk_coords,
-                                instance_group.into_boxed_slice(),
-                            );
-                            tinted_block_face_start_vertices[i] = quad_start_vertex;
-                            tinted_block_face_instance_groups[i] =
-                                (instance_group_start, instance_group_len);
-                        }
-                        let custom_block_groups = raw_subchunk
-                            .custom_block_groups
-                            .into_iter()
-                            .map(|group| {
-                                let num_instances: u32 = group.instances.len().try_into().unwrap();
-                                let start_instance = alloc_area!(
-                                    custom_block_instance,
-                                    subchunk_coords,
-                                    group.instances.into_boxed_slice(),
-                                );
-                                graphics::chunk::CustomBlockGroup {
-                                    start_face_and_len: group.start_face_and_len,
-                                    start_instance_and_len: [start_instance, num_instances],
-                                }
-                            })
-                            .collect();
-                        play_state.subchunks.insert(
-                            subchunk_coords,
-                            graphics::chunk::Subchunk {
-                                start_coords: raw_subchunk.start_coords,
-                                block_face_start_vertices,
-                                block_face_instance_groups,
-                                tinted_block_face_start_vertices,
-                                tinted_block_face_instance_groups,
-                                custom_block_groups,
-                                connected_faces: raw_subchunk.connected_faces,
-                            },
-                        );
-                    }
-                    #[cfg(feature = "graphics_backend_opengl")]
-                    graphics_state
-                        .subchunk_data_queue
-                        .push((subchunk_coords, raw_subchunk));
-                    subchunks_processed_this_frame += 1;
-                    play_state.visible_chunks.insert([subchunk_x, subchunk_z]);
-                }
-            }
-        }
-    }
-    #[cfg(feature = "graphics_backend_vulkan")]
-    tracing::trace_span!("chunk_command_buffer_submit").in_scope(|| {
-        let built_command_buffer = command_buffer.build().unwrap();
-        // vulkano::sync::now(graphics_state.resources.device.clone())
-        //     .then_execute(
-        //         graphics_state.resources.render_queue.clone(),
-        //         built_command_buffer,
-        //     )
-        //     .unwrap()
-        //     .flush()
-        //     .unwrap();
-        let finish_fence = VulkanFence::from_pool(&graphics_state.resources.device)
-            .map(Arc::new)
-            .context("Error while creating game process fence")
-            .unwrap();
-        graphics_state
-            .resources
-            .render_queue
-            .with(|mut queue_guard| unsafe {
-                queue_guard
-                    .submit(
-                        &[VulkanSubmitInfo {
-                            command_buffers: &[VulkanCommandBufferSubmitInfo::new(
-                                built_command_buffer.as_raw(),
-                            )],
-                            ..Default::default()
-                        }],
-                        Some(&finish_fence),
-                    )
-                    .unwrap();
-            });
-        finish_fence.wait(None).unwrap();
-    });
-    #[cfg(feature = "graphics_backend_wgpu")]
-    tracing::trace_span!("chunk_queue_submit").in_scope(|| {
-        graphics_state.resources.queue.submit([]);
-    });
     // Run tick updates
     {
         let span = tracing::trace_span!("tick_updates");
@@ -792,7 +440,7 @@ pub fn process_game_events(
         };
         let player = &mut play_state.player;
         let player_last_tick = &mut play_state.player_last_tick;
-        let camera = &mut graphics_state.camera;
+        let camera = &mut play_state.camera;
         if !debug_state.free_cam {
             player.yaw = camera.yaw;
             player.pitch = camera.pitch;
@@ -827,7 +475,7 @@ pub fn process_game_events(
                         }
                     };
                     physics::simulate_player(
-                        &graphics_state.resources.block_registry,
+                        graphics_backend.get_block_registry(),
                         &play_state.raw_chunks,
                         player,
                         &mut player_input,

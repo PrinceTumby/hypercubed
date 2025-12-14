@@ -1,27 +1,25 @@
 pub mod chunk;
-pub mod debug;
 pub mod egui_renderer;
 pub mod gl;
 
-use super::DebugState;
+use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
+use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
+use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
-use crate::{MIN_HEIGHT_I32, RawSubchunk, SUBCHUNK_AXIS_LEN_I32};
+use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::Context;
-use debug::line::Instance as DebugLineInstance;
-use debug::point::Vertex as DebugPointVertex;
-use debug::triangle::Instance as DebugTriangleInstance;
-use nalgebra::{Matrix4, Perspective3, Point3, Vector3};
+use nalgebra::{Matrix4, Vector3};
 use portable_std::{Arc, FastHashMap, FastHashSet};
 use resources::block::model::ModelRegistry;
 use resources::texture::RawAtlas;
+use std::sync::mpsc::{Receiver, Sender};
+use threadpool::ThreadPool;
 use winit::window::Window;
 
 use gl::array::{ColorPointerType, TextureCoordPointerType, VertexPointerType};
 use gl::buffer::BufferType;
 use gl::client_state::ClientArrayType;
-
-pub use super::Camera;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "platform_winit")] {
@@ -46,65 +44,46 @@ cfg_if::cfg_if! {
 
 #[derive(Clone)]
 pub struct GraphicsResources {
-    pub window: Arc<Window>,
-    #[cfg(feature = "platform_winit")]
-    glutin_resources: Arc<GlutinResources>,
     pub block_registry: Arc<resources::block::Registry>,
     pub model_registry: Arc<ModelRegistry>,
+    #[cfg(feature = "platform_winit")]
+    glutin_resources: Arc<GlutinResources>,
     pub atlas: Arc<RawAtlas>,
     pub atlas_texture: Arc<gl::texture::batch_collected::Texture>,
+    pub window: Arc<Window>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GraphicsOptions {
-    pub vsync: bool,
-}
-
-impl Default for GraphicsOptions {
-    fn default() -> Self {
-        Self { vsync: true }
-    }
+pub struct SubchunkDataStorage {
+    // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
+    //       coordinate. Consider changing to actually be the Y coordinate.
+    pub subchunks: FastHashMap<[i32; 3], chunk::Subchunk>,
+    pub loaded_chunks: FastHashSet<[i32; 2]>,
 }
 
 pub struct GraphicsState {
     pub resources: GraphicsResources,
     pub graphics_options: GraphicsOptions,
     pub egui_renderer: egui_renderer::Renderer,
-    pub subchunk_data_queue: Vec<([i32; 3], RawSubchunk)>,
-    // pub block_face_buffer_manager: BlockFaceBufferManager,
+    subchunk_data_storage: SubchunkDataStorage,
+    pub pending_subchunk_tx: Sender<Option<chunk::RawSubchunk>>,
+    pub pending_subchunk_rx: Receiver<Option<chunk::RawSubchunk>>,
+    pub current_dispatch_id_counter: u64,
+    pub num_pending_subchunks: usize,
     pub size: winit::dpi::PhysicalSize<u32>,
-    pub camera: Camera,
 }
 
-#[derive(Default)]
-pub struct DebugOutput {
-    pub subchunks_culled: usize,
-    pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
-}
-
-impl GraphicsState {
-    pub fn new<F>(window: Arc<Window>, register_blocks: F) -> anyhow::Result<Self>
-    where
-        F: FnOnce(
+impl GraphicsBackend for GraphicsState {
+    #[tracing::instrument(skip_all)]
+    fn new(
+        window: Arc<Window>,
+        register_blocks: impl FnOnce(
             &mut resources::block::Registry,
             &mut resources::block::model::ModelRegistryBuilder,
             &mut resources::texture::AtlasBuilder,
         ) -> anyhow::Result<()>,
-    {
+    ) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         let size = window.inner_size();
-        let camera = Camera {
-            pos: Point3::new(0.0, 124.0, 0.0),
-            proj_matrix: Perspective3::new(
-                (size.width as f32) / (size.height as f32),
-                f32::to_radians(super::DEFAULT_FOV),
-                super::DEFAULT_ZNEAR,
-                super::DEFAULT_ZFAR,
-            ),
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-        };
         cfg_if::cfg_if! {
             if #[cfg(feature = "platform_winit")] {
                 // Initialise various components of `glutin` to get an OpenGL environment.
@@ -237,7 +216,8 @@ impl GraphicsState {
             (atlas, atlas_texture, block_registry, model_cache.finish())
         };
         let egui_renderer = egui_renderer::Renderer::new();
-        Ok(Self {
+        let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
+        Ok(Box::new(Self {
             resources: GraphicsResources {
                 window,
                 #[cfg(feature = "platform_winit")]
@@ -251,16 +231,38 @@ impl GraphicsState {
                 atlas: Arc::new(block_item_atlas),
                 atlas_texture: Arc::new(block_item_atlas_texture),
             },
+            subchunk_data_storage: SubchunkDataStorage {
+                subchunks: FastHashMap::new(),
+                loaded_chunks: FastHashSet::new(),
+            },
+            pending_subchunk_tx,
+            pending_subchunk_rx,
+            current_dispatch_id_counter: 0,
+            num_pending_subchunks: 0,
             graphics_options,
             egui_renderer,
-            subchunk_data_queue: Vec::new(),
-            // block_face_buffer_manager,
             size,
-            camera,
-        })
+        }))
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    fn get_block_registry(&self) -> &resources::block::Registry {
+        &self.resources.block_registry
+    }
+
+    fn get_subchunks_data(&self) -> FastHashMap<[i32; 3], SubchunkData> {
+        self.subchunk_data_storage
+            .subchunks
+            .iter()
+            .map(|(&subchunk_coords, subchunk)| (subchunk_coords, subchunk.get_data()))
+            .collect()
+    }
+
+    fn get_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.size
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         unsafe {
             #[cfg(feature = "platform_winit")]
             {
@@ -282,13 +284,15 @@ impl GraphicsState {
                 new_size.width.try_into().unwrap(),
                 new_size.height.try_into().unwrap(),
             );
-            self.camera
-                .proj_matrix
-                .set_aspect((new_size.width as f32) / (new_size.height as f32));
         }
     }
 
-    pub fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
+    fn get_graphics_options(&self) -> GraphicsOptions {
+        self.graphics_options
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
         let old_options = std::mem::replace(&mut self.graphics_options, new_options);
         cfg_if::cfg_if! {
             if #[cfg(feature = "platform_winit")] {
@@ -312,22 +316,82 @@ impl GraphicsState {
         }
     }
 
-    pub fn free_subchunk_data(&mut self, _subchunk_coords: [i32; 3]) {
-        // We don't store any subchunk data here, so no need to do anything.
+    #[tracing::instrument(skip_all)]
+    fn dispatch_subchunk_updates(
+        &mut self,
+        thread_pool: &ThreadPool,
+        raw_chunks: Arc<FastHashMap<[i32; 2], Arc<crate::RawChunk>>>,
+        subchunks: FastHashSet<[i32; 3]>,
+    ) {
+        // Mark that we're dispatching a number of subchunk processes.
+        self.num_pending_subchunks += subchunks.len();
+        // Grab a new dispatch ID.
+        let dispatch_id = self.current_dispatch_id_counter;
+        self.current_dispatch_id_counter += 1;
+        // Dispatch subchunk tasks.
+        for subchunk_coords in subchunks {
+            // Mark chunk as definitely loaded (does nothing if the chunk is only being updated).
+            let [chunk_x, _, chunk_z] = subchunk_coords;
+            self.subchunk_data_storage
+                .loaded_chunks
+                .insert([chunk_x, chunk_z]);
+            // Dispatch subchunk task.
+            let block_registry = self.resources.block_registry.clone();
+            let model_registry = self.resources.model_registry.clone();
+            let raw_chunks = raw_chunks.clone();
+            let pending_subchunk_tx = self.pending_subchunk_tx.clone();
+            thread_pool.execute(move || {
+                chunk::process_subchunk(
+                    &block_registry,
+                    &model_registry,
+                    &raw_chunks,
+                    &pending_subchunk_tx,
+                    subchunk_coords,
+                    dispatch_id,
+                );
+            });
+        }
     }
 
     #[tracing::instrument(skip_all)]
-    pub fn render(
+    fn remove_chunk(&mut self, chunk_coords: [i32; 2]) {
+        let [chunk_x, chunk_z] = chunk_coords;
+        // Remove old subchunks.
+        if self
+            .subchunk_data_storage
+            .loaded_chunks
+            .contains(&chunk_coords)
+        {
+            let span = tracing::trace_span!("remove_subchunks", ?chunk_coords);
+            let _enter = span.enter();
+            for subchunk_y in 0..24 {
+                let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                let span = tracing::trace_span!("remove_subchunk", ?subchunk_coords);
+                let _enter = span.enter();
+                self.subchunk_data_storage
+                    .subchunks
+                    .remove(&subchunk_coords);
+            }
+        }
+        // Mark chunk as no longer loaded, so any pending subchunk tasks for this chunk finishing
+        // after removal won't cause ghost chunks to appear.
+        self.subchunk_data_storage
+            .loaded_chunks
+            .remove(&chunk_coords);
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    #[tracing::instrument(skip_all)]
+    fn render(
         &mut self,
-        subchunks: &mut FastHashMap<[i32; 3], chunk::Subchunk>,
-        loaded_chunks: &FastHashSet<[i32; 2]>,
+        camera: &Camera,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
-        debug_points: &[DebugPointVertex],
-        debug_lines: &[DebugLineInstance],
-        debug_triangles: &[DebugTriangleInstance],
-    ) -> anyhow::Result<DebugOutput> {
+        debug_points: &[DebugPoint],
+        debug_lines: &[DebugLine],
+        debug_triangles: &[DebugTriangle],
+    ) -> anyhow::Result<Option<DebugOutput>> {
         let pixels_per_point = egui_full_output.pixels_per_point;
         let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
         let debug_output;
@@ -350,47 +414,39 @@ impl GraphicsState {
             gl::buffer::batch_collected::drain_pool();
             // Delete all batch collected textures.
             gl::texture::batch_collected::drain_pool();
-            // Upload new subchunks.
-            for (subchunk_coords, raw_subchunk) in self.subchunk_data_queue.drain(..) {
-                let mut faces = Vec::new();
-                let mut group_start_vertices = [u32::MAX; 7];
-                let mut group_vertex_counts = [0; 7];
-                for (i, face_group) in raw_subchunk
-                    .face_groups
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(_i, group)| !group.is_empty())
+            // Upload pending subchunks.
+            if self.num_pending_subchunks > 0 {
+                let span = tracing::trace_span!("upload_pending_subchunks");
+                let _enter = span.enter();
+                let mut subchunks_processed_this_frame: usize = 0;
+                for raw_subchunk in self
+                    .pending_subchunk_rx
+                    .try_iter()
+                    .take(self.num_pending_subchunks)
                 {
-                    group_start_vertices[i] = (faces.len() * 6).try_into().unwrap();
-                    group_vertex_counts[i] = (face_group.len() * 6).try_into().unwrap();
-                    faces.extend(face_group);
+                    self.num_pending_subchunks -= 1;
+                    let Some(raw_subchunk) = raw_subchunk else {
+                        continue;
+                    };
+                    // Check that the raw subchunk is newer than the subchunk it's replacing, or that
+                    // it's not replacing an old subchunk. If it's not, then skip it.
+                    if self
+                        .subchunk_data_storage
+                        .subchunks
+                        .get(&raw_subchunk.subchunk_coords)
+                        .map(|subchunk| subchunk.dispatch_id > raw_subchunk.dispatch_id)
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    chunk::finalise_subchunk(&mut self.subchunk_data_storage, raw_subchunk);
+                    subchunks_processed_this_frame += 1;
+                    if subchunks_processed_this_frame >= 16 {
+                        break;
+                    }
                 }
-                let buffer = if !faces.is_empty() {
-                    let [buffer] = gl::buffer::batch_collected::Buffer::make_array();
-                    buffer.bind(BufferType::ArrayBuffer);
-                    let faces_bytes: &[u8] = bytemuck::cast_slice(&faces);
-                    gl::buffer::set_current_buffer_data_raw(
-                        BufferType::ArrayBuffer,
-                        faces_bytes.len().try_into().unwrap(),
-                        faces_bytes.as_ptr() as *const (),
-                        gl::buffer::DataUsageHint::StaticDraw,
-                    );
-                    Some(buffer)
-                } else {
-                    None
-                };
-                subchunks.insert(
-                    subchunk_coords,
-                    chunk::Subchunk {
-                        start_coords: raw_subchunk.start_coords,
-                        buffer,
-                        group_start_vertices,
-                        group_vertex_counts,
-                        connected_faces: raw_subchunk.connected_faces,
-                    },
-                );
             }
-            // Clear framebuffer and depth buffer.
+            // Clear framebuffer to sky colour, depth buffer to infinite distance..
             gl::framebuffer::clear(ClearBufferBits::COLOR | ClearBufferBits::DEPTH);
             // Render subchunks
             {
@@ -428,9 +484,9 @@ impl GraphicsState {
                 gl::matrix::load_f32_matrix(&texture_matrix.into());
                 // Load camera projection matrix.
                 gl::matrix::switch_mode(MatrixMode::Projection);
-                gl::matrix::load_f32_matrix(&self.camera.generate_view_matrix_slice());
+                gl::matrix::load_f32_matrix(&camera.generate_view_matrix_slice());
                 let camera_subchunk_coords = {
-                    let camera_pos = self.camera.pos;
+                    let camera_pos = camera.pos;
                     let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
                     let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
                         .div_euclid(SUBCHUNK_AXIS_LEN_I32);
@@ -446,9 +502,9 @@ impl GraphicsState {
                     gl::client_state::enable(ClientArrayType::TextureCoordArray);
                 }
                 debug_output = super::for_each_visible_subchunk(
-                    &self.camera,
-                    subchunks,
-                    loaded_chunks,
+                    &camera,
+                    &self.subchunk_data_storage.subchunks,
+                    &self.subchunk_data_storage.loaded_chunks,
                     debug_state,
                     |subchunk_coords, subchunk| {
                         match &subchunk.buffer {
@@ -511,6 +567,8 @@ impl GraphicsState {
                 gl::buffer::bind(BufferType::ArrayBuffer, None);
                 gl::disable(gl::EnableComponent::Texture2D);
                 gl::client_state::disable(ClientArrayType::TextureCoordArray);
+                gl::matrix::switch_mode(gl::matrix::MatrixMode::ModelView);
+                gl::matrix::load_identity();
                 // Render debug triangles.
                 if !debug_triangles.is_empty() {
                     let mut points = Vec::new();
@@ -529,15 +587,44 @@ impl GraphicsState {
                 }
                 // Render debug lines.
                 if !debug_lines.is_empty() {
-                    let mut points = Vec::new();
-                    let mut colours = Vec::new();
-                    for line in debug_lines {
-                        points.extend([line.p1, line.p2]);
-                        colours.extend([line.color; 2]);
+                    #[repr(C)]
+                    #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+                    struct DebugLineVertex {
+                        pub pos: [f32; 3],
+                        pub colour: [u8; 4],
                     }
-                    gl::array::vertex_pointer(3, VertexPointerType::F32, 0, points.as_ptr().addr());
-                    gl::array::color_pointer(4, ColorPointerType::U8, 0, colours.as_ptr().addr());
-                    gl::array::draw(gl::ShapeMode::Lines, 0, points.len().try_into().unwrap());
+                    let converted_lines: Vec<DebugLineVertex> = debug_lines
+                        .iter()
+                        .flat_map(|line| {
+                            [
+                                DebugLineVertex {
+                                    pos: line.p1,
+                                    colour: line.colour,
+                                },
+                                DebugLineVertex {
+                                    pos: line.p2,
+                                    colour: line.colour,
+                                },
+                            ]
+                        })
+                        .collect();
+                    gl::array::vertex_pointer(
+                        3,
+                        VertexPointerType::F32,
+                        size_of::<DebugLineVertex>().try_into().unwrap(),
+                        (&raw const converted_lines[0].pos).addr(),
+                    );
+                    gl::array::color_pointer(
+                        4,
+                        ColorPointerType::U8,
+                        size_of::<DebugLineVertex>().try_into().unwrap(),
+                        (&raw const converted_lines[0].colour).addr(),
+                    );
+                    gl::array::draw(
+                        gl::ShapeMode::Lines,
+                        0,
+                        converted_lines.len().try_into().unwrap(),
+                    );
                 }
                 // Render debug points.
                 // TODO: Get point sizes working.
@@ -545,13 +632,13 @@ impl GraphicsState {
                     gl::array::vertex_pointer(
                         3,
                         VertexPointerType::F32,
-                        size_of::<debug::point::Vertex>().try_into().unwrap(),
+                        size_of::<DebugPoint>().try_into().unwrap(),
                         (&raw const debug_points[0].pos).addr(),
                     );
                     gl::array::color_pointer(
                         4,
                         ColorPointerType::U8,
-                        size_of::<debug::point::Vertex>().try_into().unwrap(),
+                        size_of::<DebugPoint>().try_into().unwrap(),
                         (&raw const debug_points[0].color).addr(),
                     );
                     gl::array::draw(
@@ -578,7 +665,6 @@ impl GraphicsState {
                 }
             }
         }
-        // TODO:
-        Ok(debug_output)
+        Ok(Some(debug_output))
     }
 }

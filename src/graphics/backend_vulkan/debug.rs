@@ -4,8 +4,6 @@ use anyhow::Context;
 use std::sync::Arc;
 use vulkan_prelude::*;
 
-pub use shader_debug_types::PackedFlags;
-
 pub mod point {
     use super::*;
 

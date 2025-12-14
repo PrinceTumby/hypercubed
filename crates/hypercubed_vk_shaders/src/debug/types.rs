@@ -31,8 +31,8 @@ impl PackedFlags {
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct PointVertex {
     pub pos: [f32; 3],
-    pub color: [u8; 4],
     pub size: f32,
+    pub color: [u8; 4],
     pub flags: PackedFlags,
 }
 
@@ -42,8 +42,8 @@ pub struct PointVertex {
 pub struct LineInstance {
     pub p1: [f32; 3],
     pub p2: [f32; 3],
-    pub color: [u8; 4],
     pub size: f32,
+    pub color: [u8; 4],
     pub flags: PackedFlags,
 }
 
@@ -71,10 +71,10 @@ pub mod vertex_input_state {
             attributes: vulkan_vertex_attributes!(1, [
                 // pos
                 [0 <- 0] => R32G32B32_SFLOAT,
-                // color
-                [1 <- 0] => R8G8B8A8_UNORM,
                 // size
-                [2 <- 0] => R32_SFLOAT,
+                [1 <- 0] => R32_SFLOAT,
+                // color
+                [2 <- 0] => R8G8B8A8_UNORM,
                 // flags
                 [3 <- 0] => R32_UINT,
             ]),
@@ -92,10 +92,10 @@ pub mod vertex_input_state {
                 [0 <- 0] => R32G32B32_SFLOAT,
                 // p2
                 [1 <- 0] => R32G32B32_SFLOAT,
-                // color
-                [2 <- 0] => R8G8B8A8_UNORM,
                 // size
-                [3 <- 0] => R32_SFLOAT,
+                [2 <- 0] => R32_SFLOAT,
+                // color
+                [3 <- 0] => R8G8B8A8_UNORM,
                 // flags
                 [4 <- 0] => R32_UINT,
             ]),

@@ -1,8 +1,20 @@
-use super::Texture;
+use super::{SubchunkDataStorage, Texture};
 use crate::basic_types::AxisDirection;
+use crate::graphics::chunk::{HasSubchunkData, SubchunkConnectivity, SubchunkData};
+use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32};
+use ahash::AHasher;
+use core::hash::Hasher;
+use fixedbitset::FixedBitSet;
 use nalgebra::{Matrix3, Rotation3};
+use portable_std::{FastHashMap, FastHashSet};
 use resources::block::RightAngleRotation;
+use resources::block::blockstate::{self, BlockOpacity};
+use resources::block::model::{ModelIndex, ModelType};
+use resources::block::model::{ModelRegistry, Tint};
+use resources::identifier;
 use std::marker::PhantomData;
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
     Buffer, BufferSlice, Device, PipelineLayout, RenderPipeline, RenderPipelineDescriptor,
@@ -10,6 +22,7 @@ use wgpu::{
 };
 
 pub struct Subchunk {
+    pub dispatch_id: u64,
     pub start_coords: [i32; 3],
     /// Equal to `u32::MAX` if the direction group contains no instances.
     pub block_face_start_vertices: [u32; 6],
@@ -20,7 +33,7 @@ pub struct Subchunk {
     /// Equal to `(0, 0)` if the direction group contains no instances.
     pub tinted_block_face_instance_groups: [(u32, u32); 6],
     pub custom_block_groups: Vec<CustomBlockGroup>,
-    pub connected_faces: SubchunkConnectivity,
+    pub connectivity: SubchunkConnectivity,
 }
 
 #[repr(C)]
@@ -30,131 +43,12 @@ pub struct CustomBlockGroup {
     pub start_instance_and_len: [u32; 2],
 }
 
-// Bits (least to most significant) store if each of these pairs of faces are connected:
-// 0: Down-Up
-// 1: Down-North
-// 2: Down-South
-// 3: Down-West
-// 4: Down-East
-// 5: Up-North
-// 6: Up-South
-// 7: Up-West
-// 8: Up-East
-// 9: North-South
-// 10: North-West
-// 11: North-East
-// 12: South-West
-// 13: South-East
-// 14: West-East
-#[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SubchunkConnectivity(u16);
-
-impl SubchunkConnectivity {
-    pub fn empty() -> Self {
-        Self(0)
-    }
-
-    pub fn full() -> Self {
-        Self(0x7FFF)
-    }
-
-    pub fn add_connection(&mut self, face_1: &AxisDirection, face_2: &AxisDirection) {
-        use AxisDirection::*;
-        match (face_1, face_2) {
-            (&Down, &Down) | (&Up, &Up) => {}
-            (&North, &North) | (&South, &South) => {}
-            (&West, &West) | (&East, &East) => {}
-            (&Down, &Up) | (&Up, &Down) => self.0 |= 0x1,
-            (&Down, &North) | (&North, &Down) => self.0 |= 0x2,
-            (&Down, &South) | (&South, &Down) => self.0 |= 0x4,
-            (&Down, &West) | (&West, &Down) => self.0 |= 0x8,
-            (&Down, &East) | (&East, &Down) => self.0 |= 0x10,
-            (&Up, &North) | (&North, &Up) => self.0 |= 0x20,
-            (&Up, &South) | (&South, &Up) => self.0 |= 0x40,
-            (&Up, &West) | (&West, &Up) => self.0 |= 0x80,
-            (&Up, &East) | (&East, &Up) => self.0 |= 0x100,
-            (&North, &South) | (&South, &North) => self.0 |= 0x200,
-            (&North, &West) | (&West, &North) => self.0 |= 0x400,
-            (&North, &East) | (&East, &North) => self.0 |= 0x800,
-            (&South, &West) | (&West, &South) => self.0 |= 0x1000,
-            (&South, &East) | (&East, &South) => self.0 |= 0x2000,
-            (&West, &East) | (&East, &West) => self.0 |= 0x4000,
+impl HasSubchunkData for Subchunk {
+    fn get_data(&self) -> SubchunkData {
+        SubchunkData {
+            start_coords: self.start_coords,
+            connectivity: self.connectivity,
         }
-    }
-
-    pub fn connects(&self, face_1: &AxisDirection, face_2: &AxisDirection) -> bool {
-        use AxisDirection::*;
-        match (face_1, face_2) {
-            (&Down, &Down) | (&Up, &Up) => true,
-            (&North, &North) | (&South, &South) => true,
-            (&West, &West) | (&East, &East) => true,
-            (&Down, &Up) | (&Up, &Down) => self.0 & 0x1 != 0,
-            (&Down, &North) | (&North, &Down) => self.0 & 0x2 != 0,
-            (&Down, &South) | (&South, &Down) => self.0 & 0x4 != 0,
-            (&Down, &West) | (&West, &Down) => self.0 & 0x8 != 0,
-            (&Down, &East) | (&East, &Down) => self.0 & 0x10 != 0,
-            (&Up, &North) | (&North, &Up) => self.0 & 0x20 != 0,
-            (&Up, &South) | (&South, &Up) => self.0 & 0x40 != 0,
-            (&Up, &West) | (&West, &Up) => self.0 & 0x80 != 0,
-            (&Up, &East) | (&East, &Up) => self.0 & 0x100 != 0,
-            (&North, &South) | (&South, &North) => self.0 & 0x200 != 0,
-            (&North, &West) | (&West, &North) => self.0 & 0x400 != 0,
-            (&North, &East) | (&East, &North) => self.0 & 0x800 != 0,
-            (&South, &West) | (&West, &South) => self.0 & 0x1000 != 0,
-            (&South, &East) | (&East, &South) => self.0 & 0x2000 != 0,
-            (&West, &East) | (&East, &West) => self.0 & 0x4000 != 0,
-        }
-    }
-
-    pub fn get_pairs(&self) -> [([AxisDirection; 2], bool); 15] {
-        let fields = [
-            ([AxisDirection::Down, AxisDirection::Up], 0x1),
-            ([AxisDirection::Down, AxisDirection::North], 0x2),
-            ([AxisDirection::Down, AxisDirection::South], 0x4),
-            ([AxisDirection::Down, AxisDirection::West], 0x8),
-            ([AxisDirection::Down, AxisDirection::East], 0x10),
-            ([AxisDirection::Up, AxisDirection::North], 0x20),
-            ([AxisDirection::Up, AxisDirection::South], 0x40),
-            ([AxisDirection::Up, AxisDirection::West], 0x80),
-            ([AxisDirection::Up, AxisDirection::East], 0x100),
-            ([AxisDirection::North, AxisDirection::South], 0x200),
-            ([AxisDirection::North, AxisDirection::West], 0x400),
-            ([AxisDirection::North, AxisDirection::East], 0x800),
-            ([AxisDirection::South, AxisDirection::West], 0x1000),
-            ([AxisDirection::South, AxisDirection::East], 0x2000),
-            ([AxisDirection::West, AxisDirection::East], 0x4000),
-        ];
-        fields.map(|(dirs, mask)| (dirs, self.0 & mask != 0))
-    }
-}
-
-impl std::fmt::Debug for SubchunkConnectivity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        let mut debug_set = f.debug_set();
-        let fields = [
-            ("down_up", 0x1),
-            ("down_north", 0x2),
-            ("down_south", 0x4),
-            ("down_west", 0x8),
-            ("down_east", 0x10),
-            ("up_north", 0x20),
-            ("up_south", 0x40),
-            ("up_west", 0x80),
-            ("up_east", 0x100),
-            ("north_south", 0x200),
-            ("north_west", 0x400),
-            ("north_east", 0x800),
-            ("south_west", 0x1000),
-            ("south_east", 0x2000),
-            ("west_east", 0x4000),
-        ];
-        for (field_name, field_mask) in fields {
-            if self.0 & field_mask != 0 {
-                debug_set.entry(&field_name);
-            }
-        }
-        debug_set.finish()
     }
 }
 
@@ -1000,4 +894,625 @@ pub mod custom_block {
         { std::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
         { std::mem::size_of::<[Instance; 4]>() },
     >;
+}
+
+#[derive(Debug)]
+pub struct RawSubchunk {
+    pub dispatch_id: u64,
+    pub subchunk_coords: [i32; 3],
+    pub start_coords: [i32; 3],
+    pub block_face_quads: [Option<[block_face::Vertex; 4]>; 6],
+    pub block_face_instance_groups: [Vec<block_face::Instance>; 6],
+    pub tinted_block_face_quads: [Option<[tinted_block_face::Vertex; 4]>; 6],
+    pub tinted_block_face_instance_groups: [Vec<tinted_block_face::Instance>; 6],
+    pub custom_block_groups: Vec<RawCustomBlockGroup>,
+    pub connectivity: SubchunkConnectivity,
+}
+
+#[derive(Debug)]
+pub struct RawCustomBlockGroup {
+    pub start_face_and_len: [u32; 2],
+    pub instances: Vec<custom_block::Instance>,
+}
+
+#[tracing::instrument(skip_all)]
+pub fn process_subchunk(
+    block_registry: &resources::block::Registry,
+    model_registry: &ModelRegistry,
+    raw_chunks: &FastHashMap<[i32; 2], Arc<crate::RawChunk>>,
+    pending_subchunk_tx: &Sender<Option<RawSubchunk>>,
+    subchunk_coords: [i32; 3],
+    dispatch_id: u64,
+) {
+    let spruce_leaves_registry_index = block_registry
+        .get_index_from_identifier(&identifier!("minecraft:spruce_leaves"))
+        .unwrap();
+    let [subchunk_x, subchunk_y, subchunk_z] = subchunk_coords;
+    let Some(chunk) = &raw_chunks.get(&[subchunk_x, subchunk_z]) else {
+        pending_subchunk_tx.send(None).unwrap();
+        return;
+    };
+    let chunk_section = &chunk.sections[usize::try_from(subchunk_y).unwrap()];
+    if chunk_section.block_count == 0 {
+        pending_subchunk_tx.send(None).unwrap();
+        return;
+    }
+    // Skip chunks with missing neighbours, so that for every chunk we actually render, it
+    // has all its neighbours to decide whether border faces should be rendered.
+    // I believe Minecraft does the same.
+    {
+        let surrounding_chunk_coords = [
+            [subchunk_x - 1, subchunk_z],
+            [subchunk_x + 1, subchunk_z],
+            [subchunk_x, subchunk_z - 1],
+            [subchunk_x, subchunk_z + 1],
+        ];
+        for neighbour_chunk in surrounding_chunk_coords {
+            if !raw_chunks.contains_key(&neighbour_chunk) {
+                pending_subchunk_tx.send(None).unwrap();
+                return;
+            }
+        }
+    }
+    let mut block_faces: [Vec<_>; 6] = Default::default();
+    let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
+    let mut custom_block_instance_groups = FastHashMap::new();
+    for y in 0..SUBCHUNK_AXIS_LEN {
+        let global_y_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y) + y as i32 + MIN_HEIGHT_I32;
+        let global_y = global_y_i32 as f32;
+        for z in 0..SUBCHUNK_AXIS_LEN {
+            let global_z_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_z) + z as i32;
+            let global_z = global_z_i32 as f32;
+            for x in 0..SUBCHUNK_AXIS_LEN {
+                let global_x_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_x) + x as i32;
+                let global_x = global_x_i32 as f32;
+                let global_palette_index = chunk_section.block_states.get(x, y, z);
+                let blockstate_info = &block_registry[global_palette_index];
+                let model_idx = match &blockstate_info.model_data {
+                    blockstate::ModelData::Single(model_idx) => *model_idx,
+                    blockstate::ModelData::RandomChoice(models) => 'model_blk: {
+                        // Find weight for model by hashed position.
+                        let mut block_hasher = AHasher::default();
+                        block_hasher.write_i32(global_x_i32);
+                        block_hasher.write_i32(global_y_i32);
+                        block_hasher.write_i32(global_z_i32);
+                        let hash = block_hasher.finish();
+                        let mut current_percentage = (hash % 65537) as f32 / 65536.0;
+                        for variant in models.iter() {
+                            if current_percentage <= variant.weight {
+                                break 'model_blk variant.model;
+                            } else {
+                                current_percentage -= variant.weight;
+                            }
+                        }
+                        // Should be unreachable
+                        let variant = &models[models.len() - 1];
+                        variant.model
+                    }
+                };
+                let block_opacity = blockstate_info.extra_info.opacity;
+                let direction_map = [
+                    (x as i32, y as i32 + 1, z as i32),
+                    (x as i32, y as i32 - 1, z as i32),
+                    (x as i32, y as i32, z as i32 - 1),
+                    (x as i32, y as i32, z as i32 + 1),
+                    (x as i32 + 1, y as i32, z as i32),
+                    (x as i32 - 1, y as i32, z as i32),
+                ];
+                let mut face_cull_map = [false; 6];
+                let mut face_light_map = [[0u8; 2]; 6];
+                for (i, (x, y, z)) in direction_map.into_iter().enumerate() {
+                    let check_global_y = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) + MIN_HEIGHT_I32;
+                    let check_chunk = match [x, z].iter().any(|n| !(0..=15).contains(n)) {
+                        false => chunk,
+                        true => match (x, z) {
+                            (-1, _) => &raw_chunks[&[subchunk_x - 1, subchunk_z]],
+                            (16, _) => &raw_chunks[&[subchunk_x + 1, subchunk_z]],
+                            (_, -1) => &raw_chunks[&[subchunk_x, subchunk_z - 1]],
+                            (_, 16) => &raw_chunks[&[subchunk_x, subchunk_z + 1]],
+                            _ => unreachable!(),
+                        },
+                    };
+                    // Get lighting
+                    {
+                        let light_section = check_chunk
+                            .lighting
+                            .get_section(
+                                MIN_HEIGHT_I32,
+                                check_global_y.div_euclid(SUBCHUNK_AXIS_LEN_I32),
+                            )
+                            .unwrap();
+                        let (x, y, z) = (
+                            ((x + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
+                            y.rem_euclid(16) as usize,
+                            ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
+                        );
+                        face_light_map[i] = light_section.get(x, y, z);
+                    }
+                    if !(MIN_HEIGHT_I32..=MAX_HEIGHT_I32).contains(&check_global_y) {
+                        continue;
+                    }
+                    let check_sections = &check_chunk.sections;
+                    let indexing_section = &check_sections[usize::try_from(
+                        (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) / SUBCHUNK_AXIS_LEN_I32,
+                    )
+                    .unwrap()];
+                    let (x, y, z) = (
+                        ((x + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
+                        y as usize,
+                        ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
+                    );
+                    let global_palette_index = indexing_section.block_states.get(x, y % 16, z);
+                    let neighbour_blockstate_info = &block_registry[global_palette_index];
+                    let neighbour_block_opacity = neighbour_blockstate_info.extra_info.opacity;
+                    face_cull_map[i] = match (block_opacity, neighbour_block_opacity) {
+                        (_, BlockOpacity::Opaque) => true,
+                        (BlockOpacity::Glass, BlockOpacity::Glass) => true,
+                        (BlockOpacity::GlassPane, BlockOpacity::GlassPane) => true,
+                        (_, _) => false,
+                    };
+                }
+                // Spruce Leaves are hardcoded, so override tint colour here
+                let tint_color = match blockstate_info.block_index {
+                    ident if ident == spruce_leaves_registry_index => [0x61, 0x99, 0x61, 0xFF],
+                    _ => [0x91, 0xBD, 0x59, 0xFF],
+                };
+                process_subchunk_model(
+                    &mut block_faces,
+                    &mut tinted_block_faces,
+                    &mut custom_block_instance_groups,
+                    model_registry,
+                    chunk,
+                    blockstate_info,
+                    block_opacity,
+                    face_cull_map,
+                    face_light_map,
+                    tint_color,
+                    [subchunk_x, subchunk_y, subchunk_z],
+                    [global_x, global_y, global_z],
+                    [x, y, z],
+                    model_idx,
+                );
+            }
+        }
+    }
+    // Runs a variant of Minecraft's cave culling algorithm, specifically the connected
+    // face generation.
+    // Outlined here: https://tomcc.github.io/2014/08/31/visibility-1.html
+    let connectivity = 'connected_faces: {
+        use crate::protocol::chunk::Palette;
+        // If we can immediately tell all the subchunk blocks are opaque, skip this entire
+        // process and just return that no subchunk faces are connected.
+        match chunk_section.block_states.palette() {
+            Palette::SingleValue(global_palette_index) => {
+                let blockstate_info = &block_registry[*global_palette_index];
+                break 'connected_faces match blockstate_info.extra_info.opacity {
+                    BlockOpacity::Opaque => SubchunkConnectivity::empty(),
+                    _ => SubchunkConnectivity::full(),
+                };
+            }
+            Palette::Palette(indices) => {
+                let mut num_opaque = 0;
+                for global_palette_index in indices {
+                    let blockstate_info = &block_registry[*global_palette_index];
+                    if blockstate_info.extra_info.opacity == BlockOpacity::Opaque {
+                        num_opaque += 1;
+                    }
+                }
+                if num_opaque == 0 {
+                    break 'connected_faces SubchunkConnectivity::full();
+                } else if num_opaque == indices.len() {
+                    break 'connected_faces SubchunkConnectivity::empty();
+                }
+            }
+            Palette::Direct => {}
+        }
+        #[repr(transparent)]
+        #[derive(Clone, Copy)]
+        struct FaceSet(pub u8);
+        impl FaceSet {
+            pub fn empty() -> Self {
+                Self(0)
+            }
+
+            pub fn add_dir(&mut self, dir: AxisDirection) {
+                self.0 |= 1 << (dir as u8);
+            }
+
+            pub fn get_directions(&self) -> [(AxisDirection, bool); 6] {
+                [
+                    AxisDirection::Down,
+                    AxisDirection::Up,
+                    AxisDirection::North,
+                    AxisDirection::South,
+                    AxisDirection::West,
+                    AxisDirection::East,
+                ]
+                .map(|dir| (dir, self.0 & (1 << (dir as u8)) != 0))
+            }
+        }
+        let mut current_group: usize = 0;
+        let mut current_group_faces = FaceSet::empty();
+        let mut group_faces: Vec<FaceSet> = Vec::new();
+        // Y major, then Z, then X.
+        let mut unchecked_blocks = FixedBitSet::with_capacity(SUBCHUNK_AXIS_LEN.pow(3));
+        #[inline]
+        fn coords_to_bit_idx(coords: [i8; 3]) -> usize {
+            let [x, y, z] = coords.map(|n| n as usize);
+            y * SUBCHUNK_AXIS_LEN.pow(2) + z * SUBCHUNK_AXIS_LEN + x
+        }
+        unchecked_blocks.clear();
+        // Add all non-opaque blocks
+        for x in 0..SUBCHUNK_AXIS_LEN {
+            for y in 0..SUBCHUNK_AXIS_LEN {
+                for z in 0..SUBCHUNK_AXIS_LEN {
+                    let global_palette_index = chunk_section.block_states.get(x, y, z);
+                    let blockstate_info = &block_registry[global_palette_index];
+                    if blockstate_info.extra_info.opacity != BlockOpacity::Opaque {
+                        let bit_index = coords_to_bit_idx([x, y, z].map(|n| n as i8));
+                        unchecked_blocks.insert(bit_index);
+                    }
+                }
+            }
+        }
+        // Flood fill from each non-opaque block, to split all the blocks into groups.
+        let mut queue: FastHashSet<[i8; 3]> = FastHashSet::new();
+        while !queue.is_empty() || !unchecked_blocks.is_clear() {
+            let [x, y, z] = queue
+                .iter()
+                .copied()
+                .next()
+                .inspect(|coord| {
+                    queue.remove(coord);
+                })
+                .unwrap_or_else(|| {
+                    // No more blocks in queue, make a new group and grab a new block
+                    // that hasn't been checked yet.
+                    let coord = {
+                        let bit_index = unchecked_blocks.minimum().unwrap();
+                        [
+                            (bit_index & 0xF) as i8,
+                            ((bit_index >> 8) & 0xF) as i8,
+                            ((bit_index >> 4) & 0xF) as i8,
+                        ]
+                    };
+                    group_faces.push(current_group_faces);
+                    current_group += 1;
+                    current_group_faces = FaceSet::empty();
+                    coord
+                });
+            unchecked_blocks.remove(coords_to_bit_idx([x, y, z]));
+            let surrounding_block_coords = [
+                [x - 1, y, z],
+                [x + 1, y, z],
+                [x, y, z - 1],
+                [x, y, z + 1],
+                [x, y - 1, z],
+                [x, y + 1, z],
+            ];
+            for new_coord in surrounding_block_coords {
+                let [new_x, new_y, new_z] = new_coord;
+                // If fill escapes subchunk, add escaping face to group
+                if new_x < 0 {
+                    current_group_faces.add_dir(AxisDirection::West);
+                } else if new_x >= SUBCHUNK_AXIS_LEN as i8 {
+                    current_group_faces.add_dir(AxisDirection::East);
+                } else if new_y < 0 {
+                    current_group_faces.add_dir(AxisDirection::Down);
+                } else if new_y >= SUBCHUNK_AXIS_LEN as i8 {
+                    current_group_faces.add_dir(AxisDirection::Up);
+                } else if new_z < 0 {
+                    current_group_faces.add_dir(AxisDirection::North);
+                } else if new_z >= SUBCHUNK_AXIS_LEN as i8 {
+                    current_group_faces.add_dir(AxisDirection::South);
+                } else if unchecked_blocks.contains(coords_to_bit_idx(new_coord)) {
+                    queue.insert(new_coord);
+                }
+            }
+        }
+        group_faces.push(current_group_faces);
+        // Add connected faces for each group to subchunk connectivity
+        let mut subchunk_connectivity = SubchunkConnectivity::empty();
+        for face_set in group_faces {
+            let directions = face_set.get_directions();
+            for (face_1, face_1_in_set) in directions {
+                if !face_1_in_set {
+                    continue;
+                }
+                for (face_2, face_2_in_set) in directions {
+                    if !face_2_in_set {
+                        continue;
+                    }
+                    subchunk_connectivity.add_connection(&face_1, &face_2);
+                }
+            }
+        }
+        subchunk_connectivity
+    };
+    let start_coords = [
+        SUBCHUNK_AXIS_LEN_I32 * subchunk_x,
+        SUBCHUNK_AXIS_LEN_I32 * subchunk_y + MIN_HEIGHT_I32,
+        SUBCHUNK_AXIS_LEN_I32 * subchunk_z,
+    ];
+    // Block faces
+    let mut block_face_quads: [Option<_>; 6] = [None; 6];
+    let block_face_instance_groups: [Vec<_>; 6] = block_faces;
+    for i in 0..6 {
+        if block_face_instance_groups[i].is_empty() {
+            continue;
+        }
+        let base_quad = block_face::Vertex::generate_base_quad(start_coords, i);
+        block_face_quads[i] = Some(base_quad);
+    }
+    // Tinted block faces
+    let mut tinted_block_face_quads: [Option<_>; 6] = [None; 6];
+    let tinted_block_face_instance_groups: [Vec<_>; 6] = tinted_block_faces;
+    for i in 0..6 {
+        if tinted_block_face_instance_groups[i].is_empty() {
+            continue;
+        }
+        let base_quad = tinted_block_face::Vertex::generate_base_quad(start_coords, i);
+        tinted_block_face_quads[i] = Some(base_quad);
+    }
+    // Custom blocks
+    let custom_block_groups = custom_block_instance_groups
+        .into_iter()
+        .map(|(info, instances)| RawCustomBlockGroup {
+            start_face_and_len: info.start_face_and_len,
+            instances,
+        })
+        .collect();
+    pending_subchunk_tx
+        .send(Some(RawSubchunk {
+            dispatch_id,
+            subchunk_coords,
+            start_coords,
+            block_face_quads,
+            block_face_instance_groups,
+            tinted_block_face_quads,
+            tinted_block_face_instance_groups,
+            custom_block_groups,
+            connectivity,
+        }))
+        .unwrap();
+}
+
+#[tracing::instrument(skip_all)]
+pub fn finalise_subchunk(
+    subchunk_data_storage: &mut SubchunkDataStorage,
+    queue: &wgpu::Queue,
+    raw_subchunk: RawSubchunk,
+) {
+    let subchunk_coords = raw_subchunk.subchunk_coords;
+    // Remove old subchunk.
+    {
+        let span = tracing::trace_span!("remove_old_subchunk", ?subchunk_coords);
+        let _enter = span.enter();
+        subchunk_data_storage.remove_subchunk(subchunk_coords);
+    }
+    macro_rules! alloc_area {
+        (
+            $buffer_manager:ident,
+            $subchunk_coords:expr,
+            $data:expr $(,)?
+        ) => {
+            subchunk_data_storage
+                .$buffer_manager
+                .alloc_area(queue, $subchunk_coords, $data)
+        };
+    }
+    // Base block faces
+    let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
+    let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
+    for (i, instance_group) in raw_subchunk
+        .block_face_instance_groups
+        .into_iter()
+        .enumerate()
+    {
+        let Some(base_quad) = raw_subchunk.block_face_quads[i] else {
+            continue;
+        };
+        let quad_start_vertex = alloc_area!(block_face_vertex, subchunk_coords, base_quad);
+        let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+        let instance_group_start = alloc_area!(
+            block_face_instance,
+            subchunk_coords,
+            instance_group.into_boxed_slice(),
+        );
+        block_face_start_vertices[i] = quad_start_vertex;
+        block_face_instance_groups[i] = (instance_group_start, instance_group_len);
+    }
+    // Tinted block faces
+    let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
+    let mut tinted_block_face_instance_groups: [(u32, u32); 6] = Default::default();
+    for (i, instance_group) in raw_subchunk
+        .tinted_block_face_instance_groups
+        .into_iter()
+        .enumerate()
+    {
+        let Some(base_quad) = raw_subchunk.tinted_block_face_quads[i] else {
+            continue;
+        };
+        let quad_start_vertex = alloc_area!(tinted_block_face_vertex, subchunk_coords, base_quad);
+        let instance_group_len: u32 = instance_group.len().try_into().unwrap();
+        let instance_group_start = alloc_area!(
+            tinted_block_face_instance,
+            subchunk_coords,
+            instance_group.into_boxed_slice(),
+        );
+        tinted_block_face_start_vertices[i] = quad_start_vertex;
+        tinted_block_face_instance_groups[i] = (instance_group_start, instance_group_len);
+    }
+    let custom_block_groups = raw_subchunk
+        .custom_block_groups
+        .into_iter()
+        .map(|group| {
+            let num_instances: u32 = group.instances.len().try_into().unwrap();
+            let start_instance = alloc_area!(
+                custom_block_instance,
+                subchunk_coords,
+                group.instances.into_boxed_slice(),
+            );
+            CustomBlockGroup {
+                start_face_and_len: group.start_face_and_len,
+                start_instance_and_len: [start_instance, num_instances],
+            }
+        })
+        .collect();
+    subchunk_data_storage.subchunks.insert(
+        subchunk_coords,
+        Subchunk {
+            dispatch_id: raw_subchunk.dispatch_id,
+            start_coords: raw_subchunk.start_coords,
+            block_face_start_vertices,
+            block_face_instance_groups,
+            tinted_block_face_start_vertices,
+            tinted_block_face_instance_groups,
+            custom_block_groups,
+            connectivity: raw_subchunk.connectivity,
+        },
+    );
+}
+
+fn process_subchunk_model(
+    block_faces: &mut [Vec<block_face::Instance>; 6],
+    tinted_block_faces: &mut [Vec<tinted_block_face::Instance>; 6],
+    custom_block_instance_groups: &mut FastHashMap<
+        resources::block::model::OtherInfo,
+        Vec<custom_block::Instance>,
+    >,
+    model_registry: &ModelRegistry,
+    chunk: &crate::RawChunk,
+    blockstate_info: &blockstate::Blockstate,
+    block_opacity: BlockOpacity,
+    face_cull_map: [bool; 6],
+    face_light_map: [[u8; 2]; 6],
+    tint_color: [u8; 4],
+    [subchunk_x, subchunk_y, subchunk_z]: [i32; 3],
+    [global_x, global_y, global_z]: [f32; 3],
+    [x, y, z]: [usize; 3],
+    model_idx: ModelIndex,
+) {
+    let model = &model_registry[model_idx];
+    match model {
+        ModelType::None => return,
+        ModelType::Block(info) => {
+            match block_opacity {
+                BlockOpacity::Opaque => {
+                    for i in 0..6 {
+                        if face_cull_map[i] {
+                            continue;
+                        }
+                        block_faces[i].push(block_face::Instance::new(
+                            [x as u8, y as u8, z as u8],
+                            info.per_face_atlas_uvs[i],
+                            info.per_face_uv_rotations[i],
+                            face_light_map[i],
+                        ));
+                    }
+                }
+                _ => {
+                    for i in 0..6 {
+                        if face_cull_map[i] {
+                            continue;
+                        }
+                        tinted_block_faces[i].push(tinted_block_face::Instance::new(
+                            [x as u8, y as u8, z as u8],
+                            info.per_face_atlas_uvs[i],
+                            info.per_face_uv_rotations[i],
+                            face_light_map[i],
+                            // Block doesn't have any tint, so just use opaque
+                            // white as a null value.
+                            [0xFF; 4],
+                        ));
+                    }
+                }
+            }
+        }
+        ModelType::TintedBlock(info) => {
+            for i in 0..6 {
+                if face_cull_map[i] {
+                    continue;
+                }
+                tinted_block_faces[i].push(tinted_block_face::Instance::new(
+                    [x as u8, y as u8, z as u8],
+                    info.per_face_atlas_uvs[i],
+                    #[cfg(feature = "graphics_backend_vulkan")]
+                    info.per_face_uv_rotations[i],
+                    face_light_map[i],
+                    tint_color,
+                ));
+            }
+        }
+        ModelType::OverlayedBlock(info) => {
+            for face in &info.faces {
+                if face_cull_map[face.face_i as usize] {
+                    continue;
+                }
+                if let Some(tint) = face.tint {
+                    assert!(tint == Tint::Biome, "TODO: Alternative tints");
+                    tinted_block_faces[face.face_i as usize].push(
+                        tinted_block_face::Instance::new(
+                            [x as u8, y as u8, z as u8],
+                            face.atlas_uvs,
+                            #[cfg(feature = "graphics_backend_vulkan")]
+                            face.uv_rotation,
+                            face_light_map[face.face_i as usize],
+                            tint_color,
+                        ),
+                    );
+                } else {
+                    block_faces[face.face_i as usize].push(block_face::Instance::new(
+                        [x as u8, y as u8, z as u8],
+                        face.atlas_uvs,
+                        #[cfg(feature = "graphics_backend_vulkan")]
+                        face.uv_rotation,
+                        face_light_map[face.face_i as usize],
+                    ));
+                }
+            }
+        }
+        ModelType::Liquid(_info) => {
+            // TODO:
+        }
+        ModelType::Other(info) => {
+            // TODO:
+            // - Add a `face_opacity_map`
+            // - For each neighbour, if it's opaque, replace with centre block
+            //   light level
+            let light_section = chunk
+                .lighting
+                .get_section(MIN_HEIGHT_I32, subchunk_y + (MIN_HEIGHT_I32 / 16))
+                .unwrap();
+            let block_instances = custom_block_instance_groups
+                .entry(*info)
+                .or_insert_with(Vec::new);
+            block_instances.push(custom_block::Instance::new(
+                [global_x, global_y, global_z],
+                tint_color,
+                light_section.get(x, y, z),
+                face_light_map,
+            ));
+        }
+        ModelType::Composite(parts) => {
+            for part in parts {
+                process_subchunk_model(
+                    block_faces,
+                    tinted_block_faces,
+                    custom_block_instance_groups,
+                    model_registry,
+                    chunk,
+                    blockstate_info,
+                    block_opacity,
+                    face_cull_map,
+                    face_light_map,
+                    tint_color,
+                    [subchunk_x, subchunk_y, subchunk_z],
+                    [global_x, global_y, global_z],
+                    [x, y, z],
+                    part.model_idx,
+                );
+            }
+        }
+    }
 }

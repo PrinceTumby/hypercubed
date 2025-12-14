@@ -1,41 +1,36 @@
 #![allow(clippy::std_instead_of_alloc)]
 #![allow(clippy::std_instead_of_core)]
 #[cfg(not(feature = "full_std"))]
-compile_error!("The Vulkan backend requires use of `std`");
+compile_error!("The Vulkan backend requires full use of `std`");
 
 pub mod chunk;
 pub mod debug;
 pub mod egui_renderer;
 pub mod shader_exports;
 
+use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
+use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
+use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
 use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, anyhow};
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
-use debug::line::Instance as DebugLineInstance;
-use debug::point::Vertex as DebugPointVertex;
-use debug::triangle::Instance as DebugTriangleInstance;
-use nalgebra::{Perspective3, Point3};
+use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
 use resources::block::model::{ModelRegistry, Tint};
 use shader_exports::RawViewInfo;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+use threadpool::ThreadPool;
 use vulkan_prelude::*;
 use winit::window::Window;
 
-pub use super::{Camera, DebugState};
-
-#[derive(Default)]
-pub struct DebugOutput {
-    pub subchunks_culled: usize,
-    pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
-}
-
 #[derive(Clone)]
 pub struct GraphicsResources {
+    pub block_registry: Arc<resources::block::Registry>,
+    pub model_registry: Arc<ModelRegistry>,
     pub device: Arc<vulkano::device::Device>,
     pub render_queue: Arc<vulkano::device::Queue>,
     pub compute_queue: Arc<vulkano::device::Queue>,
@@ -43,23 +38,10 @@ pub struct GraphicsResources {
     pub command_buffer_allocator: Arc<VulkanStandardCommandBufferAllocator>,
     pub descriptor_set_allocator: Arc<VulkanStandardDescriptorSetAllocator>,
     pub render_pass: Arc<VulkanRenderPass>,
-    pub block_registry: Arc<resources::block::Registry>,
-    pub model_registry: Arc<ModelRegistry>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GraphicsOptions {
-    pub vsync: bool,
-}
-
-impl Default for GraphicsOptions {
-    fn default() -> Self {
-        Self { vsync: true }
-    }
 }
 
 impl GraphicsOptions {
-    pub fn get_present_mode(&self) -> VulkanPresentMode {
+    pub fn get_vulkan_present_mode(&self) -> VulkanPresentMode {
         match self.vsync {
             true => VulkanPresentMode::Fifo,
             false => VulkanPresentMode::Immediate,
@@ -67,7 +49,11 @@ impl GraphicsOptions {
     }
 }
 
-pub struct GraphicsBufferManagers {
+pub struct SubchunkDataStorage {
+    // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
+    //       coordinate. Consider changing to actually be the Y coordinate.
+    pub subchunks: FastHashMap<[i32; 3], chunk::Subchunk>,
+    pub loaded_chunks: FastHashSet<[i32; 2]>,
     pub block_face_vertex: BlockFaceVertexBufferManager,
     pub block_face_instance: BlockFaceInstanceBufferManager,
     pub tinted_block_face_vertex: TintedBlockFaceVertexBufferManager,
@@ -75,7 +61,28 @@ pub struct GraphicsBufferManagers {
     pub custom_block_instance: CustomBlockInstanceBufferManager,
 }
 
+impl SubchunkDataStorage {
+    pub fn remove_subchunk(&mut self, subchunk_coords: [i32; 3]) {
+        let FastHashMapEntry::Occupied(subchunk_entry) = self.subchunks.entry(subchunk_coords)
+        else {
+            return;
+        };
+        subchunk_entry.remove();
+        // Free buffer areas.
+        self.block_face_vertex.free_subchunk_areas(subchunk_coords);
+        self.block_face_instance
+            .free_subchunk_areas(subchunk_coords);
+        self.tinted_block_face_vertex
+            .free_subchunk_areas(subchunk_coords);
+        self.tinted_block_face_instance
+            .free_subchunk_areas(subchunk_coords);
+        self.custom_block_instance
+            .free_subchunk_areas(subchunk_coords);
+    }
+}
+
 pub struct GraphicsState {
+    pub size: winit::dpi::PhysicalSize<u32>,
     pub resources: GraphicsResources,
     pub swapchain: Arc<vulkano::swapchain::Swapchain>,
     pub swapchain_images: Vec<Arc<VulkanImage>>,
@@ -93,24 +100,27 @@ pub struct GraphicsState {
     pub matrices_descriptor_set: Arc<VulkanDescriptorSet>,
     pub block_item_atlas: TextureAtlas,
     pub block_item_atlas_descriptor_set: Arc<VulkanDescriptorSet>,
-    pub buffer_managers: GraphicsBufferManagers,
+    pub subchunk_data_storage: SubchunkDataStorage,
+    pub pending_subchunk_tx: Sender<Option<chunk::RawSubchunk>>,
+    pub pending_subchunk_rx: Receiver<Option<chunk::RawSubchunk>>,
+    pub current_dispatch_id_counter: u64,
+    pub num_pending_subchunks: usize,
     // Debug state
     pub debug_point_pipeline: Arc<VulkanGraphicsPipeline>,
     pub debug_line_pipeline: Arc<VulkanGraphicsPipeline>,
     pub debug_triangle_pipeline: Arc<VulkanGraphicsPipeline>,
-    pub size: winit::dpi::PhysicalSize<u32>,
-    pub camera: Camera,
 }
 
-impl GraphicsState {
-    pub fn new<F>(window: Arc<Window>, register_blocks: F) -> anyhow::Result<Self>
-    where
-        F: FnOnce(
+impl GraphicsBackend for GraphicsState {
+    #[tracing::instrument(skip_all)]
+    fn new(
+        window: Arc<Window>,
+        register_blocks: impl FnOnce(
             &mut resources::block::Registry,
             &mut resources::block::model::ModelRegistryBuilder,
             &mut resources::texture::AtlasBuilder,
         ) -> anyhow::Result<()>,
-    {
+    ) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         // Initialise Vulkan state
         let library = VulkanLibrary::new().context("Failed to load Vulkan library")?;
@@ -127,11 +137,8 @@ impl GraphicsState {
             },
         )
         .context("Failed to create Vulkan instance")?;
-        // SAFETY: `window` is 'static lifetime, so will definitely outlive surface.
-        let surface = unsafe {
-            VulkanSurface::from_window_ref(&instance, &window)
-                .context("Failed to create surface")?
-        };
+        let surface =
+            VulkanSurface::from_window(&instance, &window).context("Failed to create surface")?;
         // Find a suitable physical device
         let required_extensions = VulkanDeviceExtensions {
             khr_swapchain: true,
@@ -235,7 +242,7 @@ impl GraphicsState {
                 image_extent: size.into(),
                 image_usage: VulkanImageUsage::COLOR_ATTACHMENT,
                 composite_alpha,
-                present_mode: graphics_options.get_present_mode(),
+                present_mode: graphics_options.get_vulkan_present_mode(),
                 ..Default::default()
             },
         )
@@ -353,18 +360,6 @@ impl GraphicsState {
                 block_registry,
                 model_cache.finish(),
             )
-        };
-        let camera = Camera {
-            pos: Point3::new(0.0, 124.0, 0.0),
-            proj_matrix: Perspective3::new(
-                (size.width as f32) / (size.height as f32),
-                f32::to_radians(super::DEFAULT_FOV),
-                super::DEFAULT_ZNEAR,
-                super::DEFAULT_ZFAR,
-            ),
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
         };
         // Block graphics descriptor set layouts
         let camera_descriptor_set_layout = VulkanDescriptorSetLayout::new(
@@ -598,7 +593,9 @@ impl GraphicsState {
             &generic_block_graphics_pipeline_layout,
             &render_pass.first_subpass(),
         )?;
-        Ok(Self {
+        let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
+        Ok(Box::new(Self {
+            size,
             resources: GraphicsResources {
                 device,
                 render_queue,
@@ -626,29 +623,50 @@ impl GraphicsState {
             matrices_descriptor_set,
             block_item_atlas: block_item_texture_atlas,
             block_item_atlas_descriptor_set,
-            buffer_managers: GraphicsBufferManagers {
+            subchunk_data_storage: SubchunkDataStorage {
+                subchunks: FastHashMap::new(),
+                loaded_chunks: FastHashSet::new(),
                 block_face_vertex: block_face_vertex_buffer_manager,
                 block_face_instance: block_face_instance_buffer_manager,
                 tinted_block_face_vertex: tinted_block_face_vertex_buffer_manager,
                 tinted_block_face_instance: tinted_block_face_instance_buffer_manager,
                 custom_block_instance: custom_block_instance_buffer_manager,
             },
+            pending_subchunk_tx,
+            pending_subchunk_rx,
+            current_dispatch_id_counter: 0,
+            num_pending_subchunks: 0,
             debug_point_pipeline,
             debug_line_pipeline,
             debug_triangle_pipeline,
-            size,
-            camera,
-        })
+        }))
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    fn get_block_registry(&self) -> &resources::block::Registry {
+        self.resources.block_registry.as_ref()
+    }
+
+    fn get_subchunks_data(&self) -> FastHashMap<[i32; 3], SubchunkData> {
+        self.subchunk_data_storage
+            .subchunks
+            .iter()
+            .map(|(&subchunk_coords, subchunk)| (subchunk_coords, subchunk.get_data()))
+            .collect()
+    }
+
+    fn get_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.size
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
             (self.swapchain, self.swapchain_images) = self
                 .swapchain
                 .recreate(&VulkanSwapchainCreateInfo {
                     image_extent: new_size.into(),
-                    present_mode: self.graphics_options.get_present_mode(),
+                    present_mode: self.graphics_options.get_vulkan_present_mode(),
                     ..self.swapchain.create_info()
                 })
                 .context("Error while recreating swapchain")
@@ -669,13 +687,15 @@ impl GraphicsState {
             )
             .context("Error while creating depth image")
             .unwrap();
-            self.camera
-                .proj_matrix
-                .set_aspect((new_size.width as f32) / (new_size.height as f32));
         }
     }
 
-    pub fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
+    fn get_graphics_options(&self) -> GraphicsOptions {
+        self.graphics_options
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
         let old_options = std::mem::replace(&mut self.graphics_options, new_options);
         // Swapchain update in `resize` also updates VSync
         if new_options.vsync != old_options.vsync {
@@ -683,37 +703,148 @@ impl GraphicsState {
         }
     }
 
-    pub fn free_subchunk_data(&mut self, subchunk_coords: [i32; 3]) {
-        let buffer_managers = &mut self.buffer_managers;
-        buffer_managers
-            .block_face_vertex
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .block_face_instance
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .tinted_block_face_vertex
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .tinted_block_face_instance
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .custom_block_instance
-            .free_subchunk_areas(subchunk_coords);
+    #[tracing::instrument(skip_all)]
+    fn dispatch_subchunk_updates(
+        &mut self,
+        thread_pool: &ThreadPool,
+        raw_chunks: Arc<FastHashMap<[i32; 2], Arc<crate::RawChunk>>>,
+        subchunks: FastHashSet<[i32; 3]>,
+    ) {
+        // Mark that we're dispatching a number of subchunk processes.
+        self.num_pending_subchunks += subchunks.len();
+        // Grab a new dispatch ID.
+        let dispatch_id = self.current_dispatch_id_counter;
+        self.current_dispatch_id_counter += 1;
+        // Dispatch subchunk tasks.
+        for subchunk_coords in subchunks {
+            // Mark chunk as definitely loaded (does nothing if the chunk is only being updated).
+            let [chunk_x, _, chunk_z] = subchunk_coords;
+            self.subchunk_data_storage
+                .loaded_chunks
+                .insert([chunk_x, chunk_z]);
+            // Dispatch subchunk task.
+            let block_registry = self.resources.block_registry.clone();
+            let model_registry = self.resources.model_registry.clone();
+            let raw_chunks = raw_chunks.clone();
+            let pending_subchunk_tx = self.pending_subchunk_tx.clone();
+            thread_pool.execute(move || {
+                chunk::process_subchunk(
+                    &block_registry,
+                    &model_registry,
+                    &raw_chunks,
+                    &pending_subchunk_tx,
+                    subchunk_coords,
+                    dispatch_id,
+                );
+            });
+        }
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn remove_chunk(&mut self, chunk_coords: [i32; 2]) {
+        let [chunk_x, chunk_z] = chunk_coords;
+        // Remove old subchunks.
+        if self
+            .subchunk_data_storage
+            .loaded_chunks
+            .contains(&chunk_coords)
+        {
+            let span = tracing::trace_span!("remove_subchunks", ?chunk_coords);
+            let _enter = span.enter();
+            for subchunk_y in 0..24 {
+                let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                let span = tracing::trace_span!("remove_subchunk", ?subchunk_coords);
+                let _enter = span.enter();
+                self.subchunk_data_storage.remove_subchunk(subchunk_coords);
+            }
+        }
+        // Mark chunk as no longer loaded, so any pending subchunk tasks for this chunk finishing
+        // after removal won't cause ghost chunks to appear.
+        self.subchunk_data_storage
+            .loaded_chunks
+            .remove(&chunk_coords);
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub fn render(
+    #[tracing::instrument(skip_all)]
+    fn render(
         &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk::Subchunk>,
-        loaded_chunks: &AHashSet<[i32; 2]>,
+        camera: &Camera,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
-        debug_points: &[DebugPointVertex],
-        debug_lines: &[DebugLineInstance],
-        debug_triangles: &[DebugTriangleInstance],
-    ) -> anyhow::Result<DebugOutput> {
+        debug_points: &[DebugPoint],
+        debug_lines: &[DebugLine],
+        debug_triangles: &[DebugTriangle],
+    ) -> anyhow::Result<Option<DebugOutput>> {
+        // Upload pending subchunks.
+        let mut subchunk_upload_semaphore: Option<VulkanSemaphore> = None;
+        let mut _subchunk_upload_command_buffer: Option<Arc<_>> = None;
+        if self.num_pending_subchunks > 0 {
+            let span = tracing::trace_span!("upload_pending_subchunks");
+            let _enter = span.enter();
+            let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
+                self.resources.command_buffer_allocator.clone(),
+                self.resources.render_queue.queue_family_index(),
+                VulkanCommandBufferUsage::OneTimeSubmit,
+            )
+            .context("Error while creating subchunk upload command buffer builder")
+            .unwrap();
+            let mut subchunks_processed_this_frame: usize = 0;
+            for raw_subchunk in self
+                .pending_subchunk_rx
+                .try_iter()
+                .take(self.num_pending_subchunks)
+            {
+                self.num_pending_subchunks -= 1;
+                let Some(raw_subchunk) = raw_subchunk else {
+                    continue;
+                };
+                // Check that the raw subchunk is newer than the subchunk it's replacing, or that
+                // it's not replacing an old subchunk. If it's not, then skip it.
+                if self
+                    .subchunk_data_storage
+                    .subchunks
+                    .get(&raw_subchunk.subchunk_coords)
+                    .map(|subchunk| subchunk.dispatch_id > raw_subchunk.dispatch_id)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                chunk::finalise_subchunk(
+                    &mut self.subchunk_data_storage,
+                    &mut command_buffer,
+                    raw_subchunk,
+                );
+                subchunks_processed_this_frame += 1;
+                if subchunks_processed_this_frame >= 16 {
+                    break;
+                }
+            }
+            let built_command_buffer = command_buffer
+                .build()
+                .context("Error while building subchunk upload command buffer")?;
+            let semaphore = VulkanSemaphore::from_pool(&self.resources.device)
+                .context("Error while creating subchunk upload semaphore")?;
+            self.resources.render_queue.with(|mut queue_guard| unsafe {
+                queue_guard
+                    .submit(
+                        &[VulkanSubmitInfo {
+                            command_buffers: &[VulkanCommandBufferSubmitInfo::new(
+                                built_command_buffer.as_raw(),
+                            )],
+                            wait_semaphores: &[],
+                            signal_semaphores: &[VulkanSemaphoreSubmitInfo::new(&semaphore)],
+                            ..Default::default()
+                        }],
+                        None,
+                    )
+                    .unwrap();
+            });
+            subchunk_upload_semaphore = Some(semaphore);
+            _subchunk_upload_command_buffer = Some(built_command_buffer);
+        }
+        let subchunk_data_storage = &mut self.subchunk_data_storage;
         let pixels_per_point = egui_full_output.pixels_per_point;
         let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
         let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
@@ -726,7 +857,7 @@ impl GraphicsState {
             .update_buffer(
                 self.view_info_buffer.clone(),
                 Box::new(RawViewInfo {
-                    view_matrix: self.camera.generate_reversed_depth_view_matrix_slice(),
+                    view_matrix: camera.generate_reversed_depth_view_matrix_slice(),
                     screen_size: self.size.into(),
                 }),
             )
@@ -757,12 +888,13 @@ impl GraphicsState {
                 .map_err(VulkanValidated::unwrap)
             {
                 Ok(image) => image,
+                // Reconfigure the swapchain if it's out of date.
                 Err(VulkanError::OutOfDate) => {
                     self.resize(self.size);
-                    return Ok(DebugOutput::default());
+                    return Ok(None);
                 }
-                Err(VulkanError::Timeout) => return Ok(DebugOutput::default()),
-                Err(err) => return Err(anyhow!("Error while acquiring swapchain image: {err}")),
+                Err(VulkanError::Timeout) => return Ok(None),
+                Err(err) => return Err(anyhow!("Error while acquiring swapchain image - {err}")),
             };
             (
                 acquired_image.image_index,
@@ -803,20 +935,19 @@ impl GraphicsState {
         {
             let camera_chunk_coords = {
                 // let camera_pos = debug_state.cull_camera.pos;
-                let camera_pos = self.camera.pos;
-                let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
-                let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
+                let camera_x = (camera.pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                let camera_y = (camera.pos.y.floor() as i32 - MIN_HEIGHT_I32)
                     .div_euclid(SUBCHUNK_AXIS_LEN_I32);
-                let camera_z = (camera_pos.z.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
+                let camera_z = (camera.pos.z.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
                 [camera_x, camera_y, camera_z]
             };
             let mut block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
             let mut tinted_block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
             let mut custom_block_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
             debug_output = super::for_each_visible_subchunk(
-                &self.camera,
-                subchunks,
-                loaded_chunks,
+                camera,
+                &subchunk_data_storage.subchunks,
+                &subchunk_data_storage.loaded_chunks,
                 debug_state,
                 |subchunk_coords, subchunk| {
                     for i in 0..6 {
@@ -949,8 +1080,8 @@ impl GraphicsState {
                     .bind_vertex_buffers(
                         0,
                         (
-                            self.buffer_managers.block_face_vertex.get_buffer(),
-                            self.buffer_managers.block_face_instance.get_buffer(),
+                            subchunk_data_storage.block_face_vertex.get_buffer(),
+                            subchunk_data_storage.block_face_instance.get_buffer(),
                         ),
                     )
                     .unwrap()
@@ -966,8 +1097,10 @@ impl GraphicsState {
                     .bind_vertex_buffers(
                         0,
                         (
-                            self.buffer_managers.tinted_block_face_vertex.get_buffer(),
-                            self.buffer_managers.tinted_block_face_instance.get_buffer(),
+                            subchunk_data_storage.tinted_block_face_vertex.get_buffer(),
+                            subchunk_data_storage
+                                .tinted_block_face_instance
+                                .get_buffer(),
                         ),
                     )
                     .unwrap()
@@ -982,7 +1115,7 @@ impl GraphicsState {
                     .unwrap()
                     .bind_vertex_buffers(
                         0,
-                        (self.buffer_managers.custom_block_instance.get_buffer(),),
+                        (subchunk_data_storage.custom_block_instance.get_buffer(),),
                     )
                     .unwrap()
                     .draw_indirect(draw_commands_buffer)
@@ -1089,7 +1222,7 @@ impl GraphicsState {
         command_buffer
             .end_render_pass(VulkanSubpassEndInfo::default())
             .unwrap();
-        // Submit command buffer to GPU
+        // Submit command buffer to GPU.
         let built_command_buffer = command_buffer.build().unwrap();
         // vulkano::sync::now(self.resources.device.clone())
         //     .join(swapchain_image_future)
@@ -1107,6 +1240,8 @@ impl GraphicsState {
         //     .wait(None)
         //     .unwrap();
         {
+            let span = tracing::trace_span!("submit_render_command_buffer_and_present");
+            let _enter = span.enter();
             self.resources.render_queue.with(|mut queue_guard| unsafe {
                 queue_guard.wait_idle().unwrap();
                 let render_semaphore = VulkanSemaphore::from_pool(&self.resources.device)
@@ -1117,15 +1252,18 @@ impl GraphicsState {
                     .map(Arc::new)
                     .context("Error while creating render fence")
                     .unwrap();
+                let mut wait_semaphores = SmallVec::<[_; 2]>::new();
+                wait_semaphores.push(VulkanSemaphoreSubmitInfo::new(&swapchain_semaphore));
+                if let Some(upload_semaphore) = &subchunk_upload_semaphore {
+                    wait_semaphores.push(VulkanSemaphoreSubmitInfo::new(upload_semaphore));
+                };
                 queue_guard
                     .submit(
                         &[VulkanSubmitInfo {
                             command_buffers: &[VulkanCommandBufferSubmitInfo::new(
                                 built_command_buffer.as_raw(),
                             )],
-                            wait_semaphores: &[VulkanSemaphoreSubmitInfo::new(
-                                &swapchain_semaphore,
-                            )],
+                            wait_semaphores: &wait_semaphores,
                             signal_semaphores: &[
                                 VulkanSemaphoreSubmitInfo::new(&render_semaphore),
                                 // VulkanSemaphoreSubmitInfo::new(render_semaphore_2.clone()),
@@ -1147,7 +1285,9 @@ impl GraphicsState {
                     })
                     .unwrap()
                     .for_each(|result| _ = result.unwrap());
-                finish_fence.wait(None).unwrap();
+                tracing::trace_span!("wait_for_render_fence").in_scope(|| {
+                    finish_fence.wait(None).unwrap();
+                });
             })
         }
         self.egui_renderer
@@ -1158,7 +1298,7 @@ impl GraphicsState {
                 .recreate(&self.swapchain.create_info())
                 .context("Error while recreating swapchain")?;
         }
-        Ok(debug_output)
+        Ok(Some(debug_output))
     }
 }
 

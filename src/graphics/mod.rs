@@ -1,26 +1,154 @@
-cfg_if::cfg_if! {
-    if #[cfg(feature = "graphics_backend_vulkan")] {
-        mod backend_vulkan;
-        pub use backend_vulkan::*;
-    } else if #[cfg(feature = "graphics_backend_wgpu")] {
-        mod backend_wgpu;
-        pub use backend_wgpu::*;
-    } else if #[cfg(feature = "graphics_backend_opengl")] {
-        mod backend_opengl;
-        pub use backend_opengl::*;
-    } else if #[cfg(feature = "graphics_backend_software")] {
-        mod backend_software;
-        pub use backend_software::*;
-    } else {
-        compile_error!("A graphics backend feature must be enabled.");
+pub mod chunk;
+pub mod debug;
+
+// Backends
+#[cfg(feature = "graphics_backend_opengl")]
+pub mod backend_opengl;
+#[cfg(feature = "graphics_backend_software")]
+pub mod backend_software;
+#[cfg(feature = "graphics_backend_vulkan")]
+pub mod backend_vulkan;
+#[cfg(feature = "graphics_backend_wgpu")]
+pub mod backend_wgpu;
+
+// Check we've enabled at least one graphics backend supported by the current platform.
+#[cfg(any(
+    all(
+        feature = "platform_winit",
+        not(any(
+            feature = "graphics_backend_opengl",
+            feature = "graphics_backend_software",
+            feature = "graphics_backend_vulkan",
+            feature = "graphics_backend_wgpu",
+        )),
+    ),
+    all(
+        feature = "platform_linux_drm",
+        not(feature = "graphics_backend_opengl"),
+    ),
+))]
+compile_error!("At least one graphics backend feature must be enabled.");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    any(feature = "platform_winit", feature = "platform_linux_drm"),
+    derive(clap::ValueEnum)
+)]
+pub enum SelectedGraphicsBackend {
+    #[cfg(feature = "graphics_backend_opengl")]
+    #[cfg_attr(
+        any(feature = "platform_winit", feature = "platform_linux_drm"),
+        value(name = "opengl")
+    )]
+    OpenGL,
+    #[cfg(feature = "graphics_backend_vulkan")]
+    #[cfg_attr(
+        any(feature = "platform_winit", feature = "platform_linux_drm"),
+        value(name = "vulkan")
+    )]
+    Vulkan,
+    #[cfg(feature = "graphics_backend_wgpu")]
+    #[cfg_attr(
+        any(feature = "platform_winit", feature = "platform_linux_drm"),
+        value(name = "wgpu")
+    )]
+    Wgpu,
+}
+
+impl Default for SelectedGraphicsBackend {
+    fn default() -> Self {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "graphics_backend_vulkan")] {
+                Self::Vulkan
+            } else if #[cfg(feature = "graphics_backend_opengl")] {
+                Self::OpenGL
+            } else if #[cfg(feature = "graphics_backend_wgpu")] {
+                Self::Wgpu
+            }
+        }
+    }
+}
+
+impl core::fmt::Display for SelectedGraphicsBackend {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = match *self {
+            #[cfg(feature = "graphics_backend_opengl")]
+            Self::OpenGL => "OpenGL",
+            #[cfg(feature = "graphics_backend_vulkan")]
+            Self::Vulkan => "Vulkan",
+            #[cfg(feature = "graphics_backend_wgpu")]
+            Self::Wgpu => "wgpu",
+        };
+        write!(f, "{name}")
     }
 }
 
 use crate::basic_types::AxisDirection;
+use crate::platform::libs::winit;
 use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use chunk::{HasSubchunkData, SubchunkData};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
+use portable_std::Arc;
 use portable_std::{FastHashMap, FastHashSet};
 use std::collections::VecDeque;
+use threadpool::ThreadPool;
+use winit::window::Window;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphicsOptions {
+    pub vsync: bool,
+}
+
+impl Default for GraphicsOptions {
+    fn default() -> Self {
+        Self { vsync: true }
+    }
+}
+
+pub trait GraphicsBackend {
+    fn new(
+        window: Arc<Window>,
+        register_blocks: impl FnOnce(
+            &mut resources::block::Registry,
+            &mut resources::block::model::ModelRegistryBuilder,
+            &mut resources::texture::AtlasBuilder,
+        ) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Box<Self>>
+    where
+        Self: Sized;
+
+    fn get_block_registry(&self) -> &resources::block::Registry;
+
+    fn get_subchunks_data(&self) -> FastHashMap<[i32; 3], SubchunkData>;
+
+    fn get_size(&self) -> winit::dpi::PhysicalSize<u32>;
+
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>);
+
+    fn get_graphics_options(&self) -> GraphicsOptions;
+
+    fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions);
+
+    fn dispatch_subchunk_updates(
+        &mut self,
+        thread_pool: &ThreadPool,
+        raw_chunks: Arc<FastHashMap<[i32; 2], Arc<crate::RawChunk>>>,
+        subchunks: FastHashSet<[i32; 3]>,
+    );
+
+    fn remove_chunk(&mut self, chunk_coords: [i32; 2]);
+
+    fn render(
+        &mut self,
+        camera: &Camera,
+        egui_ctx: &egui::Context,
+        egui_full_output: egui::output::FullOutput,
+        debug_state: &DebugState,
+        debug_points: &[debug::Point],
+        debug_lines: &[debug::Line],
+        debug_triangles: &[debug::Triangle],
+    ) -> anyhow::Result<Option<DebugOutput>>;
+}
 
 pub const DEFAULT_FOV: f32 = 80.0;
 pub const DEFAULT_ZNEAR: f32 = 0.01;
@@ -39,6 +167,21 @@ pub struct Camera {
 }
 
 impl Camera {
+    pub fn dummy() -> Self {
+        Self {
+            pos: Point3::origin(),
+            proj_matrix: Perspective3::new(
+                800.0 / 600.0,
+                f32::to_radians(DEFAULT_FOV),
+                DEFAULT_ZNEAR,
+                DEFAULT_ZFAR,
+            ),
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+        }
+    }
+
     pub fn get_rot(&self) -> UnitQuaternion<f32> {
         UnitQuaternion::from_euler_angles(
             self.pitch.to_radians(),
@@ -106,6 +249,12 @@ impl Camera {
     }
 }
 
+#[derive(Default)]
+pub struct DebugOutput {
+    pub subchunks_culled: usize,
+    pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DebugState {
     pub visualisation_draw_method: DebugVisualisationDrawMethod,
@@ -160,16 +309,32 @@ impl DebugVisualisationDrawMethod {
 }
 
 #[tracing::instrument(skip_all)]
-pub fn for_each_visible_subchunk<F>(
+pub fn for_each_visible_subchunk<F, S>(
     camera: &Camera,
-    subchunks: &FastHashMap<[i32; 3], chunk::Subchunk>,
+    subchunks: &FastHashMap<[i32; 3], S>,
     loaded_chunks: &FastHashSet<[i32; 2]>,
     debug_state: &DebugState,
     mut subchunk_fn: F,
 ) -> DebugOutput
 where
-    F: FnMut([i32; 3], &chunk::Subchunk),
+    F: FnMut([i32; 3], &S),
+    S: HasSubchunkData,
 {
+    // Find all chunks that are actually visible (have all of their neighbours), to prevent
+    // visibility "leakage" at the edge of the loaded area.
+    let visible_chunks = {
+        let mut visible_chunks = FastHashSet::with_capacity(loaded_chunks.len());
+        for &[chunk_x, chunk_z] in loaded_chunks {
+            if loaded_chunks.contains(&[chunk_x - 1, chunk_z])
+                && loaded_chunks.contains(&[chunk_x + 1, chunk_z])
+                && loaded_chunks.contains(&[chunk_x, chunk_z - 1])
+                && loaded_chunks.contains(&[chunk_x, chunk_z + 1])
+            {
+                visible_chunks.insert([chunk_x, chunk_z]);
+            }
+        }
+        visible_chunks
+    };
     let mut subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])> = Vec::new();
     let camera_clipping_planes = camera.generate_clipping_planes();
     // let camera_clipping_planes = debug_state.cull_camera.generate_clipping_planes();
@@ -257,7 +422,7 @@ where
                 if neighbour_coord[1] < 0 || neighbour_coord[1] > WORLD_HEIGHT_I32 / 16 {
                     continue;
                 }
-                if !loaded_chunks.contains(&[neighbour_coord[0], neighbour_coord[2]]) {
+                if !visible_chunks.contains(&[neighbour_coord[0], neighbour_coord[2]]) {
                     continue;
                 }
                 // Check we're haven't gone backwards too much
@@ -273,7 +438,11 @@ where
                     // subchunk
                     if debug_state.cave_cull_check_connectivity {
                         if let Some(subchunk) = subchunk_maybe {
-                            if !subchunk.connected_faces.connects(&from_dir, &to_dir) {
+                            if !subchunk
+                                .get_data()
+                                .connectivity
+                                .connects(&from_dir, &to_dir)
+                            {
                                 continue;
                             }
                         }

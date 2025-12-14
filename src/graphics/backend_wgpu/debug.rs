@@ -1,48 +1,24 @@
 use super::Texture;
-use bitfield::bitfield;
-use wgpu::{
-    Device, PipelineLayout, RenderPipeline, RenderPipelineDescriptor, SurfaceConfiguration,
-    VertexAttribute, include_wgsl, vertex_attr_array,
-};
-
-bitfield! {
-    // 0: Ignore depth?
-    // 1-31: Unused
-    #[repr(transparent)]
-    #[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-    pub struct PackedFlags(u32);
-    impl Debug;
-    pub ignore_depth, set_ignore_depth: 0;
-}
-
-impl PackedFlags {
-    pub const NONE: Self = Self(0);
-    pub const IGNORE_DEPTH: Self = Self(1);
-
-    pub fn new(ignore_depth: bool) -> Self {
-        let mut fields = Self::NONE;
-        fields.set_ignore_depth(ignore_depth);
-        fields
-    }
-}
+use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
+use wgpu::{include_wgsl, vertex_attr_array};
 
 pub mod point {
     use super::*;
 
     pub fn create_render_pipeline(
-        device: &Device,
-        config: &SurfaceConfiguration,
-        layout: &PipelineLayout,
-    ) -> RenderPipeline {
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        layout: &wgpu::PipelineLayout,
+    ) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(include_wgsl!("shaders/debug_point.wgsl"));
-        device.create_render_pipeline(&RenderPipelineDescriptor {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Debug Point Render Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Vertex::desc()],
+                buffers: &[DebugPoint::wgpu_desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -92,28 +68,19 @@ pub mod point {
         })
     }
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-    pub struct Vertex {
-        pub pos: [f32; 3],
-        pub color: [u8; 4],
-        pub size: f32,
-        pub flags: PackedFlags,
-    }
-
-    impl Vertex {
-        const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
+    impl DebugPoint {
+        const ATTRIBUTES: &'static [wgpu::VertexAttribute] = &vertex_attr_array![
             // pos
             0 => Float32x3,
-            // color
-            1 => Unorm8x4,
             // size
-            2 => Float32,
+            1 => Float32,
+            // colour
+            2 => Unorm8x4,
             // flags
             3 => Uint32,
         ];
 
-        pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        pub const fn wgpu_desc() -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
                 // WGPU doesn't support point sizes, so we internally convert to quads in the
@@ -129,19 +96,19 @@ pub mod line {
     use super::*;
 
     pub fn create_render_pipeline(
-        device: &Device,
-        config: &SurfaceConfiguration,
-        layout: &PipelineLayout,
-    ) -> RenderPipeline {
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        layout: &wgpu::PipelineLayout,
+    ) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(include_wgsl!("shaders/debug_line.wgsl"));
-        device.create_render_pipeline(&RenderPipelineDescriptor {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Debug Line Render Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Instance::desc()],
+                buffers: &[DebugLine::wgpu_desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -193,31 +160,21 @@ pub mod line {
         })
     }
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-    pub struct Instance {
-        pub p1: [f32; 3],
-        pub p2: [f32; 3],
-        pub color: [u8; 4],
-        pub size: f32,
-        pub flags: PackedFlags,
-    }
-
-    impl Instance {
-        const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
+    impl DebugLine {
+        const ATTRIBUTES: &'static [wgpu::VertexAttribute] = &vertex_attr_array![
             // p1
             0 => Float32x3,
             // p2
             1 => Float32x3,
-            // color
-            2 => Unorm8x4,
             // size
-            3 => Float32,
+            2 => Float32,
+            // colour
+            3 => Unorm8x4,
             // flags
             4 => Uint32,
         ];
 
-        pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        pub const fn wgpu_desc() -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
@@ -231,19 +188,19 @@ pub mod triangle {
     use super::*;
 
     pub fn create_render_pipeline(
-        device: &Device,
-        config: &SurfaceConfiguration,
-        layout: &PipelineLayout,
-    ) -> RenderPipeline {
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        layout: &wgpu::PipelineLayout,
+    ) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(include_wgsl!("shaders/debug_triangle.wgsl"));
-        device.create_render_pipeline(&RenderPipelineDescriptor {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Debug Triangle Render Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Instance::desc()],
+                buffers: &[DebugTriangle::wgpu_desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -293,31 +250,21 @@ pub mod triangle {
         })
     }
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-    pub struct Instance {
-        pub p1: [f32; 3],
-        pub p2: [f32; 3],
-        pub color: [u8; 4],
-        pub size: f32,
-        pub flags: PackedFlags,
-    }
-
-    impl Instance {
-        const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
+    impl DebugTriangle {
+        const ATTRIBUTES: &'static [wgpu::VertexAttribute] = &vertex_attr_array![
             // p1
             0 => Float32x3,
             // p2
             1 => Float32x3,
-            // color
-            2 => Unorm8x4,
-            // size
-            3 => Float32,
+            // p3
+            2 => Float32x3,
+            // colour
+            3 => Unorm8x4,
             // flags
             4 => Uint32,
         ];
 
-        pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        pub fn wgpu_desc() -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
@@ -331,12 +278,12 @@ pub mod crosshair {
     use super::*;
 
     pub fn create_render_pipeline(
-        device: &Device,
-        config: &SurfaceConfiguration,
-        layout: &PipelineLayout,
-    ) -> RenderPipeline {
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        layout: &wgpu::PipelineLayout,
+    ) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(include_wgsl!("shaders/debug_crosshair.wgsl"));
-        device.create_render_pipeline(&RenderPipelineDescriptor {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Debug Crosshair Render Pipeline"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
@@ -385,14 +332,14 @@ pub mod crosshair {
     #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct Vertex {
         pub pos: [f32; 3],
-        pub color: [u8; 4],
+        pub colour: [u8; 4],
     }
 
     impl Vertex {
-        const ATTRIBUTES: &'static [VertexAttribute] = &vertex_attr_array![
+        const ATTRIBUTES: &'static [wgpu::VertexAttribute] = &vertex_attr_array![
             // pos
             0 => Float32x3,
-            // color
+            // colour
             1 => Unorm8x4,
         ];
 
@@ -409,29 +356,29 @@ pub mod crosshair {
         // +X
         Vertex {
             pos: [0.0, 0.0, 0.0],
-            color: [0xFF, 0x00, 0x00, 0xFF],
+            colour: [0xFF, 0x00, 0x00, 0xFF],
         },
         Vertex {
             pos: [1.0, 0.0, 0.0],
-            color: [0xFF, 0x00, 0x00, 0xFF],
+            colour: [0xFF, 0x00, 0x00, 0xFF],
         },
         // +Y
         Vertex {
             pos: [0.0, 0.0, 0.0],
-            color: [0x00, 0xFF, 0x00, 0xFF],
+            colour: [0x00, 0xFF, 0x00, 0xFF],
         },
         Vertex {
             pos: [0.0, 1.0, 0.0],
-            color: [0x00, 0xFF, 0x00, 0xFF],
+            colour: [0x00, 0xFF, 0x00, 0xFF],
         },
         // +Z
         Vertex {
             pos: [0.0, 0.0, 0.0],
-            color: [0x00, 0x00, 0xFF, 0xFF],
+            colour: [0x00, 0x00, 0xFF, 0xFF],
         },
         Vertex {
             pos: [0.0, 0.0, 1.0],
-            color: [0x00, 0x00, 0xFF, 0xFF],
+            colour: [0x00, 0x00, 0xFF, 0xFF],
         },
     ];
 }

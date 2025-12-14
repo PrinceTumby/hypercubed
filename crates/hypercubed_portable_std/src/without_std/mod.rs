@@ -9,7 +9,7 @@ pub mod sync;
 
 pub use alloc::borrow::{Cow, ToOwned};
 pub use alloc::boxed::Box;
-pub use alloc::collections::VecDeque;
+pub use alloc::collections::{BTreeMap, VecDeque};
 pub use alloc::string::{String, ToString};
 pub use alloc::vec::Vec;
 pub use sync::Arc;
@@ -31,8 +31,7 @@ pub use hashbrown::HashMap;
 pub use hashbrown::hash_map::Entry as FastHashMapEntry;
 pub use hashbrown::{HashMap as FastHashMap, HashSet as FastHashSet};
 
-// IndexMap
-pub type IndexMap<K, V, S = foldhash::fast::RandomState> = indexmap::IndexMap<K, V, S>;
-
 // TODO: For performance, we probably want to write a no_std version of string_cache.
+// - Design could be a `no_hash::IntMap` on string length, containing HashMaps of `Arc<str>`.
+// - Should reduce inner map reallocation frequency, while keeping fast interning.
 pub type Atom = smallstr::SmallString<[u8; 12]>;

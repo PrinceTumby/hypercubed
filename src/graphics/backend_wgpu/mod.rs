@@ -2,44 +2,35 @@ pub mod chunk;
 pub mod debug;
 pub mod egui_renderer;
 
-use super::{Camera, DebugState};
+use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
+use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
+use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
 use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use ahash::{AHashMap, AHashSet};
+use anyhow::anyhow;
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
-use debug::line::Instance as DebugLineInstance;
-use debug::point::Vertex as DebugPointVertex;
-use debug::triangle::Instance as DebugTriangleInstance;
 use nalgebra::{Perspective3, Point3};
+use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
 use resources::block::model::{ModelRegistry, Tint};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+use threadpool::ThreadPool;
 use wgpu::util::DeviceExt as _;
 use winit::window::Window;
 
 pub struct GraphicsResources {
-    pub surface: wgpu::Surface<'static>,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
     pub block_registry: resources::block::Registry,
     pub model_registry: ModelRegistry,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GraphicsOptions {
-    pub vsync: bool,
-}
-
-impl Default for GraphicsOptions {
-    fn default() -> Self {
-        Self { vsync: true }
-    }
+    pub surface: wgpu::Surface<'static>,
+    pub queue: wgpu::Queue,
+    pub device: wgpu::Device,
 }
 
 impl GraphicsOptions {
-    pub fn get_present_mode(&self) -> wgpu::PresentMode {
+    pub fn get_wgpu_present_mode(&self) -> wgpu::PresentMode {
         match self.vsync {
             true => wgpu::PresentMode::Fifo,
             false => wgpu::PresentMode::Immediate,
@@ -47,7 +38,11 @@ impl GraphicsOptions {
     }
 }
 
-pub struct GraphicsBufferManagers {
+pub struct SubchunkDataStorage {
+    // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
+    //       coordinate. Consider changing to actually be the Y coordinate.
+    pub subchunks: FastHashMap<[i32; 3], chunk::Subchunk>,
+    pub loaded_chunks: FastHashSet<[i32; 2]>,
     pub block_face_vertex: BlockFaceVertexBufferManager,
     pub block_face_instance: BlockFaceInstanceBufferManager,
     pub tinted_block_face_vertex: TintedBlockFaceVertexBufferManager,
@@ -55,9 +50,29 @@ pub struct GraphicsBufferManagers {
     pub custom_block_instance: CustomBlockInstanceBufferManager,
 }
 
+impl SubchunkDataStorage {
+    pub fn remove_subchunk(&mut self, subchunk_coords: [i32; 3]) {
+        let FastHashMapEntry::Occupied(subchunk_entry) = self.subchunks.entry(subchunk_coords)
+        else {
+            return;
+        };
+        subchunk_entry.remove();
+        // Free buffer areas.
+        self.block_face_vertex.free_subchunk_areas(subchunk_coords);
+        self.block_face_instance
+            .free_subchunk_areas(subchunk_coords);
+        self.tinted_block_face_vertex
+            .free_subchunk_areas(subchunk_coords);
+        self.tinted_block_face_instance
+            .free_subchunk_areas(subchunk_coords);
+        self.custom_block_instance
+            .free_subchunk_areas(subchunk_coords);
+    }
+}
+
 pub struct GraphicsState {
+    pub size: winit::dpi::PhysicalSize<u32>,
     pub resources: Arc<GraphicsResources>,
-    pub buffer_managers: GraphicsBufferManagers,
     pub config: wgpu::SurfaceConfiguration,
     pub graphics_options: GraphicsOptions,
     pub block_render_pipeline: wgpu::RenderPipeline,
@@ -72,7 +87,6 @@ pub struct GraphicsState {
     pub custom_block_faces_buffer: wgpu::Buffer,
     pub block_item_atlas: TextureAtlas,
     pub block_item_atlas_bind_group: wgpu::BindGroup,
-    pub camera: Camera,
     pub view_info_buffer: wgpu::Buffer,
     pub view_info_bind_group: wgpu::BindGroup,
     pub view_info_bind_group_layout: wgpu::BindGroupLayout,
@@ -81,13 +95,12 @@ pub struct GraphicsState {
     pub debug_crosshair_view_info_buffer: wgpu::Buffer,
     pub debug_crosshair_view_info_bind_group: wgpu::BindGroup,
     pub debug_crosshair_vertex_buffer: wgpu::Buffer,
-    pub size: winit::dpi::PhysicalSize<u32>,
     pub clear_color: wgpu::Color,
-}
-
-pub struct DebugOutput {
-    pub subchunks_culled: usize,
-    pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
+    pub subchunk_data_storage: SubchunkDataStorage,
+    pub pending_subchunk_tx: Sender<Option<chunk::RawSubchunk>>,
+    pub pending_subchunk_rx: Receiver<Option<chunk::RawSubchunk>>,
+    pub current_dispatch_id_counter: u64,
+    pub num_pending_subchunks: usize,
 }
 
 #[repr(C)]
@@ -116,16 +129,16 @@ impl ViewInfo {
     }
 }
 
-impl GraphicsState {
+impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    pub fn new<F>(window: Arc<Window>, register_blocks: F) -> anyhow::Result<Self>
-    where
-        F: FnOnce(
+    fn new(
+        window: Arc<Window>,
+        register_blocks: impl FnOnce(
             &mut resources::block::Registry,
             &mut resources::block::model::ModelRegistryBuilder,
             &mut resources::texture::AtlasBuilder,
         ) -> anyhow::Result<()>,
-    {
+    ) -> anyhow::Result<Box<Self>> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -162,7 +175,7 @@ impl GraphicsState {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: graphics_options.get_present_mode(),
+            present_mode: graphics_options.get_wgpu_present_mode(),
             desired_maximum_frame_latency: 2,
             alpha_mode: wgpu::CompositeAlphaMode::Opaque,
             view_formats: vec![],
@@ -447,21 +460,15 @@ impl GraphicsState {
                 contents: bytemuck::cast_slice(debug::crosshair::VERTICES),
                 usage: wgpu::BufferUsages::VERTEX,
             });
-        Ok(Self {
+        let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
+        Ok(Box::new(Self {
             resources: Arc::new(GraphicsResources {
-                surface,
-                device,
-                queue,
                 block_registry,
                 model_registry,
+                surface,
+                queue,
+                device,
             }),
-            buffer_managers: GraphicsBufferManagers {
-                block_face_vertex: block_face_vertex_buffer_manager,
-                block_face_instance: block_face_instance_buffer_manager,
-                tinted_block_face_vertex: tinted_block_face_vertex_buffer_manager,
-                tinted_block_face_instance: tinted_block_face_instance_buffer_manager,
-                custom_block_instance: custom_block_instance_buffer_manager,
-            },
             config,
             graphics_options,
             block_render_pipeline,
@@ -476,7 +483,6 @@ impl GraphicsState {
             custom_block_faces_buffer,
             block_item_atlas: block_item_texture_atlas,
             block_item_atlas_bind_group,
-            camera,
             view_info_buffer,
             view_info_bind_group,
             view_info_bind_group_layout,
@@ -493,11 +499,40 @@ impl GraphicsState {
                 b: 1.0,
                 a: 1.0,
             },
-        })
+            subchunk_data_storage: SubchunkDataStorage {
+                subchunks: FastHashMap::new(),
+                loaded_chunks: FastHashSet::new(),
+                block_face_vertex: block_face_vertex_buffer_manager,
+                block_face_instance: block_face_instance_buffer_manager,
+                tinted_block_face_vertex: tinted_block_face_vertex_buffer_manager,
+                tinted_block_face_instance: tinted_block_face_instance_buffer_manager,
+                custom_block_instance: custom_block_instance_buffer_manager,
+            },
+            pending_subchunk_tx,
+            pending_subchunk_rx,
+            current_dispatch_id_counter: 0,
+            num_pending_subchunks: 0,
+        }))
+    }
+
+    fn get_block_registry(&self) -> &resources::block::Registry {
+        &self.resources.block_registry
+    }
+
+    fn get_subchunks_data(&self) -> FastHashMap<[i32; 3], SubchunkData> {
+        self.subchunk_data_storage
+            .subchunks
+            .iter()
+            .map(|(&subchunk_coords, subchunk)| (subchunk_coords, subchunk.get_data()))
+            .collect()
+    }
+
+    fn get_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.size
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
             self.config.width = new_size.width;
@@ -510,15 +545,17 @@ impl GraphicsState {
                 &self.config,
                 "depth_texture",
             );
-            self.camera
-                .proj_matrix
-                .set_aspect((new_size.width as f32) / (new_size.height as f32));
         }
     }
 
-    pub fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
+    fn get_graphics_options(&self) -> GraphicsOptions {
+        self.graphics_options
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
         if new_options.vsync != self.graphics_options.vsync {
-            self.config.present_mode = new_options.get_present_mode();
+            self.config.present_mode = new_options.get_wgpu_present_mode();
             self.resources
                 .surface
                 .configure(&self.resources.device, &self.config);
@@ -526,48 +563,127 @@ impl GraphicsState {
         self.graphics_options = new_options;
     }
 
-    pub fn free_subchunk_data(&mut self, subchunk_coords: [i32; 3]) {
-        let buffer_managers = &mut self.buffer_managers;
-        buffer_managers
-            .block_face_vertex
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .block_face_instance
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .tinted_block_face_vertex
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .tinted_block_face_instance
-            .free_subchunk_areas(subchunk_coords);
-        buffer_managers
-            .custom_block_instance
-            .free_subchunk_areas(subchunk_coords);
+    #[tracing::instrument(skip_all)]
+    fn dispatch_subchunk_updates(
+        &mut self,
+        thread_pool: &ThreadPool,
+        raw_chunks: Arc<FastHashMap<[i32; 2], Arc<crate::RawChunk>>>,
+        subchunks: FastHashSet<[i32; 3]>,
+    ) {
+        // Mark that we're dispatching a number of subchunk processes.
+        self.num_pending_subchunks += subchunks.len();
+        // Grab a new dispatch ID.
+        let dispatch_id = self.current_dispatch_id_counter;
+        self.current_dispatch_id_counter += 1;
+        // Dispatch subchunk tasks.
+        for subchunk_coords in subchunks {
+            // Mark chunk as definitely loaded (does nothing if the chunk is only being updated).
+            let [chunk_x, _, chunk_z] = subchunk_coords;
+            self.subchunk_data_storage
+                .loaded_chunks
+                .insert([chunk_x, chunk_z]);
+            // Dispatch subchunk task.
+            let resources = self.resources.clone();
+            let raw_chunks = raw_chunks.clone();
+            let pending_subchunk_tx = self.pending_subchunk_tx.clone();
+            thread_pool.execute(move || {
+                chunk::process_subchunk(
+                    &resources.block_registry,
+                    &resources.model_registry,
+                    &raw_chunks,
+                    &pending_subchunk_tx,
+                    subchunk_coords,
+                    dispatch_id,
+                );
+            });
+        }
     }
 
     #[tracing::instrument(skip_all)]
-    pub fn render(
+    fn remove_chunk(&mut self, chunk_coords: [i32; 2]) {
+        let [chunk_x, chunk_z] = chunk_coords;
+        // Remove old subchunks.
+        if self
+            .subchunk_data_storage
+            .loaded_chunks
+            .contains(&chunk_coords)
+        {
+            let span = tracing::trace_span!("remove_subchunks", ?chunk_coords);
+            let _enter = span.enter();
+            for subchunk_y in 0..24 {
+                let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                let span = tracing::trace_span!("remove_subchunk", ?subchunk_coords);
+                let _enter = span.enter();
+                self.subchunk_data_storage.remove_subchunk(subchunk_coords);
+            }
+        }
+        // Mark chunk as no longer loaded, so any pending subchunk tasks for this chunk finishing
+        // after removal won't cause ghost chunks to appear.
+        self.subchunk_data_storage
+            .loaded_chunks
+            .remove(&chunk_coords);
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    #[tracing::instrument(skip_all)]
+    fn render(
         &mut self,
-        subchunks: &AHashMap<[i32; 3], chunk::Subchunk>,
-        loaded_chunks: &AHashSet<[i32; 2]>,
+        camera: &Camera,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
-        debug_points: &[DebugPointVertex],
-        debug_lines: &[DebugLineInstance],
-        debug_triangles: &[DebugTriangleInstance],
-    ) -> Result<DebugOutput, wgpu::SurfaceError> {
+        debug_points: &[DebugPoint],
+        debug_lines: &[DebugLine],
+        debug_triangles: &[DebugTriangle],
+    ) -> anyhow::Result<Option<DebugOutput>> {
+        // Upload pending subchunks.
+        if self.num_pending_subchunks > 0 {
+            let span = tracing::trace_span!("upload_pending_subchunks");
+            let _enter = span.enter();
+            let mut subchunks_processed_this_frame: usize = 0;
+            for raw_subchunk in self
+                .pending_subchunk_rx
+                .try_iter()
+                .take(self.num_pending_subchunks)
+            {
+                self.num_pending_subchunks -= 1;
+                let Some(raw_subchunk) = raw_subchunk else {
+                    continue;
+                };
+                // Check that the raw subchunk is newer than the subchunk it's replacing, or that
+                // it's not replacing an old subchunk. If it's not, then skip it.
+                if self
+                    .subchunk_data_storage
+                    .subchunks
+                    .get(&raw_subchunk.subchunk_coords)
+                    .map(|subchunk| subchunk.dispatch_id > raw_subchunk.dispatch_id)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                chunk::finalise_subchunk(
+                    &mut self.subchunk_data_storage,
+                    &self.resources.queue,
+                    raw_subchunk,
+                );
+                subchunks_processed_this_frame += 1;
+                if subchunks_processed_this_frame >= 16 {
+                    break;
+                }
+            }
+            self.resources.queue.submit([]);
+        }
         let pixels_per_point = egui_full_output.pixels_per_point;
         let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
         self.resources.queue.write_buffer(
             &self.view_info_buffer,
             0,
-            bytemuck::cast_slice(&[ViewInfo::new(&self.camera, self.size)]),
+            bytemuck::cast_slice(&[ViewInfo::new(&camera, self.size)]),
         );
         self.resources.queue.write_buffer(
             &self.debug_crosshair_view_info_buffer,
             0,
-            bytemuck::cast_slice(&self.camera.generate_debug_crosshair_view_matrix_slice()),
+            bytemuck::cast_slice(&camera.generate_debug_crosshair_view_matrix_slice()),
         );
         let egui_render_data = self.egui_renderer.prepare(
             &self.resources,
@@ -576,7 +692,16 @@ impl GraphicsState {
             egui_primitives,
             pixels_per_point,
         );
-        let output = self.resources.surface.get_current_texture()?;
+        let output = match self.resources.surface.get_current_texture() {
+            Ok(output) => output,
+            Err(wgpu::SurfaceError::Timeout) => return Ok(None),
+            // Reconfigure the surface if lost.
+            Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
+                self.resize(self.size);
+                return Ok(None);
+            }
+            Err(err) => return Err(anyhow!("Error while getting surface texture - {err}")),
+        };
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -619,7 +744,7 @@ impl GraphicsState {
                 timestamp_writes: None,
             });
             let camera_chunk_coords = {
-                let camera_pos = self.camera.pos;
+                let camera_pos = camera.pos;
                 let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
                 let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
                     .div_euclid(SUBCHUNK_AXIS_LEN_I32);
@@ -638,9 +763,9 @@ impl GraphicsState {
             let mut tinted_block_face_draw_args: Vec<DrawIndirectArgs> = Vec::new();
             let mut custom_block_draw_args: Vec<DrawIndirectArgs> = Vec::new();
             debug_output = super::for_each_visible_subchunk(
-                &self.camera,
-                subchunks,
-                loaded_chunks,
+                &camera,
+                &self.subchunk_data_storage.subchunks,
+                &self.subchunk_data_storage.loaded_chunks,
                 debug_state,
                 |subchunk_coords, subchunk| {
                     for i in 0..6 {
@@ -702,9 +827,11 @@ impl GraphicsState {
                         });
                 render_pass.set_pipeline(&self.block_render_pipeline);
                 render_pass
-                    .set_vertex_buffer(0, self.buffer_managers.block_face_vertex.get_slice());
-                render_pass
-                    .set_vertex_buffer(1, self.buffer_managers.block_face_instance.get_slice());
+                    .set_vertex_buffer(0, self.subchunk_data_storage.block_face_vertex.get_slice());
+                render_pass.set_vertex_buffer(
+                    1,
+                    self.subchunk_data_storage.block_face_instance.get_slice(),
+                );
                 render_pass.multi_draw_indirect(
                     &block_face_draw_args_buffer,
                     0,
@@ -724,11 +851,15 @@ impl GraphicsState {
                 render_pass.set_pipeline(&self.tinted_block_render_pipeline);
                 render_pass.set_vertex_buffer(
                     0,
-                    self.buffer_managers.tinted_block_face_vertex.get_slice(),
+                    self.subchunk_data_storage
+                        .tinted_block_face_vertex
+                        .get_slice(),
                 );
                 render_pass.set_vertex_buffer(
                     1,
-                    self.buffer_managers.tinted_block_face_instance.get_slice(),
+                    self.subchunk_data_storage
+                        .tinted_block_face_instance
+                        .get_slice(),
                 );
                 render_pass.multi_draw_indirect(
                     &tinted_block_face_draw_args_buffer,
@@ -747,8 +878,10 @@ impl GraphicsState {
                             usage: wgpu::BufferUsages::INDIRECT,
                         });
                 render_pass.set_pipeline(&self.custom_block_render_pipeline);
-                render_pass
-                    .set_vertex_buffer(0, self.buffer_managers.custom_block_instance.get_slice());
+                render_pass.set_vertex_buffer(
+                    0,
+                    self.subchunk_data_storage.custom_block_instance.get_slice(),
+                );
                 render_pass.multi_draw_indirect(
                     &custom_block_draw_args_buffer,
                     0,
@@ -816,7 +949,7 @@ impl GraphicsState {
         output.present();
         self.egui_renderer
             .free_textures(&egui_full_output.textures_delta.free);
-        Ok(debug_output)
+        Ok(Some(debug_output))
     }
 }
 

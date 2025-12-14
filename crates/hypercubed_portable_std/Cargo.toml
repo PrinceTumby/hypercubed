@@ -19,7 +19,6 @@ cfg-if.workspace = true
 embedded-io.workspace = true
 foldhash.workspace = true
 hashbrown.workspace = true
-indexmap.workspace = true
 nalgebra.workspace = true
 smallstr.workspace = true
 spin.workspace = true

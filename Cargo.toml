@@ -81,9 +81,12 @@ bench = false
 name = "hypercubed"
 
 [features]
-default = ["platform_winit", "graphics_backend_vulkan"]
-# default = ["platform_winit", "graphics_backend_wgpu"]
-# default = ["platform_winit", "graphics_backend_opengl"]
+default = [
+    "platform_winit",
+    "graphics_backend_vulkan",
+    "graphics_backend_wgpu",
+    "graphics_backend_opengl",
+]
 # default = ["platform_linux_drm", "graphics_backend_opengl"]
 
 # Represents platforms which have full access to a standard library, and for which using `std`
@@ -180,6 +183,7 @@ platform_winit = [
     # Other features
     "full_std",
     # Dependencies
+    "dep:clap",
     "dep:reqwest",
     "dep:winit",
     # Dependency features
