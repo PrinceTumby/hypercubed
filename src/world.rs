@@ -1,4 +1,3 @@
-// XXX: DEBUG
 use crate::basic_types::AxisDirection;
 use crate::portable_prelude::*;
 use crate::protocol::chunk::{ChunkSection, ChunkSectionLightChannelInfoMut, LightType};

@@ -322,8 +322,6 @@ impl Window {
                 .iter()
                 .max_by_key(|mode| (mode.size(), mode.vrefresh()))
                 .expect("No modes found for connector");
-            // XXX: DEBUG
-            // let mode = *connector.modes().first().unwrap();
             let (display_width, display_height) = mode.size();
             log::info!("Found connector with resolution {display_width}x{display_height}");
             let egl_gbm_native_display = gbm_device.as_raw() as egli::egl::EGLNativeDisplayType;
@@ -384,9 +382,7 @@ impl Window {
             }
             // Now that we've bound an OpenGL API, we can load in all the functions we use.
             unsafe {
-                gl::load_with(|name| {
-                    egli::egl::get_proc_address(name) as *const ()
-                });
+                gl::load_with(|name| egli::egl::get_proc_address(name) as *const ());
             }
             let egli_context = match egli_display.create_context(egli_config) {
                 Ok(context) => context,

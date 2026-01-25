@@ -2,6 +2,7 @@ use super::Identifier;
 use anyhow::Context;
 use portable_std::FastHashMap;
 use portable_std::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "std")]
 use std_imports::*;
@@ -12,35 +13,24 @@ mod std_imports {
     pub use image::{GenericImage, GenericImageView, ImageFormat, RgbaImage};
 }
 
-#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
-pub struct RawAtlas {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Atlas {
     pub width: u32,
     pub height: u32,
     /// RGBA8 format.
     pub texture_bytes: Box<[u8]>,
-    #[bincode(with_serde)]
     pub stored_textures: FastHashMap<Identifier, TextureInfo>,
 }
 
-#[cfg(feature = "std")]
-#[derive(Clone, Debug)]
-pub struct Atlas {
-    pub texture: RgbaImage,
-    pub stored_textures: FastHashMap<Identifier, TextureInfo>,
-}
+impl core::ops::Index<(u32, u32)> for Atlas {
+    type Output = [u8; 4];
 
-#[cfg(feature = "std")]
-impl Atlas {
-    pub fn into_raw(self) -> RawAtlas {
-        let (width, height) = (self.texture.width(), self.texture.height());
-        let texture_bytes = self.texture.into_vec().into_boxed_slice();
-        let stored_textures = self.stored_textures;
-        RawAtlas {
-            width,
-            height,
-            texture_bytes,
-            stored_textures,
-        }
+    fn index(&self, (x, y): (u32, u32)) -> &[u8; 4] {
+        let start_pixel_idx = (y * self.width) + x;
+        let start_byte_idx = start_pixel_idx * 4;
+        self.texture_bytes[start_byte_idx as usize..][..4]
+            .as_array()
+            .unwrap()
     }
 }
 
@@ -194,7 +184,9 @@ impl AtlasBuilder {
 
     pub fn finish(self) -> Atlas {
         Atlas {
-            texture: self.texture,
+            width: self.texture.width(),
+            height: self.texture.height(),
+            texture_bytes: self.texture.into_vec().into_boxed_slice(),
             stored_textures: self.stored_textures,
         }
     }
@@ -294,7 +286,8 @@ impl UsageBitmap2d {
                         return Some((start_x, start_y));
                     }
                 }
-                unreachable!()
+                // TODO: Resize automatically.
+                panic!("Out of texture atlas builder space!")
             }
         }
     }

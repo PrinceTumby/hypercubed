@@ -204,7 +204,7 @@ pub fn process_game_events(
                     }
                     // Update lighting
                     world::recalculate_light(
-                        &graphics_backend.get_block_registry(),
+                        graphics_backend.get_block_registry(),
                         raw_chunks,
                         &mut subchunks_to_relight,
                         [pos.x, pos.y, pos.z],
@@ -294,7 +294,7 @@ pub fn process_game_events(
                         section_i as i32 * SUBCHUNK_AXIS_LEN_I32 + y as i32 + MIN_HEIGHT_I32;
                     let global_z = chunk_z * SUBCHUNK_AXIS_LEN_I32 + z as i32;
                     world::recalculate_light(
-                        &graphics_backend.get_block_registry(),
+                        graphics_backend.get_block_registry(),
                         raw_chunks,
                         &mut subchunks_to_relight,
                         [global_x, global_y, global_z],

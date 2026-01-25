@@ -1,3 +1,8 @@
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::std_instead_of_alloc)]
+#[cfg(not(feature = "full_std"))]
+compile_error!("The OpenGL backend requires full use of `std`");
+
 pub mod chunk;
 pub mod egui_renderer;
 pub mod gl;
@@ -11,8 +16,7 @@ use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::Context;
 use nalgebra::{Matrix4, Vector3};
 use portable_std::{Arc, FastHashMap, FastHashSet};
-use resources::block::model::ModelRegistry;
-use resources::texture::RawAtlas;
+use resources::block::ResourceData;
 use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
 use winit::window::Window;
@@ -45,11 +49,11 @@ cfg_if::cfg_if! {
 #[derive(Clone)]
 pub struct GraphicsResources {
     pub block_registry: Arc<resources::block::Registry>,
-    pub model_registry: Arc<ModelRegistry>,
+    pub model_registry: Arc<resources::block::model::ModelRegistry>,
     #[cfg(feature = "platform_winit")]
     glutin_resources: Arc<GlutinResources>,
-    pub atlas: Arc<RawAtlas>,
     pub atlas_texture: Arc<gl::texture::batch_collected::Texture>,
+    pub atlas_texture_dims: (u32, u32),
     pub window: Arc<Window>,
 }
 
@@ -74,14 +78,7 @@ pub struct GraphicsState {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(
-        window: Arc<Window>,
-        register_blocks: impl FnOnce(
-            &mut resources::block::Registry,
-            &mut resources::block::model::ModelRegistryBuilder,
-            &mut resources::texture::AtlasBuilder,
-        ) -> anyhow::Result<()>,
-    ) -> anyhow::Result<Box<Self>> {
+    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         let size = window.inner_size();
         cfg_if::cfg_if! {
@@ -177,43 +174,36 @@ impl GraphicsBackend for GraphicsState {
             );
             gl::texture::set_pixel_store_i32_raw(gl::texture::PixelStoreParam::UnpackAlignment, 1);
         }
-        // Initialise game state.
-        let (block_item_atlas, block_item_atlas_texture, block_registry, model_registry) = {
-            let size = [1024; 2];
-            let square_length = 16;
-            let mut atlas_builder =
-                resources::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_cache = resources::block::model::ModelRegistryBuilder::new();
-            let mut block_registry = resources::block::Registry::new();
-            register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)
-                .context("Error while registering blocks")?;
-            let atlas = atlas_builder.finish().into_raw();
-            let atlas_texture = unsafe {
-                use gl::texture::{
-                    TexFilterMode, TexTarget, TexWrapMode, Texture2dFormat, Texture2dTarget,
-                    TextureDataType, TextureInternalFormat,
-                };
-                let [texture] = gl::texture::batch_collected::Texture::make_array();
-                texture.bind(TexTarget::Texture2D);
-                gl::texture::set_wrap_s(TexTarget::Texture2D, TexWrapMode::Repeat);
-                gl::texture::set_wrap_t(TexTarget::Texture2D, TexWrapMode::Repeat);
-                gl::texture::set_mag_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
-                gl::texture::set_min_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
-                gl::texture::set_image_2d(
-                    Texture2dTarget::Texture,
-                    0,
-                    TextureInternalFormat::Rgba,
-                    atlas.width.try_into().unwrap(),
-                    atlas.height.try_into().unwrap(),
-                    0,
-                    Texture2dFormat::Rgba,
-                    TextureDataType::U8,
-                    atlas.texture_bytes.as_ptr() as *const (),
-                );
-                gl::texture::bind(TexTarget::Texture2D, None);
-                texture
+        // Load game resources.
+        let ResourceData {
+            block_registry,
+            model_registry,
+            atlas,
+        } = resource_data;
+        let atlas_texture = unsafe {
+            use gl::texture::{
+                TexFilterMode, TexTarget, TexWrapMode, Texture2dFormat, Texture2dTarget,
+                TextureDataType, TextureInternalFormat,
             };
-            (atlas, atlas_texture, block_registry, model_cache.finish())
+            let [texture] = gl::texture::batch_collected::Texture::make_array();
+            texture.bind(TexTarget::Texture2D);
+            gl::texture::set_wrap_s(TexTarget::Texture2D, TexWrapMode::Repeat);
+            gl::texture::set_wrap_t(TexTarget::Texture2D, TexWrapMode::Repeat);
+            gl::texture::set_mag_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
+            gl::texture::set_min_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
+            gl::texture::set_image_2d(
+                Texture2dTarget::Texture,
+                0,
+                TextureInternalFormat::Rgba,
+                atlas.width.try_into().unwrap(),
+                atlas.height.try_into().unwrap(),
+                0,
+                Texture2dFormat::Rgba,
+                TextureDataType::U8,
+                atlas.texture_bytes.as_ptr() as *const (),
+            );
+            gl::texture::bind(TexTarget::Texture2D, None);
+            texture
         };
         let egui_renderer = egui_renderer::Renderer::new();
         let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
@@ -228,8 +218,8 @@ impl GraphicsBackend for GraphicsState {
                 }),
                 block_registry: Arc::new(block_registry),
                 model_registry: Arc::new(model_registry),
-                atlas: Arc::new(block_item_atlas),
-                atlas_texture: Arc::new(block_item_atlas_texture),
+                atlas_texture: Arc::new(atlas_texture),
+                atlas_texture_dims: (atlas.width, atlas.height),
             },
             subchunk_data_storage: SubchunkDataStorage {
                 subchunks: FastHashMap::new(),
@@ -293,7 +283,7 @@ impl GraphicsBackend for GraphicsState {
 
     #[tracing::instrument(skip(self))]
     fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
-        let old_options = std::mem::replace(&mut self.graphics_options, new_options);
+        let old_options = core::mem::replace(&mut self.graphics_options, new_options);
         cfg_if::cfg_if! {
             if #[cfg(feature = "platform_winit")] {
                 let glutin_context = &self.resources.glutin_resources.context;
@@ -380,7 +370,6 @@ impl GraphicsBackend for GraphicsState {
             .remove(&chunk_coords);
     }
 
-    #[expect(clippy::too_many_arguments)]
     #[tracing::instrument(skip_all)]
     fn render(
         &mut self,
@@ -477,8 +466,8 @@ impl GraphicsBackend for GraphicsState {
                 }
                 gl::matrix::switch_mode(gl::matrix::MatrixMode::Texture);
                 let texture_matrix = Matrix4::identity().append_nonuniform_scaling(&Vector3::new(
-                    1.0 / self.resources.atlas.width as f32,
-                    1.0 / self.resources.atlas.height as f32,
+                    1.0 / self.resources.atlas_texture_dims.0 as f32,
+                    1.0 / self.resources.atlas_texture_dims.1 as f32,
                     1.0,
                 ));
                 gl::matrix::load_f32_matrix(&texture_matrix.into());
@@ -491,8 +480,7 @@ impl GraphicsBackend for GraphicsState {
                     let camera_y = (camera_pos.y.floor() as i32 - MIN_HEIGHT_I32)
                         .div_euclid(SUBCHUNK_AXIS_LEN_I32);
                     let camera_z = (camera_pos.z.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
-                    let camera_subchunk_coords = [camera_x, camera_y, camera_z];
-                    camera_subchunk_coords
+                    [camera_x, camera_y, camera_z]
                 };
                 {
                     let span = tracing::trace_span!("subchunks_set_client_state");
@@ -502,7 +490,7 @@ impl GraphicsBackend for GraphicsState {
                     gl::client_state::enable(ClientArrayType::TextureCoordArray);
                 }
                 debug_output = super::for_each_visible_subchunk(
-                    &camera,
+                    camera,
                     &self.subchunk_data_storage.subchunks,
                     &self.subchunk_data_storage.loaded_chunks,
                     debug_state,

@@ -1,47 +1,68 @@
 pub mod blockstate;
 pub mod model;
 
-use super::{Identifier, RegistryData, RegistryIndex};
+use crate::{Identifier, RegistryData, RegistryIndex, texture};
 use anyhow::{Context, anyhow};
 use blockstate::{BlockOpacity, BlockstateInfo, CollisionInfo};
 use model::ModelRegistry;
 use portable_std::prelude::*;
 use portable_std::{Atom, FastHashSet};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 #[cfg(feature = "std")]
 use std_imports::*;
 #[cfg(feature = "std")]
 mod std_imports {
-    pub use super::super::texture;
     pub use super::blockstate::{BlockstateInfoModifier, CustomPropertyType};
     pub use super::model::ModelRegistryBuilder;
 }
 
-#[derive(Debug, Default, bincode::Encode, bincode::Decode)]
+#[derive(Serialize, Deserialize)]
+pub struct ResourceData {
+    pub block_registry: Registry,
+    pub model_registry: ModelRegistry,
+    pub atlas: texture::Atlas,
+}
+
+/// Loads the vanilla game data from either a vanilla client `minecraft.jar` file, or from an
+/// extracted `assets`.
+/// Can be used either to load the game data at run time, or from a build script to then embed the
+/// resource data at compile time.
+#[cfg(feature = "std")]
+pub fn load_vanilla_resource_data() -> anyhow::Result<ResourceData> {
+    // TODO: Don't provide an atlas size, have the atlas builder automatically double the smaller
+    //       dimension size as needed.
+    //       For example, the builder could start at 64x64, then (when it's run out of space)
+    //       double to 128x64, then 128x128, and so on.
+    let size = [1024, 1024];
+    let square_length = 16;
+    let mut atlas_builder = crate::texture::AtlasBuilder::new(size[0], size[1], square_length);
+    let mut model_registry_builder = ModelRegistryBuilder::new();
+    let mut block_registry = Registry::new();
+    register_vanilla_blocks(
+        &mut block_registry,
+        &mut model_registry_builder,
+        &mut atlas_builder,
+    )?;
+    let atlas = atlas_builder.finish();
+    Ok(ResourceData {
+        block_registry,
+        model_registry: model_registry_builder.finish(),
+        atlas,
+    })
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Registry {
     data: RegistryData<Info>,
     global_palette: Vec<blockstate::Blockstate>,
-    #[bincode(with_serde)]
     air_blockstates: FastHashSet<GlobalPaletteIndex>,
-    #[bincode(with_serde)]
     light_emitting_blockstates: FastHashSet<GlobalPaletteIndex>,
 }
 
 #[repr(transparent)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Hash,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalPaletteIndex(u16);
 
 impl GlobalPaletteIndex {
@@ -420,7 +441,7 @@ impl core::ops::IndexMut<GlobalPaletteIndex> for Registry {
     }
 }
 
-#[derive(Debug, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Info {
     pub default_blockstate: GlobalPaletteIndex,
     pub properties: Properties,
@@ -439,7 +460,7 @@ impl Default for Info {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Properties {
     pub air_like: bool,
 }
@@ -451,19 +472,7 @@ impl Default for Properties {
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Hash,
-    PartialEq,
-    Eq,
-    Serialize_repr,
-    Deserialize_repr,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u16)]
 pub enum RightAngleRotation {
     #[default]
@@ -622,11 +631,10 @@ pub fn register_blocks_from_json(
     registry: &mut Registry,
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas_builder: &mut texture::AtlasBuilder,
-    json_data: &str,
+    json_data: &[u8],
 ) -> anyhow::Result<()> {
-    // XXX: DEBUG
     let start_time = std::time::Instant::now();
-    let registrations: Vec<Registration> = serde_json::from_str(json_data)?;
+    let registrations: Vec<Registration> = serde_json::from_slice(json_data)?;
     println!(
         "Block JSON load time: {:?}",
         std::time::Instant::now() - start_time
@@ -767,23 +775,30 @@ pub fn register_blocks_from_json(
 #[cfg(feature = "std")]
 pub fn register_vanilla_blocks(
     registry: &mut Registry,
-    model_cache: &mut ModelRegistryBuilder,
+    model_registry_builder: &mut ModelRegistryBuilder,
     texture_atlas_builder: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<()> {
-    let start_time = std::time::Instant::now();
-
-    register_blocks_from_json(
-        registry,
-        model_cache,
-        texture_atlas_builder,
+    // Register blocks
+    {
+        let start_time = std::time::Instant::now();
         // Generated by `build.rs` from `vanilla_block.ncl`.
-        include_str!(concat!(env!("OUT_DIR"), "/vanilla_blocks_generated.json")),
-    )?;
-
-    println!(
-        "Block load time: {:?}",
-        std::time::Instant::now() - start_time
-    );
+        static COMPRESSED_JSON: &[u8] = include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/vanilla_blocks_generated.json.zlib"
+        ));
+        let uncompressed_json = miniz_oxide::inflate::decompress_to_vec_zlib(COMPRESSED_JSON)
+            .expect("Failed to decompress vanilla block JSON data");
+        register_blocks_from_json(
+            registry,
+            model_registry_builder,
+            texture_atlas_builder,
+            &uncompressed_json,
+        )?;
+        println!(
+            "Block load time: {:?}",
+            std::time::Instant::now() - start_time
+        );
+    }
     // TODO: Move this to a startup flag
     // Write out registry IDs to "entries.json", helpful for adding new blocks
     #[cfg(debug_assertions)]
@@ -813,13 +828,13 @@ pub fn register_vanilla_blocks(
     {
         use ahash::AHashMap;
         use indexmap::{IndexMap, IndexSet};
-        #[derive(Clone, Debug, serde::Serialize)]
+        #[derive(Clone, Debug, Serialize)]
         struct JsonBlock {
             #[serde(skip_serializing_if = "IndexMap::is_empty")]
             pub properties: IndexMap<Atom, IndexSet<Atom>>,
             pub states: Vec<JsonBlockstate>,
         }
-        #[derive(Clone, Debug, serde::Serialize)]
+        #[derive(Clone, Debug, Serialize)]
         struct JsonBlockstate {
             #[serde(skip_serializing_if = "core::ops::Not::not")]
             pub default: bool,
@@ -886,30 +901,4 @@ pub fn register_vanilla_blocks(
     }
 
     Ok(())
-}
-
-#[derive(bincode::Encode, bincode::Decode)]
-pub struct EmbeddedCache {
-    pub block_registry: Registry,
-    pub models: ModelRegistry,
-    pub atlas: crate::texture::RawAtlas,
-}
-
-/// Intended to be used by build scripts to compile a client with the assets already generated
-/// and cached.
-/// Currently used by the PS2 version of the client.
-#[cfg(feature = "std")]
-pub fn generate_vanilla_embedded_cache() -> anyhow::Result<EmbeddedCache> {
-    let size = [512, 1024];
-    let square_length = 16;
-    let mut atlas_builder = crate::texture::AtlasBuilder::new(size[0], size[1], square_length);
-    let mut model_cache = ModelRegistryBuilder::new();
-    let mut block_registry = Registry::new();
-    register_vanilla_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
-    let atlas = atlas_builder.finish().into_raw();
-    Ok(EmbeddedCache {
-        block_registry,
-        models: model_cache.finish(),
-        atlas,
-    })
 }

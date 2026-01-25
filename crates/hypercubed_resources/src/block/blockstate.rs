@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow, bail, ensure};
 use core::fmt::Write;
 use portable_std::prelude::*;
 use portable_std::{Atom, Cow, FastHashMap, FastHashSet};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::model::{ModelIndex, ModelRotationInfo};
 use super::{Identifier, RegistryIndex, RightAngleRotation};
@@ -215,7 +215,7 @@ fn load_blockstate_variants(
                             block_index,
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
-                            model_data: ModelData::Single(model.clone()),
+                            model_data: ModelData::Single(model),
                             rough_x_rotation: model_info.x_rotation,
                             rough_y_rotation: model_info.y_rotation,
                         });
@@ -361,7 +361,7 @@ fn load_blockstate_variants(
                             block_index,
                             properties: condition_map,
                             extra_info: BlockstateInfo::default(),
-                            model_data: ModelData::Single(model.clone()),
+                            model_data: ModelData::Single(model),
                             rough_x_rotation: model_info.x_rotation,
                             rough_y_rotation: model_info.y_rotation,
                         });
@@ -850,7 +850,7 @@ pub fn load_liquid_blockstates(
                 .into_iter()
                 .collect(),
             extra_info: BlockstateInfo::default(),
-            model_data: ModelData::Single(model.clone()),
+            model_data: ModelData::Single(model),
             rough_x_rotation: RightAngleRotation::Zero,
             rough_y_rotation: RightAngleRotation::Zero,
         });
@@ -993,11 +993,10 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
     }
 }
 
-#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Blockstate {
     pub block_index: RegistryIndex,
     pub extra_info: BlockstateInfo,
-    #[bincode(with_serde)]
     pub properties: FastHashMap<Atom, Atom>,
     pub model_data: ModelData,
     // Used for rotating collision AABBs.
@@ -1005,7 +1004,7 @@ pub struct Blockstate {
     pub rough_y_rotation: RightAngleRotation,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlockstateInfo {
     pub opacity: BlockOpacity,
     pub light_info: BlockLightInfo,
@@ -1042,14 +1041,14 @@ impl BlockstateInfo {
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize, Default, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BlockstateInfoModifier {
     pub opacity: Option<BlockOpacity>,
     pub light_info: Option<BlockLightInfo>,
     pub collision_info: Option<CollisionInfo>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockOpacity {
     Opaque,
     /// Leaves are either opaque or transparent, depending on graphics settings.
@@ -1063,7 +1062,7 @@ pub enum BlockOpacity {
     Transparent,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockLightInfo {
     pub sky_light_opacity: SkyLightOpacity,
     pub emission_level: u8,
@@ -1078,7 +1077,7 @@ impl Default for BlockLightInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkyLightOpacity {
     /// Transparent blocks allow sky light through unaffected.
     Transparent,
@@ -1088,20 +1087,20 @@ pub enum SkyLightOpacity {
     Opaque,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CollisionInfo {
     Empty,
     FullBlock,
     Complex(Box<[AABB]>),
 }
 
-#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ModelData {
     Single(ModelIndex),
     RandomChoice(Box<[WeightedModel]>),
 }
 
-#[derive(Clone, Copy, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct WeightedModel {
     pub model: ModelIndex,
     pub weight: f32,

@@ -19,6 +19,7 @@ use chunk::{
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
 use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
+use resources::block::ResourceData;
 use resources::block::model::{ModelRegistry, Tint};
 use shader_exports::RawViewInfo;
 use std::sync::Arc;
@@ -113,14 +114,7 @@ pub struct GraphicsState {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(
-        window: Arc<Window>,
-        register_blocks: impl FnOnce(
-            &mut resources::block::Registry,
-            &mut resources::block::model::ModelRegistryBuilder,
-            &mut resources::texture::AtlasBuilder,
-        ) -> anyhow::Result<()>,
-    ) -> anyhow::Result<Box<Self>> {
+    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         // Initialise Vulkan state
         let library = VulkanLibrary::new().context("Failed to load Vulkan library")?;
@@ -314,15 +308,14 @@ impl GraphicsBackend for GraphicsState {
             block_registry,
             model_registry,
         ) = {
-            let size = [1024; 2];
-            let square_length = 16;
-            let mut atlas_builder =
-                resources::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_cache = resources::block::model::ModelRegistryBuilder::new();
-            let mut block_registry = resources::block::Registry::new();
-            register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
-            let atlas = TextureAtlas::from_builder(
-                atlas_builder.finish(),
+            // Load game resources.
+            let ResourceData {
+                block_registry,
+                model_registry,
+                atlas,
+            } = resource_data;
+            let atlas_texture = TextureAtlas::new(
+                &atlas,
                 &device,
                 &render_queue,
                 &(memory_allocator.clone() as Arc<_>),
@@ -341,24 +334,24 @@ impl GraphicsBackend for GraphicsState {
                     allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
                     ..Default::default()
                 },
-                model_cache.custom_block_faces.iter().map(|face| {
-                    face.map(|v| {
+                model_registry.custom_block_faces.iter().map(|face| {
+                    face.vertices.map(|v| {
                         chunk::custom_block::Vertex::new(
                             *v.local_pos.coords.as_ref(),
                             v.uvs,
-                            *v.normal.as_ref(),
-                            matches!(v.tint, Some(Tint::Biome)),
+                            *face.normal.as_ref(),
+                            matches!(face.tint, Some(Tint::Biome)),
                         )
                     })
                 }),
             )
             .context("Error while creating custom block faces buffer")?;
             (
-                atlas,
-                size,
+                atlas_texture,
+                [atlas.width, atlas.height],
                 custom_block_faces_buffer,
                 block_registry,
-                model_cache.finish(),
+                model_registry,
             )
         };
         // Block graphics descriptor set layouts
@@ -765,7 +758,6 @@ impl GraphicsBackend for GraphicsState {
             .remove(&chunk_coords);
     }
 
-    #[expect(clippy::too_many_arguments)]
     #[tracing::instrument(skip_all)]
     fn render(
         &mut self,
@@ -1310,21 +1302,19 @@ pub struct TextureAtlas {
 }
 
 impl TextureAtlas {
-    pub fn from_builder(
-        atlas: resources::texture::Atlas,
+    pub fn new(
+        atlas: &resources::texture::Atlas,
         device: &Arc<VulkanDevice>,
         queue: &Arc<VulkanQueue>,
         memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
         command_buffer_allocator: Arc<dyn VulkanCommandBufferAllocator>,
     ) -> anyhow::Result<Self> {
-        let (width, height) = (atlas.texture.width(), atlas.texture.height());
-        let bytes = atlas.texture.into_vec();
         let image = VulkanImage::new(
             memory_allocator,
             &VulkanImageCreateInfo {
                 image_type: VulkanImageType::Dim2d,
                 format: VulkanFormat::R8G8B8A8_UNORM,
-                extent: [width, height, 1],
+                extent: [atlas.width, atlas.height, 1],
                 usage: VulkanImageUsage::SAMPLED | VulkanImageUsage::TRANSFER_DST,
                 ..Default::default()
             },
@@ -1346,7 +1336,7 @@ impl TextureAtlas {
                     | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            bytes,
+            atlas.texture_bytes.iter().copied(),
         )
         .context("Error while creating atlas pixel staging buffer")?;
         let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(

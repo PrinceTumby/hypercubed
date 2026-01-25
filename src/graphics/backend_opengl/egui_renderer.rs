@@ -12,12 +12,18 @@ use gl::texture::{
     TexEnvMode, TexEnvTarget, TexFilterMode, TexTarget, TexWrapMode, Texture2dFormat,
     Texture2dTarget, TextureDataType, TextureInternalFormat,
 };
-use gl::{GLint, ShapeMode};
+use gl::{GLint, GLsizei, ShapeMode};
 
 // TODO: Use texture buffer objects, update textures using OpenGL.
 
 pub struct Renderer {
     images: FastHashMap<egui::TextureId, ImageData>,
+}
+
+impl Default for Renderer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[repr(C)]
@@ -157,8 +163,7 @@ impl Renderer {
                     image
                         .pixels
                         .iter()
-                        .map(|&color| color.to_array())
-                        .flatten()
+                        .flat_map(|&color| color.to_array())
                         .collect()
                 }
             };
@@ -281,8 +286,8 @@ impl Renderer {
                     gl::fragment::set_scissor(
                         clip_min_x,
                         height as GLint - clip_max_y,
-                        (clip_max_x - clip_min_x).try_into().unwrap(),
-                        (clip_max_y - clip_min_y).try_into().unwrap(),
+                        (clip_max_x - clip_min_x) as GLsizei,
+                        (clip_max_y - clip_min_y) as GLsizei,
                     );
                 }
                 // Unbind array buffer.

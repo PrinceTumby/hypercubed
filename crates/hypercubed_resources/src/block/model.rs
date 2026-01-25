@@ -3,6 +3,7 @@ use bitfield::bitfield;
 use nalgebra::{Matrix4, Point3, Rotation3, Vector3, point};
 use portable_std::prelude::*;
 use portable_std::{Arc, FastHashMap};
+use serde::{Deserialize, Serialize};
 
 use super::{Identifier, RightAngleRotation};
 
@@ -15,35 +16,23 @@ mod std_imports {
 }
 
 #[repr(transparent)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Hash,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ModelIndex(u32);
 
 const EMPTY_MODEL_IDX: ModelIndex = ModelIndex(0);
 
-#[derive(Debug, Default, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ModelRegistry {
     /// Index 0 (`EMPTY_MODEL_IDX`) always contains an empty model.
     pub model_list: Vec<ModelType>,
-    /// Counter-clockwise order is [1, 0, 2, 1, 2, 3].
-    pub custom_block_faces: Vec<[ModelVertex; 4]>,
+    pub custom_block_faces: Vec<CustomModelFace>,
 }
 
 impl core::ops::Index<ModelIndex> for ModelRegistry {
     type Output = ModelType;
 
-    fn index<'a>(&'a self, index: ModelIndex) -> &'a ModelType {
+    fn index(&self, index: ModelIndex) -> &ModelType {
         &self.model_list[usize::try_from(index.0).unwrap()]
     }
 }
@@ -54,32 +43,19 @@ pub struct ModelRegistryBuilder {
     pub completed_models: FastHashMap<(Identifier, ModelRotationInfo), ModelIndex>,
     pub completed_model_combinations: FastHashMap<Box<[RawCompositeModelPart]>, ModelIndex>,
     pub templates: FastHashMap<Identifier, Arc<Template>>,
-    /// Counter-clockwise order is [1, 0, 2, 1, 2, 3].
-    pub custom_block_faces: Vec<[ModelVertex; 4]>,
+    pub custom_block_faces: Vec<CustomModelFace>,
 }
 
 #[cfg(feature = "std")]
 impl core::ops::Index<ModelIndex> for ModelRegistryBuilder {
     type Output = ModelType;
 
-    fn index<'a>(&'a self, index: ModelIndex) -> &'a ModelType {
+    fn index(&self, index: ModelIndex) -> &ModelType {
         &self.model_list[usize::try_from(index.0).unwrap()]
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Hash,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelRotationInfo {
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
@@ -96,6 +72,13 @@ impl ModelRegistryBuilder {
             templates: FastHashMap::new(),
             custom_block_faces: Vec::new(),
         }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Default for ModelRegistryBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -184,7 +167,7 @@ impl ModelRegistryBuilder {
         parts: &[RawCompositeModelPart],
         texture_atlas: &mut texture::AtlasBuilder,
     ) -> anyhow::Result<ModelIndex> {
-        if parts.len() == 0 {
+        if parts.is_empty() {
             return Ok(EMPTY_MODEL_IDX);
         }
         // Ditto here, we don't have the `Equivalent` trait, so we have to allocate a box just to
@@ -801,7 +784,7 @@ impl ModelRegistryBuilder {
                             tint: match face.tint_index {
                                 -1 => None,
                                 // Apparently vanilla only uses one tint index, so anything other
-                                // than -1 just means `Tint::Biome`
+                                // than -1 just means `Tint::Biome`.
                                 _ => Some(Tint::Biome),
                                 // _ => unimplemented!("unknown tint index {}", face.tint_index),
                             },
@@ -818,8 +801,8 @@ impl ModelRegistryBuilder {
                 faces,
             }));
         }
-        // Fall back to more expensive model rendering if we can't specialise
-        let mut converted_faces: Vec<[ModelVertex; 4]> = Vec::new();
+        // Fall back to more expensive model rendering if we can't specialise.
+        let mut converted_faces: Vec<CustomModelFace> = Vec::new();
         for template_element in model_template.elements.unwrap() {
             const FACE_NORMALS: [Vector3<f32>; 6] = [
                 // Top
@@ -852,12 +835,6 @@ impl ModelRegistryBuilder {
                 template_element.faces.west,
             ];
             for face_i in 0..6 {
-                // So I think the issue was using all the PER_FACE_VERTICES.
-                // Think we need to swap orders around to fix up front face.
-                // Also, are the vertices upside down or something?
-                // if face_i != 0 {
-                //     continue;
-                // }
                 let Some(element_face) = element_faces[face_i].clone() else {
                     continue;
                 };
@@ -1002,19 +979,22 @@ impl ModelRegistryBuilder {
                     template_element.start_pos.into(),
                     template_element.end_pos.into(),
                 )?;
-                let mut transformed_face = face_vertices.map(|vertex| ModelVertex {
+                let mut transformed_vertices = face_vertices.map(|vertex| CustomModelVertex {
                     local_pos: complete_matrix.transform_point(&vertex),
                     uvs: [0; 2],
-                    normal: complete_matrix.transform_vector(&face_normal),
-                    tint: converted_face.tint,
                 });
-                for (i, transformed_vertex) in transformed_face.iter_mut().enumerate() {
+                for (i, transformed_vertex) in transformed_vertices.iter_mut().enumerate() {
                     transformed_vertex.uvs = converted_face.uvs[i];
                 }
+                let transformed_face = CustomModelFace {
+                    vertices: transformed_vertices,
+                    normal: complete_matrix.transform_vector(&face_normal),
+                    tint: converted_face.tint,
+                };
                 converted_faces.push(transformed_face);
             }
         }
-        // Add converted model for later rendering
+        // Append converted faces to global list, grab start index and length.
         let start_face: u32 = self.custom_block_faces.len().try_into().unwrap();
         let num_faces: u32 = converted_faces.len().try_into().unwrap();
         self.custom_block_faces
@@ -1024,7 +1004,6 @@ impl ModelRegistryBuilder {
         }))
     }
 
-    // #[tracing::instrument(skip(atlas))]
     fn load_face_atlas_uvs(
         atlas: &mut texture::AtlasBuilder,
         face: &TemplateElementFace,
@@ -1190,7 +1169,7 @@ pub enum ModelState {
     Pending,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ModelType {
     /// Model with no elements. Example: Air
     None,
@@ -1208,9 +1187,7 @@ pub enum ModelType {
     Composite(Box<[CompositeModelPart]>),
 }
 
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct BlockInfo {
     pub flags: BlockFlags,
     /// In order of top, bottom, north, south, east and west.
@@ -1219,23 +1196,19 @@ pub struct BlockInfo {
 }
 
 bitfield! {
-    #[derive(Clone, Copy)]
-    #[derive(serde::Serialize, serde::Deserialize)]
-    #[derive(bincode::Encode, bincode::Decode)]
+    #[derive(Clone, Copy, Serialize, Deserialize)]
     pub struct BlockFlags(u8);
     impl Debug;
     pub ambient_occlusion, set_ambient_occlusion: 0;
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OverlayedBlockInfo {
     pub flags: BlockFlags,
     pub faces: Vec<OverlayedBlockFace>,
 }
 
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct OverlayedBlockFace {
     pub face_i: u8,
     pub tint: Option<Tint>,
@@ -1244,57 +1217,30 @@ pub struct OverlayedBlockFace {
     pub uv_rotation: RightAngleRotation,
 }
 
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct LiquidInfo {
     pub uvs: [u16; 4],
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OtherInfo {
     pub start_face_and_len: [u32; 2],
 }
 
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CompositeModelPart {
     pub model_idx: ModelIndex,
 }
 
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
-pub struct ModelVertex {
-    #[bincode(with_serde)]
-    pub local_pos: Point3<f32>,
-    pub uvs: [u16; 2],
-    #[bincode(with_serde)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct CustomModelFace {
+    /// Counter-clockwise order is [1, 0, 2, 1, 2, 3].
+    pub vertices: [CustomModelVertex; 4],
     pub normal: Vector3<f32>,
     pub tint: Option<Tint>,
 }
 
-impl PartialEq for ModelVertex {
+impl PartialEq for CustomModelFace {
     fn eq(&self, other: &Self) -> bool {
         fn f32_eq(x: &f32, y: &f32) -> bool {
             x.total_cmp(y).is_eq()
@@ -1303,16 +1249,52 @@ impl PartialEq for ModelVertex {
             Iterator::zip(left.as_slice().iter(), right.as_slice().iter())
                 .all(|(l, r)| f32_eq(l, r))
         }
-        self.uvs == other.uvs
-            && self.tint == other.tint
-            && vec3_eq(&self.local_pos.coords, &other.local_pos.coords)
+        self.vertices == other.vertices
             && vec3_eq(&self.normal, &other.normal)
+            && self.tint == other.tint
     }
 }
 
-impl Eq for ModelVertex {}
+impl Eq for CustomModelFace {}
 
-impl core::hash::Hash for ModelVertex {
+impl core::hash::Hash for CustomModelFace {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        fn f32_hash<H: core::hash::Hasher>(x: &f32, state: &mut H) {
+            x.to_bits().hash(state);
+        }
+        fn vec3_hash<H: core::hash::Hasher>(vec: &Vector3<f32>, state: &mut H) {
+            f32_hash(&vec.x, state);
+            f32_hash(&vec.y, state);
+            f32_hash(&vec.z, state);
+        }
+        self.vertices.hash(state);
+        vec3_hash(&self.normal, state);
+        self.tint.hash(state);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct CustomModelVertex {
+    pub local_pos: Point3<f32>,
+    pub uvs: [u16; 2],
+}
+
+impl PartialEq for CustomModelVertex {
+    fn eq(&self, other: &Self) -> bool {
+        fn f32_eq(x: &f32, y: &f32) -> bool {
+            x.total_cmp(y).is_eq()
+        }
+        fn vec3_eq(left: &Vector3<f32>, right: &Vector3<f32>) -> bool {
+            Iterator::zip(left.as_slice().iter(), right.as_slice().iter())
+                .all(|(l, r)| f32_eq(l, r))
+        }
+        self.uvs == other.uvs && vec3_eq(&self.local_pos.coords, &other.local_pos.coords)
+    }
+}
+
+impl Eq for CustomModelVertex {}
+
+impl core::hash::Hash for CustomModelVertex {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         fn f32_hash<H: core::hash::Hasher>(x: &f32, state: &mut H) {
             x.to_bits().hash(state);
@@ -1324,12 +1306,10 @@ impl core::hash::Hash for ModelVertex {
         }
         vec3_hash(&self.local_pos.coords, state);
         self.uvs.hash(state);
-        vec3_hash(&self.normal, state);
-        self.tint.hash(state);
     }
 }
 
-#[derive(Clone, Copy, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct ModelElementFace {
     pub uvs: [[u16; 2]; 4],
     /// Model rendering currently uses entire model instancing, and so doesn't use cullfaces.
@@ -1361,29 +1341,17 @@ struct ModelElementFace {
 //     pub west: Option<ModelElementFace>,
 // }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tint {
     Biome,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Template {
     pub parent: Option<String>,
     #[serde(default = "bool_true", rename = "ambientocclusion")]
     pub ambient_occlusion: bool,
     pub display: Option<ModelDisplay>,
-    #[bincode(with_serde)]
     #[serde(default, rename = "textures")]
     pub texture_variables: FastHashMap<String, String>,
     pub elements: Option<Vec<TemplateElement>>,
@@ -1432,9 +1400,7 @@ impl Template {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ModelDisplay {
     pub thirdperson_righthand: Option<ModelDisplayPosition>,
     pub thirdperson_lefthand: Option<ModelDisplayPosition>,
@@ -1446,27 +1412,20 @@ pub struct ModelDisplay {
     pub fixed: Option<ModelDisplayPosition>,
 }
 
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ModelDisplayPosition {
-    #[bincode(with_serde)]
     #[serde(default)]
     pub rotation: Vector3<f32>,
-    #[bincode(with_serde)]
     #[serde(default)]
     pub translation: Vector3<f32>,
-    #[bincode(with_serde)]
     #[serde(default)]
     pub scale: Vector3<f32>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TemplateElement {
-    #[bincode(with_serde)]
     #[serde(rename = "from")]
     pub start_pos: Point3<f32>,
-    #[bincode(with_serde)]
     #[serde(rename = "to")]
     pub end_pos: Point3<f32>,
     pub rotation: Option<ModelElementRotation>,
@@ -1478,27 +1437,15 @@ pub struct TemplateElement {
 
 /// Variant information taken from parent blockstate.
 /// Passed through template elements as templates may be multiple models combined.
-#[derive(
-    Clone, Copy, Debug, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct TemplateElementBlockstateRotation {
     pub x_rotation: RightAngleRotation,
     pub y_rotation: RightAngleRotation,
     pub uv_lock: bool,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelElementRotation {
-    #[bincode(with_serde)]
     pub origin: Point3<f32>,
     pub angle: f32,
     pub axis: RotationAxis,
@@ -1506,17 +1453,7 @@ pub struct ModelElementRotation {
     pub rescale: bool,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RotationAxis {
     X,
@@ -1524,9 +1461,7 @@ pub enum RotationAxis {
     Z,
 }
 
-#[derive(
-    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TemplateElementFaces {
     #[serde(rename = "up")]
     pub top: Option<TemplateElementFace>,
@@ -1626,9 +1561,7 @@ impl<T> Iterator for TemplateElementFacesIterator<T> {
     }
 }
 
-#[derive(
-    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode,
-)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TemplateElementFace {
     #[serde(rename = "uv")]
     pub uvs: Option<[f32; 4]>,
@@ -1663,17 +1596,7 @@ impl TemplateElementFace {
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockFace {

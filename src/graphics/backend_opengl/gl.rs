@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 pub use core::ffi::{c_float, c_int, c_uint};
 use core::num::NonZeroU32;
 

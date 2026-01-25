@@ -41,6 +41,12 @@ pub enum SelectedGraphicsBackend {
         value(name = "opengl")
     )]
     OpenGL,
+    #[cfg(feature = "graphics_backend_software")]
+    #[cfg_attr(
+        any(feature = "platform_winit", feature = "platform_linux_drm"),
+        value(name = "software")
+    )]
+    Software,
     #[cfg(feature = "graphics_backend_vulkan")]
     #[cfg_attr(
         any(feature = "platform_winit", feature = "platform_linux_drm"),
@@ -55,6 +61,7 @@ pub enum SelectedGraphicsBackend {
     Wgpu,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for SelectedGraphicsBackend {
     fn default() -> Self {
         cfg_if::cfg_if! {
@@ -64,6 +71,8 @@ impl Default for SelectedGraphicsBackend {
                 Self::OpenGL
             } else if #[cfg(feature = "graphics_backend_wgpu")] {
                 Self::Wgpu
+            } else if #[cfg(feature = "graphics_backend_software")] {
+                Self::Software
             }
         }
     }
@@ -74,6 +83,8 @@ impl core::fmt::Display for SelectedGraphicsBackend {
         let name = match *self {
             #[cfg(feature = "graphics_backend_opengl")]
             Self::OpenGL => "OpenGL",
+            #[cfg(feature = "graphics_backend_software")]
+            Self::Software => "Software",
             #[cfg(feature = "graphics_backend_vulkan")]
             Self::Vulkan => "Vulkan",
             #[cfg(feature = "graphics_backend_wgpu")]
@@ -88,9 +99,7 @@ use crate::platform::libs::winit;
 use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use chunk::{HasSubchunkData, SubchunkData};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
-use portable_std::Arc;
-use portable_std::{FastHashMap, FastHashSet};
-use std::collections::VecDeque;
+use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 use threadpool::ThreadPool;
 use winit::window::Window;
 
@@ -108,11 +117,14 @@ impl Default for GraphicsOptions {
 pub trait GraphicsBackend {
     fn new(
         window: Arc<Window>,
-        register_blocks: impl FnOnce(
-            &mut resources::block::Registry,
-            &mut resources::block::model::ModelRegistryBuilder,
-            &mut resources::texture::AtlasBuilder,
-        ) -> anyhow::Result<()>,
+        // TODO: Rename this to reflect that it's no longer just for "embedded".
+        //       Something like `ResourceData`?.
+        resource_data: resources::block::ResourceData,
+        // register_blocks: impl FnOnce(
+        //     &mut resources::block::Registry,
+        //     &mut resources::block::model::ModelRegistryBuilder,
+        //     &mut resources::texture::AtlasBuilder,
+        // ) -> anyhow::Result<()>,
     ) -> anyhow::Result<Box<Self>>
     where
         Self: Sized;
@@ -138,6 +150,7 @@ pub trait GraphicsBackend {
 
     fn remove_chunk(&mut self, chunk_coords: [i32; 2]);
 
+    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
         camera: &Camera,
@@ -205,9 +218,9 @@ impl Camera {
     pub fn generate_reversed_depth_view_matrix(&self) -> Matrix4<f32> {
         // Using a standard depth buffer had issues with Z-fighting on faraway objects (snow
         // clipping through spruce leaves from high enough up was a particularly bad case).
-        Matrix4::new_nonuniform_scaling(&Vector3::new(1.0, 1.0, -0.5))
+        self.generate_view_matrix()
+            .append_nonuniform_scaling(&Vector3::new(1.0, 1.0, -0.5))
             .append_translation(&Vector3::new(0.0, 0.0, 0.5))
-            * self.generate_view_matrix()
     }
 
     pub fn generate_reversed_depth_view_matrix_slice(&self) -> [[f32; 4]; 4] {
@@ -309,15 +322,15 @@ impl DebugVisualisationDrawMethod {
 }
 
 #[tracing::instrument(skip_all)]
-pub fn for_each_visible_subchunk<F, S>(
+pub fn for_each_visible_subchunk<'a, F, S>(
     camera: &Camera,
-    subchunks: &FastHashMap<[i32; 3], S>,
+    subchunks: &'a FastHashMap<[i32; 3], S>,
     loaded_chunks: &FastHashSet<[i32; 2]>,
     debug_state: &DebugState,
     mut subchunk_fn: F,
 ) -> DebugOutput
 where
-    F: FnMut([i32; 3], &S),
+    F: FnMut([i32; 3], &'a S),
     S: HasSubchunkData,
 {
     // Find all chunks that are actually visible (have all of their neighbours), to prevent
@@ -436,16 +449,14 @@ where
                 if let Some(from_dir) = from_dir {
                     // Check we can go to the neighbour from the last subchunk through this
                     // subchunk
-                    if debug_state.cave_cull_check_connectivity {
-                        if let Some(subchunk) = subchunk_maybe {
-                            if !subchunk
-                                .get_data()
-                                .connectivity
-                                .connects(&from_dir, &to_dir)
-                            {
-                                continue;
-                            }
-                        }
+                    if debug_state.cave_cull_check_connectivity
+                        && let Some(subchunk) = subchunk_maybe
+                        && !subchunk
+                            .get_data()
+                            .connectivity
+                            .connects(&from_dir, &to_dir)
+                    {
+                        continue;
                     }
                 }
                 // Check neighbour lies in camera frustum

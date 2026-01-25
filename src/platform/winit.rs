@@ -40,15 +40,13 @@ pub fn main() -> anyhow::Result<()> {
         use core::net::{IpAddr, SocketAddr};
         // First, try parsing as an "IP:PORT" socket address.
         let server_socket_address: Result<SocketAddr, _> = args.server_address.parse();
-        match server_socket_address {
-            Ok(address) => break 'blk address,
-            Err(_) => {}
-        }
+        if let Ok(address) = server_socket_address {
+            break 'blk address;
+        };
         // If it doesn't parse correctly as a full socket address, try parsing as an IP address.
         let server_ip_address: Result<IpAddr, _> = args.server_address.parse();
-        match server_ip_address {
-            Ok(ip) => break 'blk SocketAddr::new(ip, DEFAULT_PORT),
-            Err(_) => {}
+        if let Ok(ip) = server_ip_address {
+            break 'blk SocketAddr::new(ip, DEFAULT_PORT);
         }
         bail!("Unable to parse server address as either a socket address, or as an IP address");
     };

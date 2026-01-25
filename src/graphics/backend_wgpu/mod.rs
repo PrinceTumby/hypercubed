@@ -13,9 +13,9 @@ use chunk::{
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
 use nalgebra::{Perspective3, Point3};
-use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
+use portable_std::{Arc, FastHashMap, FastHashMapEntry, FastHashSet};
+use resources::block::ResourceData;
 use resources::block::model::{ModelRegistry, Tint};
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
 use wgpu::util::DeviceExt as _;
@@ -131,14 +131,7 @@ impl ViewInfo {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(
-        window: Arc<Window>,
-        register_blocks: impl FnOnce(
-            &mut resources::block::Registry,
-            &mut resources::block::model::ModelRegistryBuilder,
-            &mut resources::texture::AtlasBuilder,
-        ) -> anyhow::Result<()>,
-    ) -> anyhow::Result<Box<Self>> {
+    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -262,34 +255,27 @@ impl GraphicsBackend for GraphicsState {
             block_registry,
             model_registry,
         ) = {
-            use resources;
-            let size = [1024; 2];
-            let square_length = 16;
-            let mut atlas_builder =
-                resources::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_registry_builder = resources::block::model::ModelRegistryBuilder::new();
-            let mut block_registry = resources::block::Registry::new();
-            register_blocks(
-                &mut block_registry,
-                &mut model_registry_builder,
-                &mut atlas_builder,
-            )?;
-            let atlas = TextureAtlas::from_builder(
-                atlas_builder,
-                &device,
-                &queue,
-                Some("Block and Item Atlas"),
-            );
-            let model_registry = model_registry_builder.finish();
+            // Load game resources.
+            let ResourceData {
+                block_registry,
+                model_registry,
+                atlas,
+            } = resource_data;
+            let atlas_texture =
+                TextureAtlas::new(&atlas, &device, &queue, Some("Block and Item Atlas"));
             let custom_block_faces: Vec<_> = model_registry
                 .custom_block_faces
                 .iter()
                 .map(|face| {
-                    face.map(|v| chunk::custom_block::Vertex {
+                    face.vertices.map(|v| chunk::custom_block::Vertex {
                         pos: *v.local_pos.coords.as_ref(),
                         uvs: v.uvs,
-                        normal: *v.normal.as_ref(),
-                        tint_percentage: matches!(v.tint, Some(Tint::Biome)) as u8 as f32,
+                        normal: *face.normal.as_ref(),
+                        tint_percentage: if matches!(face.tint, Some(Tint::Biome)) {
+                            1.0
+                        } else {
+                            0.0
+                        },
                     })
                 })
                 .collect();
@@ -300,8 +286,8 @@ impl GraphicsBackend for GraphicsState {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
                 });
             (
-                atlas,
-                size,
+                atlas_texture,
+                [atlas.width, atlas.height],
                 custom_block_faces_buffer,
                 block_registry,
                 model_registry,
@@ -624,7 +610,6 @@ impl GraphicsBackend for GraphicsState {
             .remove(&chunk_coords);
     }
 
-    #[expect(clippy::too_many_arguments)]
     #[tracing::instrument(skip_all)]
     fn render(
         &mut self,
@@ -678,7 +663,7 @@ impl GraphicsBackend for GraphicsState {
         self.resources.queue.write_buffer(
             &self.view_info_buffer,
             0,
-            bytemuck::cast_slice(&[ViewInfo::new(&camera, self.size)]),
+            bytemuck::cast_slice(&[ViewInfo::new(camera, self.size)]),
         );
         self.resources.queue.write_buffer(
             &self.debug_crosshair_view_info_buffer,
@@ -763,7 +748,7 @@ impl GraphicsBackend for GraphicsState {
             let mut tinted_block_face_draw_args: Vec<DrawIndirectArgs> = Vec::new();
             let mut custom_block_draw_args: Vec<DrawIndirectArgs> = Vec::new();
             debug_output = super::for_each_visible_subchunk(
-                &camera,
+                camera,
                 &self.subchunk_data_storage.subchunks,
                 &self.subchunk_data_storage.loaded_chunks,
                 debug_state,
@@ -945,7 +930,7 @@ impl GraphicsBackend for GraphicsState {
         }
         self.resources
             .queue
-            .submit(std::iter::once(encoder.finish()));
+            .submit(core::iter::once(encoder.finish()));
         output.present();
         self.egui_renderer
             .free_textures(&egui_full_output.textures_delta.free);
@@ -1014,17 +999,15 @@ pub struct TextureAtlas {
 }
 
 impl TextureAtlas {
-    pub fn from_builder(
-        builder: resources::texture::AtlasBuilder,
+    pub fn new(
+        atlas: &resources::texture::Atlas,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: Option<&str>,
     ) -> Self {
-        let (width, height) = (builder.texture.width(), builder.texture.height());
-        let bytes = builder.texture.into_vec();
         let size = wgpu::Extent3d {
-            width,
-            height,
+            width: atlas.width,
+            height: atlas.height,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1044,11 +1027,11 @@ impl TextureAtlas {
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
-            &bytes,
+            &atlas.texture_bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
+                bytes_per_row: Some(atlas.width * 4),
+                rows_per_image: Some(atlas.height),
             },
             size,
         );

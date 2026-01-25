@@ -82,7 +82,7 @@ pub mod point {
 
         pub const fn wgpu_desc() -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 // WGPU doesn't support point sizes, so we internally convert to quads in the
                 // shader.
                 step_mode: wgpu::VertexStepMode::Instance,
@@ -176,7 +176,7 @@ pub mod line {
 
         pub const fn wgpu_desc() -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: Self::ATTRIBUTES,
             }
@@ -266,7 +266,7 @@ pub mod triangle {
 
         pub fn wgpu_desc() -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: Self::ATTRIBUTES,
             }
@@ -345,7 +345,7 @@ pub mod crosshair {
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: Self::ATTRIBUTES,
             }

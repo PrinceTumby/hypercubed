@@ -1,5 +1,4 @@
-#![cfg_attr(not(feature = "std"), allow(unused))]
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(feature = "std"), no_std, allow(unused))]
 
 pub mod aabb;
 pub mod block;
@@ -12,28 +11,17 @@ pub use identifier::{Atom as IdentifierAtom, Identifier, ParseIdentifierError};
 
 use bimap::BiMap;
 use portable_std::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[repr(transparent)]
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
-    bincode::Encode,
-    bincode::Decode,
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct RegistryIndex(u16);
 
-#[derive(Default, bincode::Encode, bincode::Decode)]
+#[derive(Default, Serialize, Deserialize)]
 struct RegistryData<T> {
     entries: Vec<T>,
-    #[bincode(with_serde)]
     identifier_map: BiMap<Identifier, RegistryIndex>,
 }
 

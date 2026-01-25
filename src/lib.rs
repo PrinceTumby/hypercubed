@@ -10,6 +10,7 @@
 )]
 #![deny(clippy::alloc_instead_of_core)]
 #![cfg_attr(not(feature = "mini_std"), no_std)]
+#![cfg_attr(feature = "graphics_backend_software", feature(portable_simd))]
 
 #[cfg(not(any(feature = "mini_std", test)))]
 #[macro_use]
@@ -18,6 +19,7 @@ extern crate alloc;
 // #[cfg(not(feature = "mini_std"))]
 // extern crate portable_std as std;
 // TODO: Try this (^), to see if we can simplify imports in crates.
+// TODO: Rename `portable_std` to `hypercubed_std`.
 
 pub mod portable_prelude {
     pub use portable_std::prelude::*;
@@ -225,6 +227,9 @@ impl ApplicationHandler for App {
                 .create_window(Window::default_attributes().with_title("Hypercubed"))
                 .unwrap(),
         );
+        // Load resources, and setup a graphics backend.
+        let resource_data =
+            platform::load_resource_data().expect("Error while loading resource data");
         cfg_if::cfg_if! {
             if #[cfg(any(feature = "platform_winit", feature = "platform_linux_drm"))] {
                 let graphics_backend: Box<dyn GraphicsBackend> =
@@ -233,7 +238,15 @@ impl ApplicationHandler for App {
                         SelectedGraphicsBackend::OpenGL => {
                             graphics::backend_opengl::GraphicsState::new(
                                 window.clone(),
-                                resources::block::register_vanilla_blocks,
+                                resource_data,
+                            )
+                            .unwrap()
+                        }
+                        #[cfg(feature = "graphics_backend_software")]
+                        SelectedGraphicsBackend::Software => {
+                            graphics::backend_software::GraphicsState::new(
+                                window.clone(),
+                                resource_data,
                             )
                             .unwrap()
                         }
@@ -241,16 +254,18 @@ impl ApplicationHandler for App {
                         SelectedGraphicsBackend::Vulkan => {
                             graphics::backend_vulkan::GraphicsState::new(
                                 window.clone(),
-                                resources::block::register_vanilla_blocks,
+                                resource_data,
                             )
                             .unwrap()
                         }
                         #[cfg(feature = "graphics_backend_wgpu")]
-                        SelectedGraphicsBackend::Wgpu => graphics::backend_wgpu::GraphicsState::new(
-                            window.clone(),
-                            resources::block::register_vanilla_blocks,
-                        )
-                        .unwrap(),
+                        SelectedGraphicsBackend::Wgpu => {
+                            graphics::backend_wgpu::GraphicsState::new(
+                                window.clone(),
+                                resource_data,
+                            )
+                            .unwrap()
+                        }
                     };
             } else {
                 let graphics_backend =

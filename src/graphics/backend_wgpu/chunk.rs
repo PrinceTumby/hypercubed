@@ -4,16 +4,15 @@ use crate::graphics::chunk::{HasSubchunkData, SubchunkConnectivity, SubchunkData
 use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32};
 use ahash::AHasher;
 use core::hash::Hasher;
+use core::marker::PhantomData;
 use fixedbitset::FixedBitSet;
 use nalgebra::{Matrix3, Rotation3};
-use portable_std::{FastHashMap, FastHashSet};
+use portable_std::{Arc, FastHashMap, FastHashSet};
 use resources::block::RightAngleRotation;
 use resources::block::blockstate::{self, BlockOpacity};
 use resources::block::model::{ModelIndex, ModelType};
 use resources::block::model::{ModelRegistry, Tint};
 use resources::identifier;
-use std::marker::PhantomData;
-use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
@@ -192,10 +191,10 @@ pub struct BufferManager<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK
 impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
     BufferManager<T, BUFFER_SIZE, CHUNK_SIZE>
 {
-    // Assert buffer contains a whole number of chunks
-    const _ASSERT1: () = assert!(BUFFER_SIZE % CHUNK_SIZE == 0);
-    // Assert vertices fit nicely into chunks
-    const _ASSERT2: () = assert!(CHUNK_SIZE % std::mem::size_of::<T>() == 0);
+    // Assert buffer contains a whole number of chunks.
+    const _ASSERT1: () = assert!(BUFFER_SIZE.is_multiple_of(CHUNK_SIZE));
+    // Assert vertices fit nicely into chunks.
+    const _ASSERT2: () = assert!(CHUNK_SIZE.is_multiple_of(core::mem::size_of::<T>()));
 
     pub fn new(device: &wgpu::Device, usages: wgpu::BufferUsages) -> Self {
         let num_chunks = (BUFFER_SIZE / CHUNK_SIZE) as u64;
@@ -229,7 +228,7 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
         for i in 0..self.usage_map.len() {
             let area = &mut self.usage_map[i];
             if area.is_free() {
-                use std::cmp::Ordering;
+                use core::cmp::Ordering;
                 match area.num_chunks.cmp(&num_chunks_needed) {
                     Ordering::Greater => {
                         // Split area into used portion and leftover free protion
@@ -260,7 +259,7 @@ impl<T: bytemuck::Pod, const BUFFER_SIZE: usize, const CHUNK_SIZE: usize>
                     )
                     .unwrap();
                 buffer_window.copy_from_slice(items_byte_slice);
-                return (buffer_offset / std::mem::size_of::<T>() as u64)
+                return (buffer_offset / core::mem::size_of::<T>() as u64)
                     .try_into()
                     .unwrap();
             } else {
@@ -468,26 +467,26 @@ pub mod block_face {
                 // Top
                 Rotation3::identity(),
                 // Bottom
-                Rotation3::from_euler_angles(std::f32::consts::PI, 0.0, 0.0),
+                Rotation3::from_euler_angles(core::f32::consts::PI, 0.0, 0.0),
                 // North
                 Rotation3::from_euler_angles(
-                    -std::f32::consts::FRAC_PI_2,
+                    -core::f32::consts::FRAC_PI_2,
                     0.0,
-                    std::f32::consts::PI,
+                    core::f32::consts::PI,
                 ),
                 // South
-                Rotation3::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0),
+                Rotation3::from_euler_angles(core::f32::consts::FRAC_PI_2, 0.0, 0.0),
                 // East
                 Rotation3::from_euler_angles(
                     0.0,
-                    std::f32::consts::FRAC_PI_2,
-                    -std::f32::consts::FRAC_PI_2,
+                    core::f32::consts::FRAC_PI_2,
+                    -core::f32::consts::FRAC_PI_2,
                 ),
                 // West
                 Rotation3::from_euler_angles(
                     0.0,
-                    -std::f32::consts::FRAC_PI_2,
-                    std::f32::consts::FRAC_PI_2,
+                    -core::f32::consts::FRAC_PI_2,
+                    core::f32::consts::FRAC_PI_2,
                 ),
             ]
         }
@@ -527,7 +526,7 @@ pub mod block_face {
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: Self::ATTRIBUTES,
             }
@@ -574,7 +573,7 @@ pub mod block_face {
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: Self::ATTRIBUTES,
             }
@@ -611,14 +610,14 @@ pub mod block_face {
 
     pub type BlockFaceVertexBufferManager = VertexBufferManager<
         Vertex,
-        { std::mem::size_of::<[[Vertex; 4]; 1 << 20]>() },
-        { std::mem::size_of::<[Vertex; 4]>() },
+        { core::mem::size_of::<[[Vertex; 4]; 1 << 20]>() },
+        { core::mem::size_of::<[Vertex; 4]>() },
     >;
 
     pub type BlockFaceInstanceBufferManager = InstanceBufferManager<
         Instance,
-        { std::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
-        { std::mem::size_of::<[Instance; 4]>() },
+        { core::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
+        { core::mem::size_of::<[Instance; 4]>() },
     >;
 }
 
@@ -709,7 +708,7 @@ pub mod tinted_block_face {
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: Self::ATTRIBUTES,
             }
@@ -748,14 +747,14 @@ pub mod tinted_block_face {
 
     pub type TintedBlockFaceVertexBufferManager = VertexBufferManager<
         Vertex,
-        { std::mem::size_of::<[[Vertex; 4]; 1 << 20]>() },
-        { std::mem::size_of::<[Vertex; 4]>() },
+        { core::mem::size_of::<[[Vertex; 4]; 1 << 20]>() },
+        { core::mem::size_of::<[Vertex; 4]>() },
     >;
 
     pub type TintedBlockFaceInstanceBufferManager = InstanceBufferManager<
         Instance,
-        { std::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
-        { std::mem::size_of::<[Instance; 4]>() },
+        { core::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
+        { core::mem::size_of::<[Instance; 4]>() },
     >;
 }
 
@@ -858,7 +857,7 @@ pub mod custom_block {
 
         pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
             wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: Self::ATTRIBUTES,
             }
@@ -891,8 +890,8 @@ pub mod custom_block {
 
     pub type CustomBlockInstanceBufferManager = InstanceBufferManager<
         Instance,
-        { std::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
-        { std::mem::size_of::<[Instance; 4]>() },
+        { core::mem::size_of::<[[Instance; 4]; 1 << 20]>() },
+        { core::mem::size_of::<[Instance; 4]>() },
     >;
 }
 
@@ -1063,7 +1062,6 @@ pub fn process_subchunk(
                     &mut custom_block_instance_groups,
                     model_registry,
                     chunk,
-                    blockstate_info,
                     block_opacity,
                     face_cull_map,
                     face_light_map,
@@ -1374,6 +1372,7 @@ pub fn finalise_subchunk(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_subchunk_model(
     block_faces: &mut [Vec<block_face::Instance>; 6],
     tinted_block_faces: &mut [Vec<tinted_block_face::Instance>; 6],
@@ -1383,7 +1382,6 @@ fn process_subchunk_model(
     >,
     model_registry: &ModelRegistry,
     chunk: &crate::RawChunk,
-    blockstate_info: &blockstate::Blockstate,
     block_opacity: BlockOpacity,
     face_cull_map: [bool; 6],
     face_light_map: [[u8; 2]; 6],
@@ -1395,7 +1393,7 @@ fn process_subchunk_model(
 ) {
     let model = &model_registry[model_idx];
     match model {
-        ModelType::None => return,
+        ModelType::None => {}
         ModelType::Block(info) => {
             match block_opacity {
                 BlockOpacity::Opaque => {
@@ -1484,9 +1482,7 @@ fn process_subchunk_model(
                 .lighting
                 .get_section(MIN_HEIGHT_I32, subchunk_y + (MIN_HEIGHT_I32 / 16))
                 .unwrap();
-            let block_instances = custom_block_instance_groups
-                .entry(*info)
-                .or_insert_with(Vec::new);
+            let block_instances = custom_block_instance_groups.entry(*info).or_default();
             block_instances.push(custom_block::Instance::new(
                 [global_x, global_y, global_z],
                 tint_color,
@@ -1502,7 +1498,6 @@ fn process_subchunk_model(
                     custom_block_instance_groups,
                     model_registry,
                     chunk,
-                    blockstate_info,
                     block_opacity,
                     face_cull_map,
                     face_light_map,

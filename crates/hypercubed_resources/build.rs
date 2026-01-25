@@ -49,12 +49,23 @@ fn main() {
         &rich_term,
     )
     .unwrap();
+    // At the time of writing, compression takes the file size down from 1.22MB to just 26KB, which
+    // given the file gets embedded into the final binary, this reduces the binary size by a pretty
+    // decent amount.
+    // Ideally we'd store a compressed version using a file format that isn't JSON, but it's
+    // currently the fastest self-describing format for this kind of data (mostly just repeated
+    // strings).
+    // Any big improvement would have to come from parsing the JSON data here into a
+    // `Vec<Registration>`, and then saving that using something like postcard.
+    // Unforunately that would require moving the block registration types into yet another crate,
+    // which I don't think is worth the extra annoyance.
+    let compressed_json = miniz_oxide::deflate::compress_to_vec_zlib(exported_json.as_bytes(), 9);
     std::fs::write(
         format!(
-            "{}/vanilla_blocks_generated.json",
+            "{}/vanilla_blocks_generated.json.zlib",
             std::env::var("OUT_DIR").unwrap()
         ),
-        &exported_json,
+        &compressed_json,
     )
     .unwrap();
 }

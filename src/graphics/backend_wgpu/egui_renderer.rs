@@ -1,6 +1,7 @@
 use super::{GraphicsResources, Texture};
 use ahash::AHashMap;
 use egui::{TextureId, epaint};
+use portable_std::Cow;
 use wgpu::util::DeviceExt as _;
 use wgpu::{include_wgsl, vertex_attr_array};
 
@@ -45,7 +46,7 @@ impl Vertex {
 
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            array_stride: core::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: Self::ATTRIBUTES,
         }
@@ -55,7 +56,7 @@ impl Vertex {
 pub struct RenderMeshInfo {
     pub scissor_rect: ScissorRect,
     pub base_vertex: i32,
-    pub index_slice: std::ops::Range<u32>,
+    pub index_slice: core::ops::Range<u32>,
     pub texture_id: TextureId,
 }
 
@@ -227,7 +228,7 @@ impl Renderer {
             let rgba_pixels = match &texture_data.image {
                 epaint::ImageData::Color(image) => {
                     assert_eq!(width * height, image.pixels.len());
-                    std::borrow::Cow::Borrowed(&image.pixels)
+                    Cow::Borrowed(&image.pixels)
                 }
             };
             let rgba_bytes: &[u8] = bytemuck::cast_slice(rgba_pixels.as_slice());

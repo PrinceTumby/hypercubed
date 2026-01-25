@@ -22,7 +22,6 @@ exclude = [
 ahash = { version = "0", default-features = false }
 anyhow = { version = "1", default-features = false }
 bimap = { version = "0.6", default-features = false, features = ["serde"] }
-bincode = { version = "2", default-features = false, features = ["alloc", "derive", "serde"] }
 bitfield = "0"
 bitflags = "2"
 bytemuck = { version = "1", features = ["derive"] }
@@ -36,6 +35,7 @@ lazy_static = "1"
 log = "0"
 miniz_oxide = "0"
 once_cell = { version = "1", default-features = false, features = ["alloc"] }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 # If updating, also update in "crates/hypercubed_vk_shaders/Cargo.toml"
@@ -83,9 +83,12 @@ name = "hypercubed"
 [features]
 default = [
     "platform_winit",
+    "graphics_backend_opengl",
     "graphics_backend_vulkan",
     "graphics_backend_wgpu",
-    "graphics_backend_opengl",
+    # "graphics_backend_software",
+    # "embed_vanilla_cache",
+    # "tracy",
 ]
 # default = ["platform_linux_drm", "graphics_backend_opengl"]
 
@@ -121,6 +124,7 @@ mini_std = [
     "nom/default",
     "nom_locate/default",
     "portable_std/default",
+    "postcard/use-std",
     "rand/default",
     "resources/default",
     "serde/default",
@@ -173,8 +177,7 @@ graphics_backend_software = [
     # Dependencies
     "dep:multiversion",
     "dep:pixels",
-    "dep:wide",
-    "dep:fast-srgb8",
+    "dep:rayon",
 ]
 
 # Alternative platforms
@@ -210,8 +213,9 @@ platform_linux_drm = [
 
 [build-dependencies]
 anyhow.workspace = true
-bincode.workspace = true
 miniz_oxide.workspace = true
+postcard.workspace = true
+serde.workspace = true
 
 [build-dependencies.resources]
 package = "hypercubed_resources"
@@ -223,7 +227,6 @@ aes = "0.8"
 ahash = { workspace = true }
 anyhow = { version = "1", default-features = false }
 bimap.workspace = true
-bincode.workspace = true
 bitfield.workspace = true
 bitflags.workspace = true
 bytebuffer = { version = "2", optional = true }
@@ -236,7 +239,6 @@ crab_nbt = { version = "0.2", default-features = false }
 drm = { version = "0.14", optional = true }
 egli = { git = "https://github.com/Nercury/egli-rs", rev = "723ee34", optional = true }
 env_logger = { version = "0.10", optional = true }
-fast-srgb8 = { version = "1.0", optional = true }
 fixedbitset = "0.5"
 foldhash.workspace = true
 futures = { version = "0.3", default-features = false, features = ["async-await"] }
@@ -257,10 +259,13 @@ once_cell.workspace = true
 ordered-float = { version = "4.5", default-features = false }
 pixels = { version = "0.15", optional = true }
 pollster = { version = "0.3", optional = true }
+postcard.workspace = true
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
-rand = { version = "0.10.0-rc.5", default-features = false, features = ["std_rng"] }
+rand = { version = "=0.10.0-rc.5", default-features = false, features = ["std_rng"] }
+rand_core = "=0.10.0-rc-2"
 raw-window-handle = { version = "0.6", optional = true }
-reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+rayon = { version = "1.11", optional = true }
+reqwest = { version = "0.13", features = ["blocking", "json"], optional = true }
 rustix = { version = "1.1", features = ["event"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -275,7 +280,6 @@ uuid = { version = "1", default-features = false, features = ["serde", "v3"] }
 vulkan_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
 wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "af91efa", optional = true }
-wide = { version = "0.7", optional = true }
 winit = { version = "0.30", optional = true }
 
 [dependencies.egui]

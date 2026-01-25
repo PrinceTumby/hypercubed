@@ -1,117 +1,117 @@
-pub mod chunk;
-pub mod chunk_rc;
-pub mod egui_renderer;
+#![allow(clippy::std_instead_of_alloc)]
+
 pub mod render;
 
-use super::DebugState;
+use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
+use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
+use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
 use ahash::{AHashMap, AHashSet};
-use image::{GrayImage, RgbaImage};
-use nalgebra::{Perspective3, Point3};
-use std::sync::Arc;
+use anyhow::Context;
+use portable_std::{FastHashMap, FastHashSet};
+use rayon::prelude::*;
+use render::RenderTileBins;
+use resources::block::ResourceData;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
 use winit::window::Window;
 
-pub use super::Camera;
-
-#[derive(Clone)]
 pub struct GraphicsResources {
-    pub block_registry: Arc<resources::block::Registry>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GraphicsOptions {
-    pub vsync: bool,
-}
-
-impl Default for GraphicsOptions {
-    fn default() -> Self {
-        Self { vsync: true }
-    }
+    pub block_registry: resources::block::Registry,
+    pub model_registry: resources::block::model::ModelRegistry,
+    pub atlas_texture: TextureAtlas,
+    pub window: Arc<Window>,
 }
 
 pub struct GraphicsState {
-    pub resources: GraphicsResources,
-    pub pixels: pixels::Pixels,
+    pub resources: Arc<GraphicsResources>,
+    pub pixels: pixels::Pixels<'static>,
+    pub render_tile_bins: render::RenderTileBins,
     pub graphics_options: GraphicsOptions,
-    pub egui_renderer: egui_renderer::Renderer,
+    pub egui_renderer: render::egui_rendering::Renderer,
+    subchunk_data_storage: SubchunkDataStorage,
+    pub pending_subchunk_tx: Sender<Option<([i32; 3], render::chunk::Subchunk)>>,
+    pub pending_subchunk_rx: Receiver<Option<([i32; 3], render::chunk::Subchunk)>>,
+    pub current_dispatch_id_counter: u64,
+    pub num_pending_subchunks: usize,
     pub size: winit::dpi::PhysicalSize<u32>,
-    pub camera: Camera,
 }
 
-#[derive(Default)]
-pub struct DebugOutput {
-    pub subchunks_culled: usize,
-    pub subchunk_traversal_graph: Vec<([i32; 3], [i32; 3])>,
+pub struct SubchunkDataStorage {
+    // TODO: Currently the Y coordinate is a chunk section index, rather than the subchunk Y
+    //       coordinate. Consider changing to actually be the Y coordinate.
+    pub subchunks: FastHashMap<[i32; 3], render::chunk::Subchunk>,
+    pub loaded_chunks: FastHashSet<[i32; 2]>,
 }
 
-impl GraphicsState {
-    pub async fn new<F>(window: &'static Window, register_blocks: F) -> anyhow::Result<Self>
-    where
-        F: FnOnce(
-            &mut resources::block::Registry,
-            &mut resources::block::model::ModelRegistryBuilder,
-            &mut resources::texture::AtlasBuilder,
-        ) -> anyhow::Result<()>,
-    {
+impl GraphicsBackend for GraphicsState {
+    #[tracing::instrument(skip_all)]
+    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         let size = window.inner_size();
-        let surface_texture = pixels::SurfaceTexture::new(size.width, size.height, window);
-        let pixels = pixels::PixelsBuilder::new(size.width, size.height, surface_texture)
+        let surface_texture = pixels::SurfaceTexture::new(size.width, size.height, window.clone());
+        let pixels_builder = pixels::PixelsBuilder::new(size.width, size.height, surface_texture)
+            .texture_format(pixels::wgpu::TextureFormat::Rgba8Unorm)
             .blend_state(pixels::wgpu::BlendState::REPLACE)
-            .enable_vsync(graphics_options.vsync)
-            .build_async()
-            .await?;
-        // Initialise game state
-        let (
-            block_item_texture_atlas,
-            block_item_atlas_size,
+            .enable_vsync(graphics_options.vsync);
+        #[cfg(target_os = "windows")]
+        let pixels_builder =
+            pixels_builder.surface_texture_format(pixels::wgpu::TextureFormat::Rgba8Unorm);
+        let pixels = pixels_builder.build()?;
+        let render_tile_bins = RenderTileBins::new(
+            size.width.max(1).try_into().unwrap(),
+            size.height.max(1).try_into().unwrap(),
+        );
+        // Load game resources.
+        let ResourceData {
             block_registry,
-            custom_block_vertices,
-            custom_block_indices,
-        ) = {
-            use resources;
-            let size = [1024; 2];
-            let square_length = 16;
-            let mut atlas_builder =
-                resource::texture::AtlasBuilder::new(size[0], size[1], square_length);
-            let mut model_cache = resource::block::model::ModelRegistryBuilder::new();
-            let mut block_registry = resource::block::Registry::new();
-            register_blocks(&mut block_registry, &mut model_cache, &mut atlas_builder)?;
-            let atlas = atlas_builder.build();
-            (
-                atlas,
-                size,
+            model_registry,
+            atlas,
+        } = resource_data;
+        let atlas_texture = TextureAtlas::new(&atlas)
+            .context("Error while converting creating block and item atlas texture")?;
+        let egui_renderer = render::egui_rendering::Renderer::new();
+        let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
+        Ok(Box::new(Self {
+            resources: Arc::new(GraphicsResources {
                 block_registry,
-                model_cache.custom_block_vertices,
-                model_cache.custom_block_indices,
-            )
-        };
-        let egui_renderer = egui_renderer::Renderer::new(&pixels);
-        let camera = Camera {
-            pos: Point3::new(0.0, 124.0, 0.0),
-            proj_matrix: Perspective3::new(
-                (size.width as f32) / (size.height as f32),
-                f32::to_radians(super::DEFAULT_FOV),
-                super::DEFAULT_ZNEAR,
-                super::DEFAULT_ZFAR,
-            ),
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-        };
-        Ok(Self {
-            resources: GraphicsResources {
-                block_registry: Arc::new(block_registry),
-            },
+                model_registry,
+                atlas_texture,
+                window,
+            }),
             pixels,
+            render_tile_bins,
             graphics_options,
             egui_renderer,
+            subchunk_data_storage: SubchunkDataStorage {
+                subchunks: FastHashMap::new(),
+                loaded_chunks: FastHashSet::new(),
+            },
+            pending_subchunk_tx,
+            pending_subchunk_rx,
+            current_dispatch_id_counter: 0,
+            num_pending_subchunks: 0,
             size,
-            camera,
-        })
+        }))
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    fn get_block_registry(&self) -> &resources::block::Registry {
+        &self.resources.block_registry
+    }
+
+    fn get_subchunks_data(&self) -> FastHashMap<[i32; 3], SubchunkData> {
+        self.subchunk_data_storage
+            .subchunks
+            .iter()
+            .map(|(&subchunk_coords, subchunk)| (subchunk_coords, subchunk.get_data()))
+            .collect()
+    }
+
+    fn get_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.size
+    }
+
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
             self.pixels
@@ -120,69 +120,231 @@ impl GraphicsState {
             self.pixels
                 .resize_buffer(new_size.width, new_size.height)
                 .unwrap();
-            self.camera
-                .proj_matrix
-                .set_aspect((new_size.width as f32) / (new_size.height as f32));
+            self.render_tile_bins = RenderTileBins::new(
+                new_size.width.try_into().unwrap(),
+                new_size.height.try_into().unwrap(),
+            );
         }
     }
 
-    pub fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
-        let old_options = std::mem::replace(&mut self.graphics_options, new_options);
+    fn get_graphics_options(&self) -> GraphicsOptions {
+        self.graphics_options
+    }
+
+    fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
+        let old_options = core::mem::replace(&mut self.graphics_options, new_options);
         if new_options.vsync != old_options.vsync {
             self.pixels.enable_vsync(new_options.vsync);
         }
     }
 
-    pub fn free_subchunk_data(&mut self, subchunk_coords: [i32; 3]) {
-        _ = subchunk_coords;
-        todo!();
+    #[tracing::instrument(skip_all)]
+    fn dispatch_subchunk_updates(
+        &mut self,
+        thread_pool: &ThreadPool,
+        raw_chunks: Arc<AHashMap<[i32; 2], Arc<crate::RawChunk>>>,
+        subchunks: AHashSet<[i32; 3]>,
+    ) {
+        // Mark that we're dispatching a number of subchunk processes.
+        self.num_pending_subchunks += subchunks.len();
+        // Grab a new dispatch ID.
+        let dispatch_id = self.current_dispatch_id_counter;
+        self.current_dispatch_id_counter += 1;
+        // Dispatch subchunk tasks.
+        for subchunk_coords in subchunks {
+            // Mark chunk as definitely loaded (does nothing if the chunk is only being updated).
+            let [chunk_x, _, chunk_z] = subchunk_coords;
+            self.subchunk_data_storage
+                .loaded_chunks
+                .insert([chunk_x, chunk_z]);
+            // Dispatch subchunk task.
+            let resources = self.resources.clone();
+            let raw_chunks = raw_chunks.clone();
+            let pending_subchunk_tx = self.pending_subchunk_tx.clone();
+            thread_pool.execute(move || {
+                render::chunk::process_subchunk(
+                    &resources.block_registry,
+                    &resources.model_registry,
+                    &raw_chunks,
+                    &pending_subchunk_tx,
+                    subchunk_coords,
+                    dispatch_id,
+                );
+            });
+        }
     }
 
-    pub fn render(
+    #[tracing::instrument(skip_all)]
+    fn remove_chunk(&mut self, chunk_coords: [i32; 2]) {
+        let [chunk_x, chunk_z] = chunk_coords;
+        // Remove old subchunks.
+        if self
+            .subchunk_data_storage
+            .loaded_chunks
+            .contains(&chunk_coords)
+        {
+            let span = tracing::trace_span!("remove_subchunks", ?chunk_coords);
+            let _enter = span.enter();
+            for subchunk_y in 0..24 {
+                let subchunk_coords = [chunk_x, subchunk_y, chunk_z];
+                let span = tracing::trace_span!("remove_subchunk", ?subchunk_coords);
+                let _enter = span.enter();
+                self.subchunk_data_storage
+                    .subchunks
+                    .remove(&subchunk_coords);
+            }
+        }
+        // Mark chunk as no longer loaded, so any pending subchunk tasks for this chunk finishing
+        // after removal won't cause ghost chunks to appear.
+        self.subchunk_data_storage
+            .loaded_chunks
+            .remove(&chunk_coords);
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn render(
         &mut self,
-        _subchunks: &AHashMap<[i32; 3], chunk_rc::Subchunk>,
-        _loaded_chunks: &AHashSet<[i32; 2]>,
+        camera: &Camera,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
-        _debug_state: &DebugState,
-    ) -> anyhow::Result<DebugOutput> {
+        debug_state: &DebugState,
+        _debug_points: &[DebugPoint],
+        _debug_lines: &[DebugLine],
+        _debug_triangles: &[DebugTriangle],
+    ) -> anyhow::Result<Option<DebugOutput>> {
+        // Add pending subchunks.
+        if self.num_pending_subchunks > 0 {
+            let span = tracing::trace_span!("add_pending_subchunks");
+            let _enter = span.enter();
+            let mut subchunks_processed_this_frame: usize = 0;
+            for subchunk_and_coords in self
+                .pending_subchunk_rx
+                .try_iter()
+                .take(self.num_pending_subchunks)
+            {
+                self.num_pending_subchunks -= 1;
+                let Some((subchunk_coords, subchunk)) = subchunk_and_coords else {
+                    continue;
+                };
+                // Check that the new subchunk is newer than the subchunk it's replacing, or that
+                // it's not replacing an old subchunk. If it's not, then skip it.
+                if self
+                    .subchunk_data_storage
+                    .subchunks
+                    .get(&subchunk_coords)
+                    .map(|old_subchunk| subchunk.dispatch_id > old_subchunk.dispatch_id)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                self.subchunk_data_storage
+                    .subchunks
+                    .insert(subchunk_coords, subchunk);
+                subchunks_processed_this_frame += 1;
+                if subchunks_processed_this_frame >= 16 {
+                    break;
+                }
+            }
+        }
         let pixels_per_point = egui_full_output.pixels_per_point;
         let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
-        let window_buffer = self.pixels.frame_mut();
-        let mut window_image_buffer =
-            image::ImageBuffer::from_raw(self.size.width, self.size.height, window_buffer).unwrap();
-        // Clear buffer
-        for pixel in window_image_buffer.pixels_mut() {
-            *pixel = image::Rgba([0x00, 0xFF, 0xFF, 0xFF]);
-        }
-        let render_data = self.egui_renderer.prepare(
-            &self.pixels,
+        self.render_tile_bins.clear();
+        let reversed_view_matrix = camera.generate_reversed_depth_view_matrix();
+        let camera_near_clip_plane = camera.generate_clipping_planes()[4];
+        let debug_output = {
+            // Gather visible subchunks.
+            let mut subchunks = Vec::new();
+            let debug_output = super::for_each_visible_subchunk(
+                camera,
+                &self.subchunk_data_storage.subchunks,
+                &self.subchunk_data_storage.loaded_chunks,
+                debug_state,
+                |_subchunk_coords, subchunk| subchunks.push(subchunk),
+            );
+            // Bin visible subchunks.
+            {
+                let span = tracing::trace_span!("bin_visible_subchunks");
+                let _enter = span.enter();
+                let (width, height) = (self.render_tile_bins.width, self.render_tile_bins.height);
+                let tiles_per_row: usize = self
+                    .render_tile_bins
+                    .tiles_per_row
+                    .get()
+                    .try_into()
+                    .unwrap();
+                let tile_bins_mutex = Mutex::new(&mut self.render_tile_bins);
+                subchunks.into_par_iter().for_each(|subchunk| {
+                    render::chunk::bin_subchunk(
+                        &tile_bins_mutex,
+                        (width, height),
+                        tiles_per_row,
+                        &reversed_view_matrix,
+                        &camera_near_clip_plane,
+                        &self.resources.atlas_texture,
+                        subchunk,
+                    )
+                });
+            }
+            debug_output
+        };
+        self.egui_renderer.bin_to_tiles(
+            &mut self.render_tile_bins,
             &self.size,
             egui_full_output.textures_delta.set,
             egui_primitives,
             pixels_per_point,
         );
-        self.pixels.render_with(|encoder, render_target, context| {
-            context.scaling_renderer.render(encoder, render_target);
-            self.egui_renderer
-                .render(encoder, render_target, &render_data);
-            Ok(())
-        })?;
+        let window_buffer = self.pixels.frame_mut();
+        let window_linear_framebuffer = render::LinearFramebufferRgba::from_raw(
+            window_buffer,
+            self.size.width,
+            self.size.height,
+        );
+        render::render_tile_bins(
+            &window_linear_framebuffer,
+            &self.resources.atlas_texture,
+            &self.egui_renderer,
+            &mut self.render_tile_bins,
+            render::Rgba::new(0.471, 0.655, 1.0, 1.0),
+        );
+        {
+            let span = tracing::trace_span!("render_pixel_buffer");
+            let _enter = span.enter();
+            self.pixels
+                .render()
+                .context("Error while rendering pixel buffer")?;
+        }
+        // let render_data = self.egui_renderer.prepare(
+        //     &self.pixels,
+        //     &self.size,
+        //     egui_full_output.textures_delta.set,
+        //     egui_primitives,
+        //     pixels_per_point,
+        // );
+        // self.pixels.render_with(|encoder, render_target, context| {
+        //     context.scaling_renderer.render(encoder, render_target);
+        //     self.egui_renderer
+        //         .render(encoder, render_target, &render_data);
+        //     Ok(())
+        // })?;
         self.egui_renderer
             .free_textures(&egui_full_output.textures_delta.free);
-        Ok(DebugOutput::default())
+        Ok(Some(debug_output))
     }
 }
 
-#[derive(Debug)]
 pub struct TextureAtlas {
-    pub texture: RgbaImage,
+    texture: render::TiledTextureRgba,
 }
 
 impl TextureAtlas {
-    pub fn from_builder(builder: resources::texture::AtlasBuilder) -> Self {
-        Self {
-            texture: builder.texture,
-        }
+    pub fn new(atlas: &resources::texture::Atlas) -> anyhow::Result<Self> {
+        Ok(Self {
+            texture: render::TiledTextureRgba::from_atlas(atlas)?,
+        })
+    }
+
+    pub fn get_texture(&self) -> &render::TiledTextureRgba {
+        &self.texture
     }
 }

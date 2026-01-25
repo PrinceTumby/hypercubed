@@ -857,7 +857,6 @@ pub fn process_subchunk(
                     &mut custom_block_instance_groups,
                     model_registry,
                     chunk,
-                    blockstate_info,
                     block_opacity,
                     face_cull_map,
                     face_light_map,
@@ -1170,6 +1169,7 @@ pub fn finalise_subchunk(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all)]
 fn process_subchunk_model(
     block_faces: &mut [Vec<block_face::Instance>; 6],
@@ -1180,7 +1180,6 @@ fn process_subchunk_model(
     >,
     model_registry: &ModelRegistry,
     chunk: &crate::RawChunk,
-    blockstate_info: &blockstate::Blockstate,
     block_opacity: BlockOpacity,
     face_cull_map: [bool; 6],
     face_light_map: [[u8; 2]; 6],
@@ -1192,7 +1191,7 @@ fn process_subchunk_model(
 ) {
     let model = &model_registry[model_idx];
     match model {
-        ModelType::None => return,
+        ModelType::None => {}
         ModelType::Block(info) => {
             match block_opacity {
                 BlockOpacity::Opaque => {
@@ -1306,9 +1305,7 @@ fn process_subchunk_model(
                 .lighting
                 .get_section(MIN_HEIGHT_I32, subchunk_y + (MIN_HEIGHT_I32 / 16))
                 .unwrap();
-            let block_instances = custom_block_instance_groups
-                .entry(*info)
-                .or_insert_with(Vec::new);
+            let block_instances = custom_block_instance_groups.entry(*info).or_default();
             block_instances.push(custom_block::Instance::new(
                 [global_x, global_y, global_z],
                 tint_color,
@@ -1324,7 +1321,6 @@ fn process_subchunk_model(
                     custom_block_instance_groups,
                     model_registry,
                     chunk,
-                    blockstate_info,
                     block_opacity,
                     face_cull_map,
                     face_light_map,

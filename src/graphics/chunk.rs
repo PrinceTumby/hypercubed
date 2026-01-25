@@ -39,6 +39,7 @@ impl SubchunkConnectivity {
         Self(0x7FFF)
     }
 
+    #[inline(always)]
     pub fn add_connection(&mut self, face_1: &AxisDirection, face_2: &AxisDirection) {
         use AxisDirection::*;
         match (face_1, face_2) {
@@ -63,6 +64,7 @@ impl SubchunkConnectivity {
         }
     }
 
+    #[inline(always)]
     pub fn connects(&self, face_1: &AxisDirection, face_2: &AxisDirection) -> bool {
         use AxisDirection::*;
         match (face_1, face_2) {
@@ -87,6 +89,7 @@ impl SubchunkConnectivity {
         }
     }
 
+    #[inline(always)]
     pub fn get_pairs(&self) -> [([AxisDirection; 2], bool); 15] {
         let fields = [
             ([AxisDirection::Down, AxisDirection::Up], 0x1),
@@ -109,8 +112,8 @@ impl SubchunkConnectivity {
     }
 }
 
-impl std::fmt::Debug for SubchunkConnectivity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+impl core::fmt::Debug for SubchunkConnectivity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
         let mut debug_set = f.debug_set();
         let fields = [
             ("down_up", 0x1),

@@ -83,6 +83,7 @@ pub struct BlockVertex {
     pub colour_rgba: [u8; 4],
 }
 
+// TODO: Switch to using GL_QUADS.
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(transparent)]
 pub struct BlockFace(pub [BlockVertex; 6]);
@@ -222,7 +223,7 @@ impl BlockFace {
     }
 
     pub fn new_custom(
-        model_face: &[resources::block::model::ModelVertex; 4],
+        model_face: &resources::block::model::CustomModelFace,
         subchunk_xyz: [u8; 3],
         tint_rgba: [u8; 4],
         centre_light_levels: [u8; 2],
@@ -230,23 +231,29 @@ impl BlockFace {
     ) -> Self {
         let subchunk_xyz_vec3 = Vector3::from(subchunk_xyz.map(|n| n as f32));
         let tint_rgba_vec4 = Vector4::from(tint_rgba.map(|n| n as f32 / 255.0));
-        let face_vertices = model_face.map(|v| {
+        // The tint colour will be multiplied into the final colour RGBA, so just make it one
+        // if the vertex isn't tinted.
+        let applied_tint_rgba_vec4 = match model_face.tint {
+            None => Vector4::repeat(1.0),
+            Some(Tint::Biome) => tint_rgba_vec4,
+        };
+        // Calculate per-face directional lighting.
+        let light_source_dir = Vector3::new(2.0, 5.0, 1.0).normalize();
+        let dir_lighting = Vector3::dot(&model_face.normal, &light_source_dir);
+        let dir_light_coef = f32::mul_add(dir_lighting, 0.3, 0.7);
+        // Convert face vertices.
+        let normal_offset = model_face.normal * 0.02;
+        let face_vertices = model_face.vertices.map(|v| {
             // Calculate the vertex subchunk fixed-point position.
             let subchunk_pos = v.local_pos + subchunk_xyz_vec3 + Vector3::repeat(0.5);
             let subchunk_fixed_point_pos: [i16; 3] =
                 (subchunk_pos * 1024.0).map(|n| n.round() as i16).into();
-            // The tint colour will be multiplied into the final colour RGBA, so just make it one
-            // if the vertex isn't tinted.
-            let applied_tint_rgba_vec4 = match v.tint {
-                None => Vector4::repeat(1.0),
-                Some(Tint::Biome) => tint_rgba_vec4,
-            };
             // Calculate block lighting.
             let block_light_rgb_vec3 = {
                 // Try to find the block light levels that are "most applicable" for the current
                 // vertex. The light levels sampled are the levels for the block itself, followed
                 // by all six neighbours.
-                let adjusted_pos = v.local_pos + (v.normal * 0.02);
+                let adjusted_pos = v.local_pos + normal_offset;
                 let light_levels = [
                     centre_light_levels,
                     neighbour_light_levels[0],
@@ -280,8 +287,6 @@ impl BlockFace {
                 let closest_light_levels = light_levels[closest_light_i];
                 Self::calculate_light_rgb_vec3(closest_light_levels)
             };
-            // Calculate per-face directional lighting.
-            let dir_light_coef = Self::calculate_dir_light_coef(v.normal);
             // Combine the block lighting with the per-face directional lighting, expand to RGBA.
             let light_rgb_vec3 = block_light_rgb_vec3 * dir_light_coef;
             let light_rgba_vec4 = light_rgb_vec3.push(1.0);
@@ -473,7 +478,6 @@ pub fn process_subchunk(
                     &mut face_groups,
                     model_registry,
                     chunk,
-                    blockstate_info,
                     block_opacity,
                     face_cull_map,
                     face_light_map,
@@ -703,11 +707,11 @@ pub unsafe fn finalise_subchunk(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_subchunk_model(
     face_groups: &mut [Vec<BlockFace>; 7],
     model_registry: &ModelRegistry,
     chunk: &crate::RawChunk,
-    blockstate_info: &blockstate::Blockstate,
     block_opacity: BlockOpacity,
     face_cull_map: [bool; 6],
     face_light_map: [[u8; 2]; 6],
@@ -719,7 +723,7 @@ fn process_subchunk_model(
 ) {
     let model = &model_registry[model_idx];
     match model {
-        ModelType::None => return,
+        ModelType::None => {}
         ModelType::Block(info) => {
             match block_opacity {
                 BlockOpacity::Opaque => {
@@ -823,7 +827,6 @@ fn process_subchunk_model(
                     face_groups,
                     model_registry,
                     chunk,
-                    blockstate_info,
                     block_opacity,
                     face_cull_map,
                     face_light_map,
