@@ -153,7 +153,7 @@ pub fn process_game_events(
                 light_info,
             } => {
                 raw_chunks = Arc::make_mut(&mut play_state.raw_chunks);
-                // Remove VarInt wrapper
+                // Remove VarInt wrapper.
                 let chunk_xz = chunk_xz.map(|n| n.0);
                 let Some(chunk) = raw_chunks.get_mut(&chunk_xz) else {
                     continue;
@@ -182,7 +182,7 @@ pub fn process_game_events(
                 let z = pos.z.rem_euclid(SUBCHUNK_AXIS_LEN_I32);
                 let z_usize: usize = z.try_into().unwrap();
                 // Update block section and lighting, increment or decrement block
-                // count
+                // count.
                 let mut subchunks_to_relight = FastHashSet::new();
                 {
                     let new_block_id: GlobalPaletteIndex = update.block_id.0.try_into().unwrap();
@@ -202,7 +202,7 @@ pub fn process_game_events(
                         (true, true) => continue,
                         _ => {}
                     }
-                    // Update lighting
+                    // Update lighting.
                     world::recalculate_light(
                         graphics_backend.get_block_registry(),
                         raw_chunks,
@@ -217,7 +217,7 @@ pub fn process_game_events(
                 for subchunk_coords in subchunks_to_relight {
                     subchunks_to_dispatch.insert(subchunk_coords);
                 }
-                // Update neighbours
+                // Update neighbours.
                 let in_chunk_coords = [x, y, z];
                 for axis_i in 0..3 {
                     let axis = in_chunk_coords[axis_i];
@@ -247,7 +247,7 @@ pub fn process_game_events(
                 subchunks_to_dispatch.insert([chunk_x, subchunk_y, chunk_z]);
                 let mut old_block_ids = Vec::new();
                 for &([x, y, z], new_block_id) in &update.blocks {
-                    // Update block section, increment or decrement block count
+                    // Update block section, increment or decrement block count.
                     {
                         let old_block_id = chunk_section.block_states.replace(
                             x as usize,
@@ -269,7 +269,7 @@ pub fn process_game_events(
                             _ => {}
                         }
                     }
-                    // Update neighbours
+                    // Update neighbours.
                     let in_chunk_coords = [x, y, z];
                     for axis_i in 0..3 {
                         let axis = in_chunk_coords[axis_i];
@@ -283,7 +283,7 @@ pub fn process_game_events(
                         }
                     }
                 }
-                // Update lighting
+                // Update lighting.
                 let new_block_ids_iter = update.blocks.into_iter();
                 let old_block_ids_iter = old_block_ids.into_iter();
                 let iter = Iterator::zip(old_block_ids_iter, new_block_ids_iter);
@@ -427,7 +427,7 @@ pub fn process_game_events(
             subchunks_to_dispatch,
         );
     }
-    // Run tick updates
+    // Run tick updates.
     {
         let span = tracing::trace_span!("tick_updates");
         let _enter = span.enter();
@@ -516,13 +516,13 @@ pub fn process_game_events(
                     let tick_percentage = time_since_last_tick / tick_duration;
                     let tick_percentage_f32 = tick_percentage as f32;
                     (
-                        // Camera pos
+                        // Camera pos.
                         mix(
                             player_last_tick.pos + Vector3::new(0.0, 1.62, 0.0),
                             player.pos + Vector3::new(0.0, 1.62, 0.0),
                             tick_percentage_f32,
                         ),
-                        // Camera FOV
+                        // Camera FOV.
                         mix(
                             match player_last_tick.physics_state.sprinting {
                                 false => DEFAULT_FOV,

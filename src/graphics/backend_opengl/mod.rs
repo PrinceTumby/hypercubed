@@ -437,7 +437,7 @@ impl GraphicsBackend for GraphicsState {
             }
             // Clear framebuffer to sky colour, depth buffer to infinite distance..
             gl::framebuffer::clear(ClearBufferBits::COLOR | ClearBufferBits::DEPTH);
-            // Render subchunks
+            // Render subchunks.
             {
                 let span = tracing::trace_span!("render_subchunks");
                 let _enter = span.enter();
@@ -539,7 +539,7 @@ impl GraphicsBackend for GraphicsState {
                             let num_vertices = subchunk.group_vertex_counts[i];
                             if start_vertex != u32::MAX {
                                 gl::array::draw(
-                                    gl::ShapeMode::Triangles,
+                                    gl::ShapeMode::Quads,
                                     start_vertex.try_into().unwrap(),
                                     num_vertices.try_into().unwrap(),
                                 );

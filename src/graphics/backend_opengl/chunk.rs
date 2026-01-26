@@ -83,10 +83,9 @@ pub struct BlockVertex {
     pub colour_rgba: [u8; 4],
 }
 
-// TODO: Switch to using GL_QUADS.
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(transparent)]
-pub struct BlockFace(pub [BlockVertex; 6]);
+pub struct BlockFace(pub [BlockVertex; 4]);
 
 impl BlockFace {
     pub fn new_basic(
@@ -144,14 +143,13 @@ impl BlockFace {
         let colour_rgb_vec3 = block_light_rgb_vec3 * dir_light_coef;
         let colour_rgba_vec4 = colour_rgb_vec3.push(1.0);
         let colour_rgba: [u8; 4] = colour_rgba_vec4.map(|n| (n * 255.0).round() as u8).into();
-        // Assemble the 4 vertices making up a face.
+        // Assemble vertices.
         let face_vertices: [BlockVertex; 4] = core::array::from_fn(|i| BlockVertex {
             subchunk_fixed_point_pos: subchunk_fixed_point_positions[i],
             uvs: rotated_uvs[i],
             colour_rgba,
         });
-        // Return face as 2 triangles.
-        Self([0, 1, 2, 1, 3, 2].map(|i| face_vertices[i]))
+        Self([0, 1, 3, 2].map(|i| face_vertices[i]))
     }
 
     pub fn new_tinted(
@@ -212,14 +210,13 @@ impl BlockFace {
         let tint_rgba_vec4 = Vector4::from(tint_rgba.map(|x| x as f32 / 255.0));
         let colour_rgba_vec4 = light_rgba_vec4.component_mul(&tint_rgba_vec4);
         let colour_rgba: [u8; 4] = colour_rgba_vec4.map(|n| (n * 255.0).round() as u8).into();
-        // Assemble the 4 vertices making up a face.
+        // Assemble vertices.
         let face_vertices: [BlockVertex; 4] = core::array::from_fn(|i| BlockVertex {
             subchunk_fixed_point_pos: subchunk_fixed_point_positions[i],
             uvs: rotated_uvs[i],
             colour_rgba,
         });
-        // Return face as 2 triangles.
-        Self([0, 1, 2, 1, 3, 2].map(|i| face_vertices[i]))
+        Self([0, 1, 3, 2].map(|i| face_vertices[i]))
     }
 
     pub fn new_custom(
@@ -299,8 +296,7 @@ impl BlockFace {
                 colour_rgba,
             }
         });
-        // Return face as 2 triangles.
-        Self([1, 0, 2, 1, 2, 3].map(|i| face_vertices[i]))
+        Self([2, 3, 1, 0].map(|i| face_vertices[i]))
     }
 
     pub(super) fn calculate_light_rgb_vec3(light_levels: [u8; 2]) -> Vector3<f32> {
@@ -675,8 +671,8 @@ pub unsafe fn finalise_subchunk(
             .enumerate()
             .filter(|(_i, group)| !group.is_empty())
         {
-            group_start_vertices[i] = (faces.len() * 6).try_into().unwrap();
-            group_vertex_counts[i] = (face_group.len() * 6).try_into().unwrap();
+            group_start_vertices[i] = (faces.len() * 4).try_into().unwrap();
+            group_vertex_counts[i] = (face_group.len() * 4).try_into().unwrap();
             faces.extend(face_group);
         }
         let buffer = if !faces.is_empty() {
