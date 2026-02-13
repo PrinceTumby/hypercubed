@@ -44,6 +44,7 @@ vulkan_prelude = { path = "crates/vulkan_prelude" }
 smallstr = { version = "0", features = ["serde"] }
 spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
+wesl = "0.3"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [workspace.dependencies.image]
@@ -86,7 +87,8 @@ default = [
     "graphics_backend_opengl",
     "graphics_backend_vulkan",
     "graphics_backend_wgpu",
-    # "graphics_backend_software",
+    # "graphics_subbackend_software_lb_simd_avx512",
+    # "graphics_subbackend_software_lb_simd_generic",
     # "embed_vanilla_cache",
     # "tracy",
 ]
@@ -150,6 +152,7 @@ graphics_backend_wgpu = [
     "platform_winit",
     "mimalloc",
     # Dependencies
+    "dep:wesl",
     "dep:wgpu",
 ]
 
@@ -175,9 +178,20 @@ graphics_backend_software = [
     "platform_winit",
     "mimalloc",
     # Dependencies
-    "dep:multiversion",
     "dep:pixels",
     "dep:rayon",
+]
+# Larrabee-style rasterisation using `std::simd`.
+graphics_subbackend_software_lb_simd_generic = [
+    # Other features
+    "graphics_backend_software",
+    # Dependencies
+    "dep:multiversion",
+]
+# Larrabee-style rasterisation using AVX-512.
+graphics_subbackend_software_lb_simd_avx512 = [
+    # Other features
+    "graphics_backend_software",
 ]
 
 # Alternative platforms
@@ -216,6 +230,7 @@ anyhow.workspace = true
 miniz_oxide.workspace = true
 postcard.workspace = true
 serde.workspace = true
+wesl = { workspace = true, optional = true }
 
 [build-dependencies.resources]
 package = "hypercubed_resources"
@@ -279,7 +294,8 @@ tracing = { version = "0.1", default-features = false, features = ["attributes"]
 uuid = { version = "1", default-features = false, features = ["serde", "v3"] }
 vulkan_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
-wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "af91efa", optional = true }
+wesl = { workspace = true, optional = true }
+wgpu = { version = "28", optional = true }
 winit = { version = "0.30", optional = true }
 
 [dependencies.egui]

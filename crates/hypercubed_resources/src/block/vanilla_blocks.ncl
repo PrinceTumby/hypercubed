@@ -4426,7 +4426,6 @@ let blocks | Array Registration = [
         ominous = "false",
         vault_state = "inactive",
       },
-
     default_extra_info = {
       opacity = 'Transparent,
       light_info = sky_transparent_info,

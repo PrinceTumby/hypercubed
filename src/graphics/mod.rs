@@ -1,5 +1,7 @@
 pub mod chunk;
 pub mod debug;
+pub mod environment;
+pub mod lightmap;
 
 // Backends
 #[cfg(feature = "graphics_backend_opengl")]
@@ -96,35 +98,32 @@ impl core::fmt::Display for SelectedGraphicsBackend {
 
 use crate::basic_types::AxisDirection;
 use crate::platform::libs::winit;
-use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use chunk::{HasSubchunkData, SubchunkData};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 use threadpool::ThreadPool;
 use winit::window::Window;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsOptions {
     pub vsync: bool,
+    pub lightmap_gamma_setting: f32,
 }
 
 impl Default for GraphicsOptions {
     fn default() -> Self {
-        Self { vsync: true }
+        Self {
+            vsync: true,
+            lightmap_gamma_setting: 0.5,
+        }
     }
 }
 
 pub trait GraphicsBackend {
     fn new(
         window: Arc<Window>,
-        // TODO: Rename this to reflect that it's no longer just for "embedded".
-        //       Something like `ResourceData`?.
-        resource_data: resources::block::ResourceData,
-        // register_blocks: impl FnOnce(
-        //     &mut resources::block::Registry,
-        //     &mut resources::block::model::ModelRegistryBuilder,
-        //     &mut resources::texture::AtlasBuilder,
-        // ) -> anyhow::Result<()>,
+        game_data: resources::GameResourceData,
     ) -> anyhow::Result<Box<Self>>
     where
         Self: Sized;
@@ -153,7 +152,8 @@ pub trait GraphicsBackend {
     #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
-        camera: &Camera,
+        play_state: &ClientPlayState,
+        current_time_s: f64,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
@@ -161,6 +161,23 @@ pub trait GraphicsBackend {
         debug_lines: &[debug::Line],
         debug_triangles: &[debug::Triangle],
     ) -> anyhow::Result<Option<DebugOutput>>;
+
+    // Miscellaneous methods, not required to be implemented.
+
+    fn wants_egui_debug_section(&self) -> bool {
+        false
+    }
+
+    fn render_egui_debug_section(&mut self, ctx: &mut egui::Ui) {
+        _ = ctx;
+    }
+
+    /// Allows a graphics backend to override the camera's near plane distance.
+    /// Useful for graphics backends without floating point depth buffers, or other methods to
+    /// improve depth precision at far distances.
+    fn get_camera_znear_override(&self) -> Option<f32> {
+        None
+    }
 }
 
 pub const DEFAULT_FOV: f32 = 80.0;
@@ -193,6 +210,10 @@ impl Camera {
             pitch: 0.0,
             roll: 0.0,
         }
+    }
+
+    pub fn get_zfar(&self) -> f32 {
+        DEFAULT_ZFAR
     }
 
     pub fn get_rot(&self) -> UnitQuaternion<f32> {

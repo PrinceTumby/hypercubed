@@ -1,9 +1,11 @@
 #![allow(clippy::too_many_arguments)]
 
-pub use core::ffi::{c_float, c_int, c_uint};
+use core::ffi::CStr;
+pub use core::ffi::{c_double, c_float, c_int, c_uchar, c_uint};
 use core::num::NonZeroU32;
 
 pub type GLenum = c_uint;
+pub type GLboolean = c_uchar;
 pub type GLbitfield = c_uint;
 pub type GLint = c_int;
 pub type GLuint = c_uint;
@@ -12,6 +14,7 @@ pub type GLsizei = c_int;
 pub type GLsizeiptr = isize;
 pub type GLfloat = c_float;
 pub type GLclampf = c_float;
+pub type GLclampd = c_double;
 
 macro_rules! parse_gl_names {
     ( [ $($gl_name:literal),* $(,)? ] ) => {
@@ -155,7 +158,9 @@ pub unsafe fn load_with(mut load_func: impl FnMut(&'static str) -> *const ()) {
             fragment::load_mod_with(&mut *load_func);
             framebuffer::load_mod_with(&mut *load_func);
             matrix::load_mod_with(&mut *load_func);
+            program_arb::load_mod_with(&mut *load_func);
             texture::load_mod_with(&mut *load_func);
+            vertex::load_mod_with(&mut *load_func);
             viewport::load_mod_with(&mut *load_func);
         }
     }
@@ -167,6 +172,23 @@ pub unsafe fn load_with(mut load_func: impl FnMut(&'static str) -> *const ()) {
 #[allow(unused)]
 pub use main_state::*;
 mod main_state {
+    use super::*;
+
+    pub unsafe fn get_string_lossy(name: StringName) -> Option<String> {
+        unsafe {
+            let ptr = get_string_raw(name);
+            if !ptr.is_null() {
+                Some(
+                    CStr::from_ptr(ptr.cast::<i8>())
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            } else {
+                None
+            }
+        }
+    }
+
     define_gl_api_mod! {
         pub enum EnableComponent {
             FaceCulling = 0x0B44,
@@ -175,6 +197,7 @@ mod main_state {
             Texture2D = 0x0DE1,
             ScissorTest = 0x0C11,
             Blending = 0x0BE2,
+            VertexProgramARB = 0x8620,
         }
 
         #[gl = "glEnable"]
@@ -188,6 +211,18 @@ mod main_state {
 
         #[gl = "glFinish"]
         pub unsafe fn finish();
+
+        #[gl = "glGetError"]
+        pub unsafe fn get_error() -> Option<NonZeroU32>;
+
+        pub enum StringName {
+            Version = 0x1F02,
+            Extensions = 0x1F03,
+            ProgramSetStringErrorARB = 0x8874,
+        }
+
+        #[gl = "glGetString"]
+        pub unsafe fn get_string_raw(name: StringName) -> *const u8;
 
         // Misc.
 
@@ -209,8 +244,15 @@ mod main_state {
 pub mod array {
     use super::*;
 
+    #[repr(u8)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum AttributeNormalisation {
+        Unnormalised = 0,
+        Normalised = 1,
+    }
+
     define_gl_api_mod! {
-        pub enum ColorPointerType {
+        pub enum ColorType {
             I8 = 0x1400,
             U8 = 0x1401,
             I16 = 0x1402,
@@ -224,12 +266,12 @@ pub mod array {
         #[gl = "glColorPointer"]
         pub unsafe fn color_pointer(
             size: GLint,
-            color_type: ColorPointerType,
+            color_type: ColorType,
             stride: GLsizei,
             ptr: usize,
         );
 
-        pub enum ColorIndexPointerType {
+        pub enum ColorIndexType {
             I16 = 0x1402,
             I32 = 0x1404,
             F32 = 0x1406,
@@ -238,12 +280,12 @@ pub mod array {
 
         #[gl = "glIndexPointer"]
         pub unsafe fn color_index_pointer(
-            index_type: ColorIndexPointerType,
+            index_type: ColorIndexType,
             stride: GLsizei,
             ptr: usize,
         );
 
-        pub enum TextureCoordPointerType {
+        pub enum TextureCoordType {
             I16 = 0x1402,
             I32 = 0x1404,
             F32 = 0x1406,
@@ -253,12 +295,12 @@ pub mod array {
         #[gl = "glTexCoordPointer"]
         pub unsafe fn texture_coord_pointer(
             size: GLint,
-            tex_coord_type: TextureCoordPointerType,
+            tex_coord_type: TextureCoordType,
             stride: GLsizei,
             ptr: usize,
         );
 
-        pub enum VertexPointerType {
+        pub enum VertexType {
             I16 = 0x1402,
             I32 = 0x1404,
             F32 = 0x1406,
@@ -268,10 +310,37 @@ pub mod array {
         #[gl = "glVertexPointer"]
         pub unsafe fn vertex_pointer(
             size: GLint,
-            vertex_type: VertexPointerType,
+            vertex_type: VertexType,
             stride: GLsizei,
             ptr: usize,
         );
+
+        pub enum AttributeType {
+            I8 = 0x1400,
+            U8 = 0x1401,
+            I16 = 0x1402,
+            U16 = 0x1403,
+            I32 = 0x1404,
+            U32 = 0x1405,
+            F32 = 0x1406,
+            F64 = 0x140A,
+        }
+
+        #[gl = ["glVertexAttribPointer", "glVertexAttribPointerARB"]]
+        pub unsafe fn attribute_pointer(
+            index: GLuint,
+            size: GLint,
+            attribute_type: AttributeType,
+            normalised: AttributeNormalisation,
+            stride: GLsizei,
+            ptr: usize,
+        );
+
+        #[gl = ["glEnableVertexAttribArray", "glEnableVertexAttribArrayARB"]]
+        pub unsafe fn enable_attribute_array(index: GLuint);
+
+        #[gl = ["glDisableVertexAttribArray", "glDisableVertexAttribArrayARB"]]
+        pub unsafe fn disable_attribute_array(index: GLuint);
 
         #[gl = "glDrawArrays"]
         pub unsafe fn draw(mode: ShapeMode, first: GLint, element_count: GLsizei);
@@ -544,6 +613,19 @@ pub mod fragment {
     use super::*;
 
     define_gl_api_mod! {
+        pub enum DepthTestFunction {
+            Never = 0x0200,
+            Less = 0x0201,
+            Equal = 0x0202,
+            LessThanOrEqual = 0x0203,
+            Greater = 0x0204,
+            NotEqual = 0x0205,
+            GreaterThanOrEqual = 0x0206,
+            Always = 0x0207,
+        }
+        #[gl = "glDepthFunc"]
+        pub unsafe fn set_depth_test_function(func: DepthTestFunction);
+
         #[gl = "glScissor"]
         pub unsafe fn set_scissor(left: GLint, bottom: GLint, width: GLsizei, height: GLsizei);
 
@@ -554,9 +636,22 @@ pub mod fragment {
         #[gl = "glBlendEquation"]
         pub unsafe fn set_blend_equation(equation: BlendEquationFunc);
 
-        pub enum BlendFactor {
+        pub enum SrcBlendFactor {
             Zero = 0,
             One = 1,
+            SrcAlpha = 0x0302,
+            OneMinusSrcAlpha = 0x0303,
+            DstAlpha = 0x0304,
+            OneMinusDstAlpha = 0x0305,
+            DstColor = 0x0306,
+            OneMinusDstColor = 0x0307,
+        }
+
+        pub enum DstBlendFactor {
+            Zero = 0,
+            One = 1,
+            SrcColor = 0x0300,
+            OneMinusSrcColor = 0x0301,
             SrcAlpha = 0x0302,
             OneMinusSrcAlpha = 0x0303,
             DstAlpha = 0x0304,
@@ -564,7 +659,7 @@ pub mod fragment {
         }
 
         #[gl = "glBlendFunc"]
-        pub unsafe fn set_blend_function(src: BlendFactor, dst: BlendFactor);
+        pub unsafe fn set_blend_function(src: SrcBlendFactor, dst: DstBlendFactor);
 
         pub enum AlphaTestFunc {
             Never = 0x0200,
@@ -598,6 +693,9 @@ pub mod framebuffer {
 
         #[gl = "glClearColor"]
         pub unsafe fn clear_color(r: GLclampf, g: GLclampf, b: GLclampf, a: GLclampf);
+
+        #[gl = "glClearDepth"]
+        pub unsafe fn clear_depth(depth: GLclampd);
     }
 }
 
@@ -619,6 +717,87 @@ pub mod matrix {
 
         #[gl = "glLoadIdentity"]
         pub unsafe fn load_identity();
+    }
+}
+
+pub mod program_arb {
+    use super::*;
+
+    pub type ProgramHandle = NonZeroU32;
+
+    pub unsafe fn gen_programs<const N: usize>() -> [ProgramHandle; N] {
+        let mut raw_programs: [GLuint; N] = [0; N];
+        unsafe {
+            gen_programs_raw(N as GLsizei, raw_programs.as_mut_ptr());
+        }
+        assert!(
+            raw_programs.iter().all(|&buf| buf != 0),
+            "OpenGL gen programs failed - programs = {raw_programs:?}",
+        );
+        raw_programs.map(|handle| NonZeroU32::new(handle).unwrap())
+    }
+
+    pub unsafe fn set_current_program_string(target: ProgramType, string: &str) {
+        unsafe {
+            assert!(string.is_ascii());
+            set_current_program_string_raw(
+                target,
+                ProgramFormat::Ascii,
+                string.len().try_into().unwrap(),
+                string.as_bytes().as_ptr().cast::<()>(),
+            );
+            if let Some(_error) = main_state::get_error() {
+                let error_string =
+                    main_state::get_string_lossy(main_state::StringName::ProgramSetStringErrorARB)
+                        .expect("Failed to get error string for failed program compilation");
+                panic!("ARB program compilation failed:\n{error_string}");
+            }
+            // Check for a warning string.
+            #[cfg(debug_assertions)]
+            if let Some(warning_string) =
+                main_state::get_string_lossy(main_state::StringName::ProgramSetStringErrorARB)
+                && !warning_string.is_empty()
+            {
+                log::warn!("OpenGL ARB Program load warning: \"{warning_string}\"");
+            }
+        }
+    }
+
+    define_gl_api_mod! {
+        pub enum ProgramType {
+            VertexProgram = 0x8620,
+        }
+
+        pub enum ProgramFormat {
+            Ascii = 0x8875,
+        }
+
+        #[gl = "glGenProgramsARB"]
+        pub unsafe fn gen_programs_raw(num_buffers: GLsizei, out_buffers: *mut GLuint);
+
+        #[gl = "glDeleteProgramsARB"]
+        pub unsafe fn delete_programs_raw(num_buffers: GLsizei, buffers: *const ProgramHandle);
+
+        #[gl = "glBindProgramARB"]
+        pub unsafe fn bind(target: ProgramType, program: Option<ProgramHandle>);
+
+        #[gl = "glProgramStringARB"]
+        pub unsafe fn set_current_program_string_raw(
+            target: ProgramType,
+            format: ProgramFormat,
+            len: GLsizei,
+            string: *const (),
+        );
+
+        #[gl = "glProgramEnvParameter4fARB"]
+        pub unsafe fn set_program_env_parameter_f32(
+            target: ProgramType,
+            index: GLuint,
+            x: f32,
+            y: f32,
+            z: f32,
+            w: f32,
+        );
     }
 }
 
@@ -660,6 +839,14 @@ pub mod texture {
     }
 
     define_gl_api_mod! {
+        pub enum ActiveTexture {
+            Texture0 = 0x84C0,
+            Texture1 = 0x84C1,
+        }
+
+        #[gl = ["glActiveTexture", "glActiveTextureARB"]]
+        pub unsafe fn switch_active(unit: ActiveTexture);
+
         #[gl = "glGenTextures"]
         pub unsafe fn gen_textures_raw(num_buffers: GLsizei, out_buffers: *mut GLuint);
 
@@ -787,7 +974,7 @@ pub mod texture {
         use super::*;
         use std::sync::Mutex;
 
-        static POOL: Mutex<Vec<TextureHandle>> = Mutex::new(Vec::new());
+        static POOL: Mutex<Vec<super::TextureHandle>> = Mutex::new(Vec::new());
 
         pub unsafe fn drain_pool() {
             unsafe {
@@ -800,9 +987,9 @@ pub mod texture {
 
         #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[repr(transparent)]
-        pub struct Texture(TextureHandle);
+        pub struct TextureHandle(super::TextureHandle);
 
-        impl Texture {
+        impl TextureHandle {
             pub unsafe fn make_array<const N: usize>() -> [Self; N] {
                 unsafe { gen_textures().map(|handle| Self::from_handle(handle)) }
             }
@@ -810,7 +997,7 @@ pub mod texture {
             /// # SAFETY
             ///
             /// `handle` must not be used after calling this.
-            pub unsafe fn from_handle(handle: TextureHandle) -> Self {
+            pub unsafe fn from_handle(handle: super::TextureHandle) -> Self {
                 Self(handle)
             }
 
@@ -819,7 +1006,7 @@ pub mod texture {
             /// # SAFETY
             ///
             /// The returned handle must not be used to delete the texture.
-            pub unsafe fn as_raw(&self) -> TextureHandle {
+            pub unsafe fn as_raw(&self) -> super::TextureHandle {
                 self.0
             }
 
@@ -828,11 +1015,23 @@ pub mod texture {
             }
         }
 
-        impl Drop for Texture {
+        impl Drop for TextureHandle {
             fn drop(&mut self) {
                 POOL.lock().unwrap().push(self.0);
             }
         }
+    }
+}
+
+pub mod vertex {
+    use super::*;
+
+    define_gl_api_mod! {
+        #[gl = "glColor4f"]
+        pub unsafe fn set_color_rgba_f32(r: GLfloat, g: GLfloat, b: GLfloat, a: GLfloat);
+
+        #[gl = "glDepthRange"]
+        pub unsafe fn set_depth_range(z_near: GLclampd, z_far: GLclampd);
     }
 }
 
@@ -842,5 +1041,8 @@ pub mod viewport {
     define_gl_api_mod! {
         #[gl = "glViewport"]
         pub unsafe fn set(x: GLint, y: GLint, width: GLsizei, height: GLsizei);
+
+        #[gl = "glDepthRange"]
+        pub unsafe fn set_depth_range(z_near: GLclampd, z_far: GLclampd);
     }
 }

@@ -6,10 +6,8 @@ use std::sync::Arc;
 use vulkan_prelude::*;
 
 pub struct Renderer {
-    pipeline: Arc<VulkanGraphicsPipeline>,
     pipeline_layout: Arc<VulkanPipelineLayout>,
-    screen_size_buffer: VulkanSubbuffer<ScreenSize>,
-    screen_size_descriptor_set: Arc<VulkanDescriptorSet>,
+    pipeline: Arc<VulkanGraphicsPipeline>,
     images: HashMap<egui::TextureId, ImageData>,
     image_descriptor_set_layout: Arc<VulkanDescriptorSetLayout>,
     sampler_cache: HashMap<egui::TextureOptions, Arc<VulkanSampler>>,
@@ -52,31 +50,18 @@ struct Vertex {
 impl Renderer {
     pub fn new(
         device: &Arc<VulkanDevice>,
-        memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
-        descriptor_set_allocator: &Arc<dyn VulkanDescriptorSetAllocator>,
+        common_descriptor_set_layout: &Arc<VulkanDescriptorSetLayout>,
         render_pass: &Arc<VulkanRenderPass>,
     ) -> anyhow::Result<Self> {
-        let screen_size_buffer: VulkanSubbuffer<ScreenSize> = VulkanBuffer::new_sized(
-            memory_allocator,
-            &VulkanBufferCreateInfo {
-                usage: VulkanBufferUsage::UNIFORM_BUFFER | VulkanBufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            &VulkanAllocationCreateInfo {
-                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-        )
-        .context("Error while creating screen size buffer")?;
-        let screen_size_descriptor_set_layout = VulkanDescriptorSetLayout::new(
+        let image_descriptor_set_layout = VulkanDescriptorSetLayout::new(
             device,
             &VulkanDescriptorSetLayoutCreateInfo {
                 bindings: &[VulkanDescriptorSetLayoutBinding {
                     binding: 0,
                     binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    descriptor_type: VulkanDescriptorType::UniformBuffer,
+                    descriptor_type: VulkanDescriptorType::CombinedImageSampler,
                     descriptor_count: 1,
-                    stages: VulkanShaderStages::VERTEX,
+                    stages: VulkanShaderStages::FRAGMENT,
                     immutable_samplers: &[],
                     // HACK: See prelude.
                     _ne: vulkano_non_exhaustive(),
@@ -84,68 +69,11 @@ impl Renderer {
                 ..Default::default()
             },
         )
-        .context("Error while creating screen size descriptor set layout")?;
-        let screen_size_descriptor_set = VulkanDescriptorSet::new(
-            descriptor_set_allocator.clone(),
-            screen_size_descriptor_set_layout.clone(),
-            [VulkanWriteDescriptorSet::buffer(
-                0,
-                screen_size_buffer.clone(),
-            )],
-            [],
-        )
-        .context("Error while creating screen size descriptor set")?;
-        let image_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[
-                    VulkanDescriptorSetLayoutBinding {
-                        binding: 0,
-                        binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::CombinedImageSampler,
-                        descriptor_count: 1,
-                        stages: VulkanShaderStages::FRAGMENT,
-                        immutable_samplers: &[],
-                        // HACK: See prelude.
-                        _ne: vulkano_non_exhaustive(),
-                    },
-                    // (
-                    //     0,
-                    //     VulkanDescriptorSetLayoutBinding {
-                    //         binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    //         descriptor_type: VulkanDescriptorType::SampledImage,
-                    //         descriptor_count: 1,
-                    //         stages: VulkanShaderStages::FRAGMENT,
-                    //         immutable_samplers: vec![],
-                    //         // HACK: See prelude.
-                    //         _ne: vulkano_non_exhaustive(),
-                    //     },
-                    // ),
-                    // (
-                    //     1,
-                    //     VulkanDescriptorSetLayoutBinding {
-                    //         binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    //         descriptor_type: VulkanDescriptorType::Sampler,
-                    //         descriptor_count: 1,
-                    //         stages: VulkanShaderStages::FRAGMENT,
-                    //         immutable_samplers: vec![],
-                    //         // HACK: See prelude.
-                    //         _ne: vulkano_non_exhaustive(),
-                    //     },
-                    // ),
-                ],
-                ..Default::default()
-            },
-        )
         .context("Error while creating image descriptor set layout")?;
-        // Render pipeline
         let pipeline_layout = VulkanPipelineLayout::new(
             device,
             &VulkanPipelineLayoutCreateInfo {
-                set_layouts: &[
-                    &screen_size_descriptor_set_layout,
-                    &image_descriptor_set_layout,
-                ],
+                set_layouts: &[common_descriptor_set_layout, &image_descriptor_set_layout],
                 ..Default::default()
             },
         )
@@ -218,10 +146,8 @@ impl Renderer {
         )
         .context("Error while creating egui graphics pipeline")?;
         Ok(Self {
-            pipeline,
             pipeline_layout,
-            screen_size_buffer,
-            screen_size_descriptor_set,
+            pipeline,
             images: HashMap::new(),
             image_descriptor_set_layout,
             sampler_cache: HashMap::new(),
@@ -404,24 +330,16 @@ impl Renderer {
         let descriptor_set_allocator = &graphics_resources.descriptor_set_allocator;
         let width = physical_size.width as f32;
         let height = physical_size.height as f32;
-        // Write screen size and update textures
-        {
-            command_buffer
-                .update_buffer(
-                    self.screen_size_buffer.clone(),
-                    Box::new(ScreenSize { width, height }),
-                )
-                .context("Error while updating screen size buffer")?;
-            self.update_textures(
-                device,
-                &(memory_allocator.clone() as Arc<_>),
-                &(descriptor_set_allocator.clone() as Arc<_>),
-                command_buffer,
-                texture_updates,
-            )
-            .context("Error while updating textures")?;
-        }
-        // Generate mesh data
+        // Update textures.
+        self.update_textures(
+            device,
+            &(memory_allocator.clone() as Arc<_>),
+            &(descriptor_set_allocator.clone() as Arc<_>),
+            command_buffer,
+            texture_updates,
+        )
+        .context("Error while updating textures")?;
+        // Generate mesh data.
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
         let mut meshes: Vec<RenderMeshInfo> = Vec::with_capacity(primitives.len());
@@ -461,7 +379,7 @@ impl Renderer {
                 texture_id: mesh.texture_id,
             });
         }
-        // Vulkano doesn't allow empty buffers, so just indicate no rendering needs doing
+        // Vulkano doesn't allow empty buffers, so just indicate no rendering needs doing.
         if vertices.is_empty() {
             return Ok(None);
         }
@@ -508,26 +426,10 @@ impl Renderer {
     pub fn render(
         &mut self,
         command_buffer: &mut VulkanAutoCommandBufferBuilder<VulkanPrimaryAutoCommandBuffer>,
-        screen_size: winit::dpi::PhysicalSize<u32>,
         render_data: RenderData,
     ) {
         command_buffer
             .bind_pipeline_graphics(self.pipeline.clone())
-            .unwrap()
-            .set_viewport(
-                0,
-                SmallVec::from(&[VulkanViewport {
-                    extent: [screen_size.width as f32, screen_size.height as f32],
-                    ..Default::default()
-                }] as &[_]),
-            )
-            .unwrap()
-            .bind_descriptor_sets(
-                VulkanPipelineBindPoint::Graphics,
-                self.pipeline_layout.clone(),
-                0,
-                vec![self.screen_size_descriptor_set.clone()],
-            )
             .unwrap()
             .bind_vertex_buffers(0, [render_data.vertex_buffer])
             .unwrap()

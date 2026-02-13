@@ -1,16 +1,42 @@
 #![allow(clippy::std_instead_of_alloc)]
 
-pub mod render;
+// TODO: Add lightmap and sky changes.
+
+// TODO: Split GraphicsState across sub-backends so multiple can be compiled in, gate some by CPU
+//       features (compile-time CPU arch detection, runtime CPU feature detection).
+// - Rasterisation-based sub-backends will likely use the same chunk processing logic, so put that
+//   in a `common` module.
+cfg_if::cfg_if! {
+    if #[cfg(feature = "graphics_subbackend_software_lb_simd_generic")] {
+        pub mod lb_simd_generic;
+        pub use lb_simd_generic as render;
+    } else if #[cfg(feature = "graphics_subbackend_software_lb_simd_avx512")] {
+        #[cfg(not(all(
+            target_feature = "sse4.2",
+            target_feature = "fma",
+            target_feature = "avx512f",
+            target_feature = "avx512dq",
+            target_feature = "avx512bw",
+            target_feature = "avx512vl",
+        )))]
+        compile_error!("The software AVX-512 sub-backend requires extra CPU features.");
+        pub mod lb_simd_avx512;
+        pub use lb_simd_avx512 as render;
+    } else {
+        compile_error!("The software renderer requires exactly one sub-backend to be enabled.");
+    }
+}
 
 use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
 use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
-use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
+use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
+use crate::ClientPlayState;
 use ahash::{AHashMap, AHashSet};
 use anyhow::Context;
 use portable_std::{FastHashMap, FastHashSet};
 use rayon::prelude::*;
 use render::RenderTileBins;
-use resources::block::ResourceData;
+use resources::GameResourceData;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
@@ -46,7 +72,7 @@ pub struct SubchunkDataStorage {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
+    fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         let size = window.inner_size();
         let surface_texture = pixels::SurfaceTexture::new(size.width, size.height, window.clone());
@@ -63,13 +89,17 @@ impl GraphicsBackend for GraphicsState {
             size.height.max(1).try_into().unwrap(),
         );
         // Load game resources.
-        let ResourceData {
+        let resources::GameResourceData {
+            block_data,
+            environment_data: _,
+        } = game_data;
+        let resources::block::ResourceData {
             block_registry,
             model_registry,
             atlas,
-        } = resource_data;
+        } = block_data;
         let atlas_texture = TextureAtlas::new(&atlas)
-            .context("Error while converting creating block and item atlas texture")?;
+            .context("Error while creating block and item atlas tiled texture")?;
         let egui_renderer = render::egui_rendering::Renderer::new();
         let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
         Ok(Box::new(Self {
@@ -204,7 +234,8 @@ impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
     fn render(
         &mut self,
-        camera: &Camera,
+        play_state: &ClientPlayState,
+        _current_time_s: f64,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
@@ -212,6 +243,7 @@ impl GraphicsBackend for GraphicsState {
         _debug_lines: &[DebugLine],
         _debug_triangles: &[DebugTriangle],
     ) -> anyhow::Result<Option<DebugOutput>> {
+        let camera = &play_state.camera;
         // Add pending subchunks.
         if self.num_pending_subchunks > 0 {
             let span = tracing::trace_span!("add_pending_subchunks");
@@ -314,19 +346,6 @@ impl GraphicsBackend for GraphicsState {
                 .render()
                 .context("Error while rendering pixel buffer")?;
         }
-        // let render_data = self.egui_renderer.prepare(
-        //     &self.pixels,
-        //     &self.size,
-        //     egui_full_output.textures_delta.set,
-        //     egui_primitives,
-        //     pixels_per_point,
-        // );
-        // self.pixels.render_with(|encoder, render_target, context| {
-        //     context.scaling_renderer.render(encoder, render_target);
-        //     self.egui_renderer
-        //         .render(encoder, render_target, &render_data);
-        //     Ok(())
-        // })?;
         self.egui_renderer
             .free_textures(&egui_full_output.textures_delta.free);
         Ok(Some(debug_output))

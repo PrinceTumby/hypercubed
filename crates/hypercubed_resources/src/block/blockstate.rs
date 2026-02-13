@@ -27,7 +27,7 @@ pub fn load_blockstates(
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
-    let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
+    let blockstate_json_bytes = get_resource_file(ResourceType::Blockstate, identifier)
         .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
     let file: File = serde_json::from_slice(&blockstate_json_bytes)
         .with_context(|| format!("Failed to parse blockstate JSON data for {identifier:?}"))?;
@@ -667,7 +667,7 @@ pub fn load_full_custom_blockstates(
         );
     }
     let skip_properties: FastHashSet<_> = skip_properties.iter().map(|p| Atom::from(*p)).collect();
-    let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
+    let blockstate_json_bytes = get_resource_file(ResourceType::Blockstate, identifier)
         .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
     let file: File = serde_json::from_slice(&blockstate_json_bytes)
         .with_context(|| format!("Failed to parse blockstate JSON data for {identifier:?}"))?;
@@ -809,7 +809,7 @@ pub fn load_liquid_blockstates(
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
-    let blockstate_json_bytes = get_resource_file(&ResourceType::Blockstate, identifier)
+    let blockstate_json_bytes = get_resource_file(ResourceType::Blockstate, identifier)
         .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
     let file: File = serde_json::from_slice(&blockstate_json_bytes)
         .with_context(|| format!("Failed to parse blockstate JSON data for {identifier:?}"))?;

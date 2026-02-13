@@ -74,11 +74,17 @@ pub fn render_debug_ui(
             if ui.button("Quit").clicked() {
                 event_loop.exit();
             }
-            // VSync
+            // Graphics options
             {
                 let old_graphics_options = graphics_backend.get_graphics_options();
                 let mut new_graphics_options = old_graphics_options;
+                // VSync
                 ui.checkbox(&mut new_graphics_options.vsync, "VSync");
+                // Lightmap gamma ("brightness")
+                ui.add(
+                    egui::Slider::new(&mut new_graphics_options.lightmap_gamma_setting, 0.0..=1.0)
+                        .text("Brightness gamma"),
+                );
                 if new_graphics_options != old_graphics_options {
                     graphics_backend.apply_new_graphics_options(new_graphics_options);
                 }
@@ -233,6 +239,11 @@ pub fn render_debug_ui(
                         plot_ui.line(line);
                     });
             });
+            if graphics_backend.wants_egui_debug_section() {
+                ui.collapsing("Graphics Backend", |ui| {
+                    graphics_backend.render_egui_debug_section(ui);
+                });
+            }
         });
         if debug_state.rendering_view_frustum {
             use nalgebra::Point3;

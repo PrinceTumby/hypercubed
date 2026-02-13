@@ -1,0 +1,33 @@
+!!ARBvp1.0
+OPTION ARB_position_invariant;
+
+ATTRIB in_pos = vertex.position;
+ATTRIB in_tint_colour_and_dir_light = vertex.color;
+# `[Sky Light Level (0.0..=15.0), Block Light Level (0.0..=15.0), 0.0, 0.0]`
+ATTRIB in_light_levels = vertex.attrib[1];
+ATTRIB in_atlas_texcoord = vertex.texcoord;
+
+# `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`
+PARAM inv_atlas_texture_dims = program.env[0];
+# 1.0 / 16.0
+PARAM LIGHT_LEVEL_TEX_FACTOR = 0.0625;
+# 1.0 / 32.0
+PARAM LIGHT_LEVEL_TEX_OFFSET = 0.03125;
+
+OUTPUT out_colour = result.color;
+OUTPUT out_atlas_texcoord = result.texcoord[0];
+OUTPUT out_lightmap_texcoord = result.texcoord[1];
+
+# Position calculation is handled by fixed-function transformation, so nothing to do here.
+
+# Divide texture coordinate by atlas texture dimensions.
+MUL out_atlas_texcoord, inv_atlas_texture_dims, in_atlas_texcoord;
+
+# Calculate lightmap coordinate.
+# `out_lightmap_texcoord = (in_light_levels * (1.0 / 16.0)) + (1.0 / 32.0);`
+MAD out_lightmap_texcoord.xy, in_light_levels.yxzw, LIGHT_LEVEL_TEX_FACTOR, LIGHT_LEVEL_TEX_OFFSET;
+MOV out_lightmap_texcoord.zw, 1.0;
+
+MOV out_colour, in_tint_colour_and_dir_light;
+
+END

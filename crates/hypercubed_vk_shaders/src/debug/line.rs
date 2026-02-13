@@ -1,31 +1,30 @@
 use super::types::PackedFlags;
-use crate::ViewInfo;
 use spirv_std::glam::{Vec2, Vec2Swizzles, Vec3, Vec4, Vec4Swizzles};
 use spirv_std::spirv;
 
 #[spirv(vertex)]
 pub fn vertex(
     // Bindings
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] view_info: &ViewInfo,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] render_info: &crate::RenderInfo,
     // Inputs
     #[spirv(vertex_index)] in_vertex_i: u32,
     in_p1: Vec3,
     in_p2: Vec3,
-    in_colour: Vec4,
     in_size: f32,
+    in_colour: Vec4,
     in_flags: PackedFlags,
     // Outputs
     #[spirv(invariant, position)] out_pos: &mut Vec4,
     #[spirv(flat)] out_colour: &mut Vec4,
     #[spirv(flat)] out_flags: &mut PackedFlags,
 ) {
-    let p1_clip_pos = view_info.view_matrix * Vec4::from((in_p1, 1.0));
-    let p2_clip_pos = view_info.view_matrix * Vec4::from((in_p2, 1.0));
+    let p1_clip_pos = render_info.view_matrix * Vec4::from((in_p1, 1.0));
+    let p2_clip_pos = render_info.view_matrix * Vec4::from((in_p2, 1.0));
     let clip_diff_norm = (p2_clip_pos.xy() - p1_clip_pos.xy()).normalize_or_zero();
     // Calculate the perpendicular vector offset.
-    let screen_size_f32 = view_info.screen_size.as_vec2();
-    let offset_right = clip_diff_norm.yx() * Vec2::new(-1.0, 1.0) * in_size / screen_size_f32;
-    let offset = if in_vertex_i % 2 == 0 {
+    let offset_right =
+        clip_diff_norm.yx() * Vec2::new(-1.0, 1.0) * in_size * render_info.recip_screen_size;
+    let offset = if in_vertex_i.is_multiple_of(2) {
         offset_right
     } else {
         -offset_right

@@ -94,7 +94,7 @@ pub struct InternalOverlayFilesystem;
 impl Filesystem for InternalOverlayFilesystem {
     fn get(
         &self,
-        resource_type: &ResourceType,
+        resource_type: ResourceType,
         identifier: &Identifier,
     ) -> anyhow::Result<Cow<'static, [u8]>> {
         match resource_type {

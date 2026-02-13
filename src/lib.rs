@@ -10,7 +10,10 @@
 )]
 #![deny(clippy::alloc_instead_of_core)]
 #![cfg_attr(not(feature = "mini_std"), no_std)]
-#![cfg_attr(feature = "graphics_backend_software", feature(portable_simd))]
+#![cfg_attr(
+    feature = "graphics_subbackend_software_lb_simd_generic",
+    feature(portable_simd)
+)]
 
 #[cfg(not(any(feature = "mini_std", test)))]
 #[macro_use]
@@ -53,7 +56,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use crate::physics::PlayerPhysicsState;
 use crate::portable_prelude::*;
 use crate::protocol::chunk as protocol_chunk;
-use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode};
+use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode, TickingState, WorldTime};
 use crate::protocol::prelude::*;
 #[allow(unused)]
 use anyhow::Context;
@@ -84,6 +87,8 @@ cfg_if::cfg_if! {
 
 pub struct ClientPlayState {
     pub camera: Camera,
+    pub world_time: WorldTime,
+    pub ticking_state: TickingState,
     pub raw_chunks: Arc<FastHashMap<[i32; 2], Arc<RawChunk>>>,
     pub pending_subchunk_update_ids: FastHashMap<[i32; 3], usize>,
     pub player: Player,
@@ -139,9 +144,9 @@ pub struct App {
     last_mouse_pos: egui::Pos2,
     previous_frame_times: VecDeque<f64>,
     last_frame_time: Instant,
+    // TODO: Move these two fields into the play state.
     current_time_s: f64,
-    last_tick_time_s: f64,
-    next_tick_time_s: f64,
+    last_player_tick_time_s: f64,
     #[cfg(feature = "full_std")]
     thread_pool: ThreadPool,
 }
@@ -157,6 +162,15 @@ impl App {
         let input_state = input::PlayControlState::default();
         let play_state = ClientPlayState {
             camera: Camera::dummy(),
+            world_time: WorldTime {
+                world_age: 0,
+                time_of_day: 0,
+                sun_frozen: false,
+            },
+            ticking_state: TickingState {
+                ticks_per_second: 20.0,
+                is_frozen: false,
+            },
             raw_chunks: Arc::new(FastHashMap::new()),
             pending_subchunk_update_ids: FastHashMap::new(),
             player: Player {
@@ -212,8 +226,7 @@ impl App {
             previous_frame_times: VecDeque::new(),
             last_frame_time: Instant::now(),
             current_time_s: 0.0,
-            last_tick_time_s: 0.0,
-            next_tick_time_s: 1.0 / 20.0,
+            last_player_tick_time_s: 0.0,
             #[cfg(feature = "full_std")]
             thread_pool,
         }
@@ -277,6 +290,9 @@ impl ApplicationHandler for App {
             .camera
             .proj_matrix
             .set_aspect((graphics_size.width as f32) / (graphics_size.height as f32));
+        if let Some(znear_override) = graphics_backend.get_camera_znear_override() {
+            self.play_state.camera.proj_matrix.set_znear(znear_override);
+        }
         self.graphics_backend = Some(graphics_backend);
         self.window = Some(window);
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -396,10 +412,11 @@ impl ApplicationHandler for App {
             _ = window
                 .set_cursor_position(winit::dpi::PhysicalPosition::new(physical_x, physical_y));
         }
-        // Main rendering
+        // Main rendering.
         let maybe_new_debug_output = graphics_backend
             .render(
-                &self.play_state.camera,
+                &self.play_state,
+                self.current_time_s,
                 &self.egui_ctx,
                 egui_output,
                 &self.debug_state,
@@ -412,7 +429,9 @@ impl ApplicationHandler for App {
         if let Some(new_debug_output) = maybe_new_debug_output {
             self.debug_output = new_debug_output;
         }
-        // Gameplay events and updates
+        // Gameplay events and updates.
+        // TODO: Move gameplay processing to a dedicated thread.
+        // - Should allow for untangling from rendering.
         game::process_game_events(
             #[cfg(feature = "full_std")]
             &self.thread_pool,
@@ -424,8 +443,7 @@ impl ApplicationHandler for App {
             &self.clientbound_tx,
             &self.clientbound_rx,
             self.current_time_s,
-            &mut self.last_tick_time_s,
-            &mut self.next_tick_time_s,
+            &mut self.last_player_tick_time_s,
             delta_time,
         );
         #[cfg(feature = "tracy")]

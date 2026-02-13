@@ -158,7 +158,7 @@ pub enum Clientbound {
         food: VarInt,
         food_saturation: f32,
     } = 0x5D,
-    UpdateTime(UpdateTime) = 0x64,
+    UpdateTime(WorldTime) = 0x64,
     PlaySoundEffect(PlaySoundEffect) = 0x68,
     SystemChatMessage {
         content: TextComponent,
@@ -180,10 +180,7 @@ pub enum Clientbound {
         pitch: Angle,
         on_ground: bool,
     } = 0x70,
-    SetTickingState {
-        tick_rate: f32,
-        is_frozen: bool,
-    } = 0x71,
+    SetTickingState(TickingState) = 0x71,
     StepTicks(VarInt) = 0x72,
     UpdateAdvancements(UpdateAdvancements) = 0x74,
     UpdateEntityAttributes(UpdateEntityAttributes) = 0x75,
@@ -1107,13 +1104,13 @@ pub struct SetExperience {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct UpdateTime {
+pub struct WorldTime {
     pub world_age: u64,
     pub time_of_day: u64,
     pub sun_frozen: bool,
 }
 
-impl Deserialize for UpdateTime {
+impl Deserialize for WorldTime {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         pair(u64::deserialize, i64::deserialize)
             .map(|(world_age, signed_time_of_day)| Self {
@@ -1151,6 +1148,12 @@ pub enum EntityAttributeModifierOperation {
     Add = 0,
     AddPercentage = 1,
     MultiplyPercentage = 2,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct TickingState {
+    pub ticks_per_second: f32,
+    pub is_frozen: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

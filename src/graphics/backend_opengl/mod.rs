@@ -9,21 +9,27 @@ pub mod gl;
 
 use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
 use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
-use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
+use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState, get_star_brightness};
+use crate::graphics::lightmap::{generate_dummy_lightmap_texture, generate_lightmap_texture};
+use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
-use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::Context;
-use nalgebra::{Matrix4, Vector3};
+use nalgebra::{Isometry3, Vector3};
 use portable_std::{Arc, FastHashMap, FastHashSet};
-use resources::block::ResourceData;
+use resources::GameResourceData;
 use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
 use winit::window::Window;
 
-use gl::array::{ColorPointerType, TextureCoordPointerType, VertexPointerType};
+use gl::array::{AttributeNormalisation, AttributeType, ColorType, TextureCoordType, VertexType};
 use gl::buffer::BufferType;
 use gl::client_state::ClientArrayType;
+use gl::texture::{
+    ActiveTexture, TexEnvMode, TexEnvTarget, TexFilterMode, TexTarget, TexWrapMode,
+    Texture2dFormat, Texture2dTarget, TextureDataType, TextureInternalFormat,
+};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "platform_winit")] {
@@ -46,14 +52,36 @@ cfg_if::cfg_if! {
     }
 }
 
+/// Custom camera near plane distance override returned by the graphics backend.
+/// This is needed to improve precision at longer ranges, as unfortunately old OpenGL doesn't give
+/// us a standard way to make reversed depth buffers useful.
+const CAMERA_ZNEAR_OVERRIDE: f32 = 0.1;
+
+mod chunk_vertex_program {
+    use super::*;
+
+    pub static CODE: &str = include_str!("chunk_vertex.arb");
+
+    // Environment variables
+    /// `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`
+    pub const ENV_INV_ATLAS_TEXTURE_DIMS: gl::GLuint = 0;
+
+    // Attribute indices
+    /// `[Sky Light Level (0..=15), Block Light Level (0..=15)]`
+    pub const ATTRIB_LIGHT_LEVELS: gl::GLuint = 1;
+}
+
 #[derive(Clone)]
 pub struct GraphicsResources {
     pub block_registry: Arc<resources::block::Registry>,
     pub model_registry: Arc<resources::block::model::ModelRegistry>,
     #[cfg(feature = "platform_winit")]
     glutin_resources: Arc<GlutinResources>,
-    pub atlas_texture: Arc<gl::texture::batch_collected::Texture>,
-    pub atlas_texture_dims: (u32, u32),
+    pub atlas_texture: Arc<GlTexture>,
+    pub moon_phases_texture: Arc<GlTexture>,
+    pub sun_texture: Arc<GlTexture>,
+    pub lightmap_texture_handle: Arc<gl::texture::batch_collected::TextureHandle>,
+    pub chunk_vertex_program: gl::program_arb::ProgramHandle,
     pub window: Arc<Window>,
 }
 
@@ -73,12 +101,16 @@ pub struct GraphicsState {
     pub pending_subchunk_rx: Receiver<Option<chunk::RawSubchunk>>,
     pub current_dispatch_id_counter: u64,
     pub num_pending_subchunks: usize,
+    pub sky_extrapolation_state: SkyExtrapolationState,
+    pub debug_lightmap_image: egui::load::SizedTexture,
+    /// "Brightness" setting, controls gamma falloff for block lightmap.
+    pub debug_lightmap_time_of_day: f64,
     pub size: winit::dpi::PhysicalSize<u32>,
 }
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
+    fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         let size = window.inner_size();
         cfg_if::cfg_if! {
@@ -120,7 +152,7 @@ impl GraphicsBackend for GraphicsState {
                 type GlutinWindowSurfaceAttributesBuilder =
                     glutin::surface::SurfaceAttributesBuilder<glutin::surface::WindowSurface>;
                 let glutin_surface_attributes = GlutinWindowSurfaceAttributesBuilder::new()
-                    .with_srgb(Some(true))
+                    .with_srgb(None)
                     .build(
                         window_handle.as_raw(),
                         NonZeroU32::new(size.width).unwrap_or(NonZeroU32::MIN),
@@ -164,8 +196,22 @@ impl GraphicsBackend for GraphicsState {
                 ));
             }
         }
+        // Log some debug information about the OpenGL implementation.
         unsafe {
-            gl::framebuffer::clear_color(0.471, 0.655, 1.0, 1.0);
+            log::debug!(
+                "OpenGL Version: {:?}",
+                gl::get_string_lossy(gl::StringName::Version)
+            );
+            log::debug!(
+                "OpenGL Extensions: {:?}",
+                gl::get_string_lossy(gl::StringName::Extensions)
+            );
+        }
+        // Set initial OpenGL state.
+        unsafe {
+            // We're using reversed depth, so clearing to zero is "infinite distance".
+            gl::framebuffer::clear_depth(0.0);
+            gl::fragment::set_depth_test_function(gl::fragment::DepthTestFunction::Greater);
             gl::viewport::set(
                 0,
                 0,
@@ -174,42 +220,72 @@ impl GraphicsBackend for GraphicsState {
             );
             gl::texture::set_pixel_store_i32_raw(gl::texture::PixelStoreParam::UnpackAlignment, 1);
         }
+        // Generate lightmap.
+        let lightmap_texture_handle = unsafe {
+            let [handle] = gl::texture::batch_collected::TextureHandle::make_array();
+            handle.bind(TexTarget::Texture2D);
+            gl::texture::set_wrap_s(TexTarget::Texture2D, TexWrapMode::Clamp);
+            gl::texture::set_wrap_t(TexTarget::Texture2D, TexWrapMode::Clamp);
+            gl::texture::set_mag_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
+            gl::texture::set_min_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
+            // Texture data will be set during each frame render.
+            gl::texture::bind(TexTarget::Texture2D, None);
+            handle
+        };
         // Load game resources.
-        let ResourceData {
+        let resources::GameResourceData {
+            block_data,
+            environment_data,
+        } = game_data;
+        let resources::block::ResourceData {
             block_registry,
             model_registry,
             atlas,
-        } = resource_data;
-        let atlas_texture = unsafe {
-            use gl::texture::{
-                TexFilterMode, TexTarget, TexWrapMode, Texture2dFormat, Texture2dTarget,
-                TextureDataType, TextureInternalFormat,
-            };
-            let [texture] = gl::texture::batch_collected::Texture::make_array();
-            texture.bind(TexTarget::Texture2D);
-            gl::texture::set_wrap_s(TexTarget::Texture2D, TexWrapMode::Repeat);
-            gl::texture::set_wrap_t(TexTarget::Texture2D, TexWrapMode::Repeat);
-            gl::texture::set_mag_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
-            gl::texture::set_min_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
-            gl::texture::set_image_2d(
-                Texture2dTarget::Texture,
-                0,
-                TextureInternalFormat::Rgba,
-                atlas.width.try_into().unwrap(),
-                atlas.height.try_into().unwrap(),
-                0,
-                Texture2dFormat::Rgba,
-                TextureDataType::U8,
-                atlas.texture_bytes.as_ptr() as *const (),
+        } = block_data;
+        let resources::environment::ResourceData {
+            moon_phases_texture,
+            sun_texture,
+        } = environment_data;
+        let atlas_texture = unsafe { GlTexture::create_from_resource_atlas(&atlas) };
+        let (moon_phases_texture, sun_texture) = unsafe {
+            let moon_phases_texture = GlTexture::create_from_resource_texture(
+                &moon_phases_texture,
+                GlTextureCreateOptions::default(),
             );
-            gl::texture::bind(TexTarget::Texture2D, None);
-            texture
+            let sun_texture = GlTexture::create_from_resource_texture(
+                &sun_texture,
+                GlTextureCreateOptions::default(),
+            );
+            (moon_phases_texture, sun_texture)
         };
-        let egui_renderer = egui_renderer::Renderer::new();
+        let chunk_vertex_program = unsafe {
+            use gl::program_arb::ProgramType;
+            let [program] = gl::program_arb::gen_programs();
+            gl::program_arb::bind(ProgramType::VertexProgram, Some(program));
+            gl::program_arb::set_current_program_string(
+                ProgramType::VertexProgram,
+                chunk_vertex_program::CODE,
+            );
+            program
+        };
+        let mut egui_renderer = egui_renderer::Renderer::new();
+        let debug_lightmap_image = egui_renderer.register_user_texture(unsafe {
+            egui_renderer::ImageData::new(
+                image::RgbaImage::from_vec(
+                    16,
+                    16,
+                    generate_dummy_lightmap_texture()
+                        .as_flattened()
+                        .as_flattened()
+                        .into(),
+                )
+                .unwrap(),
+                egui::TextureOptions::NEAREST,
+            )
+        });
         let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
         Ok(Box::new(Self {
             resources: GraphicsResources {
-                window,
                 #[cfg(feature = "platform_winit")]
                 glutin_resources: Arc::new(GlutinResources {
                     display: glutin_display,
@@ -219,7 +295,11 @@ impl GraphicsBackend for GraphicsState {
                 block_registry: Arc::new(block_registry),
                 model_registry: Arc::new(model_registry),
                 atlas_texture: Arc::new(atlas_texture),
-                atlas_texture_dims: (atlas.width, atlas.height),
+                moon_phases_texture: Arc::new(moon_phases_texture),
+                sun_texture: Arc::new(sun_texture),
+                chunk_vertex_program,
+                lightmap_texture_handle: Arc::new(lightmap_texture_handle),
+                window,
             },
             subchunk_data_storage: SubchunkDataStorage {
                 subchunks: FastHashMap::new(),
@@ -231,6 +311,12 @@ impl GraphicsBackend for GraphicsState {
             num_pending_subchunks: 0,
             graphics_options,
             egui_renderer,
+            sky_extrapolation_state: SkyExtrapolationState::new(),
+            debug_lightmap_image: egui::load::SizedTexture {
+                id: debug_lightmap_image,
+                size: egui::vec2(16.0, 16.0),
+            },
+            debug_lightmap_time_of_day: 0.0,
             size,
         }))
     }
@@ -373,7 +459,8 @@ impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
     fn render(
         &mut self,
-        camera: &Camera,
+        play_state: &ClientPlayState,
+        current_time_s: f64,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
@@ -381,13 +468,14 @@ impl GraphicsBackend for GraphicsState {
         debug_lines: &[DebugLine],
         debug_triangles: &[DebugTriangle],
     ) -> anyhow::Result<Option<DebugOutput>> {
+        let camera = &play_state.camera;
         let pixels_per_point = egui_full_output.pixels_per_point;
         let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
         let debug_output;
         unsafe {
             use gl::framebuffer::ClearBufferBits;
             use gl::matrix::MatrixMode;
-            use gl::texture::{TexEnvMode, TexEnvTarget, TexTarget};
+            use gl::program_arb::ProgramType;
             cfg_if::cfg_if! {
                 if #[cfg(feature = "platform_winit")] {
                     let glutin_context = &self.resources.glutin_resources.context;
@@ -435,14 +523,20 @@ impl GraphicsBackend for GraphicsState {
                     }
                 }
             }
-            // Clear framebuffer to sky colour, depth buffer to infinite distance..
+            // Calculate the time of day and a sky colour for the current frame.
+            let time_of_day = self
+                .sky_extrapolation_state
+                .update(play_state, current_time_s);
+            let [sky_r, sky_g, sky_b] = crate::graphics::environment::sky::get_rgb(time_of_day);
+            // Clear framebuffer to sky colour, depth buffer to infinite distance.
+            gl::framebuffer::clear_color(sky_r, sky_g, sky_b, 1.0);
             gl::framebuffer::clear(ClearBufferBits::COLOR | ClearBufferBits::DEPTH);
             // Render subchunks.
             {
                 let span = tracing::trace_span!("render_subchunks");
                 let _enter = span.enter();
                 {
-                    let span = tracing::trace_span!("set_gl_state");
+                    let span = tracing::trace_span!("subchunks_set_gl_state");
                     let _enter = span.enter();
                     gl::disable(gl::EnableComponent::ScissorTest);
                     gl::disable(gl::EnableComponent::Blending);
@@ -453,27 +547,70 @@ impl GraphicsBackend for GraphicsState {
                         gl::fragment::AlphaTestFunc::Greater,
                         0.0,
                     );
-                    gl::enable(gl::EnableComponent::Texture2D);
-                    gl::texture::set_env_mode(TexEnvTarget::TextureEnv, TexEnvMode::Modulate);
+                }
+                // Bind vertex program, set environment variables.
+                {
+                    gl::enable(gl::EnableComponent::VertexProgramARB);
+                    let span = tracing::trace_span!("subchunks_set_vertex_program");
+                    let _enter = span.enter();
+                    gl::program_arb::bind(
+                        ProgramType::VertexProgram,
+                        Some(self.resources.chunk_vertex_program),
+                    );
+                    gl::program_arb::set_program_env_parameter_f32(
+                        ProgramType::VertexProgram,
+                        chunk_vertex_program::ENV_INV_ATLAS_TEXTURE_DIMS,
+                        1.0 / self.resources.atlas_texture.width as f32,
+                        1.0 / self.resources.atlas_texture.height as f32,
+                        1.0,
+                        1.0,
+                    );
                 }
                 // Load and enable texture atlas.
                 {
-                    let span = tracing::trace_span!("bind_texture_atlas");
+                    let span = tracing::trace_span!("subchunks_bind_texture_atlas");
                     let _enter = span.enter();
+                    gl::enable(gl::EnableComponent::Texture2D);
+                    gl::texture::set_env_mode(TexEnvTarget::TextureEnv, TexEnvMode::Modulate);
                     self.resources
                         .atlas_texture
-                        .bind(gl::texture::TexTarget::Texture2D);
+                        .handle
+                        .bind(TexTarget::Texture2D);
                 }
-                gl::matrix::switch_mode(gl::matrix::MatrixMode::Texture);
-                let texture_matrix = Matrix4::identity().append_nonuniform_scaling(&Vector3::new(
-                    1.0 / self.resources.atlas_texture_dims.0 as f32,
-                    1.0 / self.resources.atlas_texture_dims.1 as f32,
-                    1.0,
-                ));
-                gl::matrix::load_f32_matrix(&texture_matrix.into());
+                // Regenerate and enable lightmap texture.
+                {
+                    let span = tracing::trace_span!("subchunks_regen_and_bind_lightmap_texture");
+                    let _enter = span.enter();
+                    let lightmap_data = generate_lightmap_texture(
+                        self.graphics_options.lightmap_gamma_setting,
+                        time_of_day,
+                    );
+                    let lightmap_width = lightmap_data[0].len();
+                    let lightmap_height = lightmap_data.len();
+                    gl::texture::switch_active(ActiveTexture::Texture1);
+                    gl::enable(gl::EnableComponent::Texture2D);
+                    gl::texture::set_env_mode(TexEnvTarget::TextureEnv, TexEnvMode::Modulate);
+                    self.resources
+                        .lightmap_texture_handle
+                        .bind(TexTarget::Texture2D);
+                    gl::texture::set_image_2d(
+                        Texture2dTarget::Texture,
+                        0,
+                        TextureInternalFormat::Rgb,
+                        lightmap_width.try_into().unwrap(),
+                        lightmap_height.try_into().unwrap(),
+                        0,
+                        Texture2dFormat::Rgba,
+                        TextureDataType::U8,
+                        lightmap_data.as_ptr() as *const (),
+                    );
+                    gl::matrix::switch_mode(MatrixMode::Texture);
+                    gl::matrix::load_identity();
+                    gl::texture::switch_active(ActiveTexture::Texture0);
+                }
                 // Load camera projection matrix.
                 gl::matrix::switch_mode(MatrixMode::Projection);
-                gl::matrix::load_f32_matrix(&camera.generate_view_matrix_slice());
+                gl::matrix::load_f32_matrix(&camera.generate_reversed_depth_view_matrix_slice());
                 let camera_subchunk_coords = {
                     let camera_pos = camera.pos;
                     let camera_x = (camera_pos.x.floor() as i32).div_euclid(SUBCHUNK_AXIS_LEN_I32);
@@ -488,6 +625,7 @@ impl GraphicsBackend for GraphicsState {
                     gl::client_state::enable(ClientArrayType::VertexArray);
                     gl::client_state::enable(ClientArrayType::ColorArray);
                     gl::client_state::enable(ClientArrayType::TextureCoordArray);
+                    gl::array::enable_attribute_array(chunk_vertex_program::ATTRIB_LIGHT_LEVELS);
                 }
                 debug_output = super::for_each_visible_subchunk(
                     camera,
@@ -505,21 +643,32 @@ impl GraphicsBackend for GraphicsState {
                         ));
                         gl::array::vertex_pointer(
                             3,
-                            VertexPointerType::I16,
+                            VertexType::I16,
                             size_of::<chunk::BlockVertex>().try_into().unwrap(),
                             core::mem::offset_of!(chunk::BlockVertex, subchunk_fixed_point_pos),
                         );
                         gl::array::color_pointer(
                             4,
-                            ColorPointerType::U8,
+                            ColorType::U8,
                             size_of::<chunk::BlockVertex>().try_into().unwrap(),
-                            core::mem::offset_of!(chunk::BlockVertex, colour_rgba),
+                            core::mem::offset_of!(
+                                chunk::BlockVertex,
+                                tint_colour_and_dir_light_rgba
+                            ),
                         );
                         gl::array::texture_coord_pointer(
                             2,
-                            TextureCoordPointerType::I16,
+                            TextureCoordType::I16,
                             size_of::<chunk::BlockVertex>().try_into().unwrap(),
                             core::mem::offset_of!(chunk::BlockVertex, uvs),
+                        );
+                        gl::array::attribute_pointer(
+                            chunk_vertex_program::ATTRIB_LIGHT_LEVELS,
+                            2,
+                            AttributeType::U8,
+                            AttributeNormalisation::Unnormalised,
+                            size_of::<chunk::BlockVertex>().try_into().unwrap(),
+                            core::mem::offset_of!(chunk::BlockVertex, light_levels),
                         );
                         for i in 0..7 {
                             let skip_face_dir = match i {
@@ -547,14 +696,136 @@ impl GraphicsBackend for GraphicsState {
                         }
                     },
                 );
-                gl::texture::bind(TexTarget::Texture2D, None);
+                gl::program_arb::bind(ProgramType::VertexProgram, None);
+                gl::buffer::bind(BufferType::ArrayBuffer, None);
+                gl::disable(gl::EnableComponent::VertexProgramARB);
+                gl::disable(gl::EnableComponent::AlphaTesting);
+                gl::disable(gl::EnableComponent::FaceCulling);
+                gl::client_state::disable(ClientArrayType::ColorArray);
+                gl::vertex::set_color_rgba_f32(1.0, 1.0, 1.0, 1.0);
+                gl::array::disable_attribute_array(chunk_vertex_program::ATTRIB_LIGHT_LEVELS);
+                gl::texture::switch_active(ActiveTexture::Texture1);
+                gl::disable(gl::EnableComponent::Texture2D);
+                gl::texture::switch_active(ActiveTexture::Texture0);
+            }
+            // Render sky.
+            {
+                gl::enable(gl::EnableComponent::Blending);
+                gl::fragment::set_blend_function(
+                    gl::fragment::SrcBlendFactor::One,
+                    gl::fragment::DstBlendFactor::One,
+                );
+                gl::matrix::switch_mode(gl::matrix::MatrixMode::Texture);
+                gl::matrix::load_identity();
+                gl::matrix::switch_mode(gl::matrix::MatrixMode::ModelView);
+                let sky_matrix = Isometry3::new(
+                    camera.pos.coords,
+                    Vector3::new(
+                        0.0,
+                        0.0,
+                        crate::graphics::environment::sky::get_day_cycle_rotation(time_of_day),
+                    ),
+                )
+                .to_matrix()
+                .prepend_scaling(camera.get_zfar() * 0.95);
+                gl::matrix::load_f32_matrix(sky_matrix.as_ref());
+                // Draw sun.
+                {
+                    self.resources.sun_texture.handle.bind(TexTarget::Texture2D);
+                    static SUN_POSITIONS: [[f32; 3]; 4] = [
+                        [0.90453404, 0.30151135, -0.30151135],
+                        [0.90453404, -0.30151135, -0.30151135],
+                        [0.90453404, -0.30151135, 0.30151135],
+                        [0.90453404, 0.30151135, 0.30151135],
+                    ];
+                    static SUN_UVS: [[f32; 2]; 4] =
+                        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+                    gl::array::vertex_pointer(
+                        3,
+                        VertexType::F32,
+                        0,
+                        (&raw const SUN_POSITIONS).addr(),
+                    );
+                    gl::array::texture_coord_pointer(
+                        2,
+                        TextureCoordType::F32,
+                        0,
+                        (&raw const SUN_UVS).addr(),
+                    );
+                    gl::array::draw(gl::ShapeMode::Quads, 0, 4);
+                }
+                // Draw moon.
+                {
+                    self.resources
+                        .moon_phases_texture
+                        .handle
+                        .bind(TexTarget::Texture2D);
+                    static MOON_POSITIONS: [[f32; 3]; 4] = [
+                        [-0.90453404, 0.30151135, -0.30151135],
+                        [-0.90453404, -0.30151135, -0.30151135],
+                        [-0.90453404, -0.30151135, 0.30151135],
+                        [-0.90453404, 0.30151135, 0.30151135],
+                    ];
+                    // The moon phases texture is a 4x2 grid of moons.
+                    let moon_uv_width = 1.0 / 4.0;
+                    let moon_uv_height = 1.0 / 2.0;
+                    let moon_phase_i = ((time_of_day as i64 - 6000) / 24000).rem_euclid(8);
+                    let moon_uv_start_x = (moon_phase_i % 4) as f32 / 4.0;
+                    let moon_uv_start_y = (moon_phase_i / 4) as f32 / 2.0;
+                    let moon_uvs: [[f32; 2]; 4] = [
+                        [moon_uv_start_x, moon_uv_start_y],
+                        [moon_uv_start_x + moon_uv_width, moon_uv_start_y],
+                        [
+                            moon_uv_start_x + moon_uv_width,
+                            moon_uv_start_y + moon_uv_height,
+                        ],
+                        [moon_uv_start_x, moon_uv_start_y + moon_uv_height],
+                    ];
+                    gl::array::vertex_pointer(
+                        3,
+                        VertexType::F32,
+                        0,
+                        (&raw const MOON_POSITIONS).addr(),
+                    );
+                    gl::array::texture_coord_pointer(
+                        2,
+                        TextureCoordType::F32,
+                        0,
+                        (&raw const moon_uvs).addr(),
+                    );
+                    gl::array::draw(gl::ShapeMode::Quads, 0, 4);
+                }
+                // Draw stars.
+                let star_brightness = get_star_brightness(time_of_day);
+                if star_brightness > 0.0 {
+                    gl::texture::bind(TexTarget::Texture2D, None);
+                    gl::client_state::disable(ClientArrayType::TextureCoordArray);
+                    gl::disable(gl::EnableComponent::Texture2D);
+                    gl::vertex::set_color_rgba_f32(
+                        star_brightness,
+                        star_brightness,
+                        star_brightness,
+                        0.0,
+                    );
+                    gl::array::vertex_pointer(
+                        3,
+                        VertexType::F32,
+                        0,
+                        (&raw const STAR_QUADS).addr(),
+                    );
+                    gl::array::draw(
+                        gl::ShapeMode::Quads,
+                        0,
+                        (STAR_QUADS.len() * 4).try_into().unwrap(),
+                    );
+                }
+                // Reset OpenGL state for debug graphics.
+                gl::disable(gl::EnableComponent::Blending);
             }
             // Render debug graphics.
             // TODO: Get the `ignore_depth` flags working.
             {
-                gl::buffer::bind(BufferType::ArrayBuffer, None);
-                gl::disable(gl::EnableComponent::Texture2D);
-                gl::client_state::disable(ClientArrayType::TextureCoordArray);
+                gl::enable(gl::EnableComponent::FaceCulling);
                 gl::matrix::switch_mode(gl::matrix::MatrixMode::ModelView);
                 gl::matrix::load_identity();
                 // Render debug triangles.
@@ -565,8 +836,8 @@ impl GraphicsBackend for GraphicsState {
                         points.extend([tri.p1, tri.p2, tri.p3]);
                         colours.extend([tri.color; 3]);
                     }
-                    gl::array::vertex_pointer(3, VertexPointerType::F32, 0, points.as_ptr().addr());
-                    gl::array::color_pointer(4, ColorPointerType::U8, 0, colours.as_ptr().addr());
+                    gl::array::vertex_pointer(3, VertexType::F32, 0, points.as_ptr().addr());
+                    gl::array::color_pointer(4, ColorType::U8, 0, colours.as_ptr().addr());
                     gl::array::draw(
                         gl::ShapeMode::Triangles,
                         0,
@@ -574,6 +845,7 @@ impl GraphicsBackend for GraphicsState {
                     );
                 }
                 // Render debug lines.
+                // TODO: Get line widths working.
                 if !debug_lines.is_empty() {
                     #[repr(C)]
                     #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -598,13 +870,13 @@ impl GraphicsBackend for GraphicsState {
                         .collect();
                     gl::array::vertex_pointer(
                         3,
-                        VertexPointerType::F32,
+                        VertexType::F32,
                         size_of::<DebugLineVertex>().try_into().unwrap(),
                         (&raw const converted_lines[0].pos).addr(),
                     );
                     gl::array::color_pointer(
                         4,
-                        ColorPointerType::U8,
+                        ColorType::U8,
                         size_of::<DebugLineVertex>().try_into().unwrap(),
                         (&raw const converted_lines[0].colour).addr(),
                     );
@@ -619,13 +891,13 @@ impl GraphicsBackend for GraphicsState {
                 if !debug_points.is_empty() {
                     gl::array::vertex_pointer(
                         3,
-                        VertexPointerType::F32,
+                        VertexType::F32,
                         size_of::<DebugPoint>().try_into().unwrap(),
                         (&raw const debug_points[0].pos).addr(),
                     );
                     gl::array::color_pointer(
                         4,
-                        ColorPointerType::U8,
+                        ColorType::U8,
                         size_of::<DebugPoint>().try_into().unwrap(),
                         (&raw const debug_points[0].color).addr(),
                     );
@@ -654,5 +926,165 @@ impl GraphicsBackend for GraphicsState {
             }
         }
         Ok(Some(debug_output))
+    }
+
+    fn wants_egui_debug_section(&self) -> bool {
+        true
+    }
+
+    fn render_egui_debug_section(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Lightmap");
+        ui.add(
+            egui::Slider::new(&mut self.debug_lightmap_time_of_day, 22850.0..=24730.0)
+                .text("Time of day"),
+        );
+        let time_of_day = self.debug_lightmap_time_of_day;
+        let sky_light_level: f32 =
+            crate::graphics::environment::sky::get_light_level_percentage(time_of_day);
+        ui.label(format!("Current sky light level: {sky_light_level:.1}"));
+        {
+            let day_cycle_tick = time_of_day.round() as u64 % 24000;
+            let night_percentage = match day_cycle_tick {
+                // Daytime.
+                730..11270 => 0.0,
+                // Turning night.
+                11270..13140 => (day_cycle_tick - 11270) as f32 / (13140 - 11270) as f32,
+                // Night.
+                13140..22860 => 1.0,
+                // Turning day.
+                22860..24000 | 0..730 => {
+                    let adjusted_tick = if (0_u64..730).contains(&day_cycle_tick) {
+                        day_cycle_tick + 24000
+                    } else {
+                        day_cycle_tick
+                    };
+                    1.0 - ((adjusted_tick - 22860) as f32 / (24730 - 22860) as f32)
+                }
+                _ => unreachable!(),
+            };
+            ui.label(format!("Night percentage: {night_percentage:.1}"));
+        }
+        // Update lightmap debug image.
+        unsafe {
+            let new_lightmap_bytes = crate::graphics::lightmap::generate_lightmap_texture(
+                self.graphics_options.lightmap_gamma_setting,
+                time_of_day,
+            );
+            let lightmap_image_data = self
+                .egui_renderer
+                .get_user_image_mut(self.debug_lightmap_image.id);
+            lightmap_image_data
+                .image
+                .copy_from_slice(new_lightmap_bytes.as_flattened().as_flattened());
+            lightmap_image_data.update_gl_texture();
+        }
+        ui.add(
+            egui::Image::from_texture(self.debug_lightmap_image)
+                .fit_to_exact_size(egui::vec2(400.0, 400.0)),
+        );
+    }
+
+    // See comment on `CAMERA_ZNEAR_OVERRIDE` for why we need this.
+    fn get_camera_znear_override(&self) -> Option<f32> {
+        Some(CAMERA_ZNEAR_OVERRIDE)
+    }
+}
+
+#[derive(Debug)]
+pub struct GlTexture {
+    pub handle: gl::texture::batch_collected::TextureHandle,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl GlTexture {
+    /// Creates an OpenGL 2D texture object from the atlas.
+    /// After calling this, the currently bound OpenGL 2D texture will be unbound.
+    ///
+    /// # Safety
+    ///
+    /// The OpenGL context must be current.
+    pub unsafe fn create_from_resource_atlas(atlas: &resources::texture::Atlas) -> Self {
+        unsafe {
+            let [handle] = gl::texture::batch_collected::TextureHandle::make_array();
+            handle.bind(TexTarget::Texture2D);
+            gl::texture::set_wrap_s(TexTarget::Texture2D, TexWrapMode::Repeat);
+            gl::texture::set_wrap_t(TexTarget::Texture2D, TexWrapMode::Repeat);
+            gl::texture::set_mag_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
+            gl::texture::set_min_filter(TexTarget::Texture2D, TexFilterMode::Nearest);
+            gl::texture::set_image_2d(
+                Texture2dTarget::Texture,
+                0,
+                TextureInternalFormat::Rgba,
+                atlas.width.try_into().unwrap(),
+                atlas.height.try_into().unwrap(),
+                0,
+                Texture2dFormat::Rgba,
+                TextureDataType::U8,
+                atlas.texture_bytes.as_ptr() as *const (),
+            );
+            gl::texture::bind(TexTarget::Texture2D, None);
+            Self {
+                handle,
+                width: atlas.width,
+                height: atlas.height,
+            }
+        }
+    }
+
+    /// Creates an OpenGL 2D texture object from the texture.
+    /// After calling this, the currently bound OpenGL 2D texture will be unbound.
+    ///
+    /// # Safety
+    ///
+    /// The OpenGL context must be current.
+    pub unsafe fn create_from_resource_texture(
+        texture: &resources::texture::RawTexture,
+        options: GlTextureCreateOptions,
+    ) -> Self {
+        unsafe {
+            let [handle] = gl::texture::batch_collected::TextureHandle::make_array();
+            handle.bind(TexTarget::Texture2D);
+            gl::texture::set_wrap_s(TexTarget::Texture2D, options.wrap_s);
+            gl::texture::set_wrap_t(TexTarget::Texture2D, options.wrap_t);
+            gl::texture::set_mag_filter(TexTarget::Texture2D, options.mag_filter);
+            gl::texture::set_min_filter(TexTarget::Texture2D, options.min_filter);
+            gl::texture::set_image_2d(
+                Texture2dTarget::Texture,
+                0,
+                TextureInternalFormat::Rgba,
+                texture.width.try_into().unwrap(),
+                texture.height.try_into().unwrap(),
+                0,
+                Texture2dFormat::Rgba,
+                TextureDataType::U8,
+                texture.texture_bytes.as_ptr() as *const (),
+            );
+            gl::texture::bind(TexTarget::Texture2D, None);
+            Self {
+                handle,
+                width: texture.width,
+                height: texture.height,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlTextureCreateOptions {
+    pub wrap_s: TexWrapMode,
+    pub wrap_t: TexWrapMode,
+    pub mag_filter: TexFilterMode,
+    pub min_filter: TexFilterMode,
+}
+
+impl Default for GlTextureCreateOptions {
+    fn default() -> Self {
+        Self {
+            wrap_s: TexWrapMode::Repeat,
+            wrap_t: TexWrapMode::Repeat,
+            mag_filter: TexFilterMode::Nearest,
+            min_filter: TexFilterMode::Nearest,
+        }
     }
 }

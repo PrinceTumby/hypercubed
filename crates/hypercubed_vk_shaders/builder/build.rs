@@ -1,8 +1,9 @@
-use spirv_builder::{MetadataPrintout, SpirvBuilder};
+use spirv_builder::{Capability, MetadataPrintout, SpirvBuilder};
 
 fn main() {
     println!("cargo::rerun-if-changed=../src");
     let compiled = match SpirvBuilder::new("crate_redirect", "spirv-unknown-vulkan1.1")
+        .capability(Capability::SampledBuffer)
         .multimodule(true)
         .print_metadata(MetadataPrintout::None)
         .build()

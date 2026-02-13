@@ -127,7 +127,7 @@ impl ModelRegistryBuilder {
             );
             Ok(model_idx)
         } else {
-            let json_bytes = get_resource_file(&ResourceType::Model, location)
+            let json_bytes = get_resource_file(ResourceType::Model, location)
                 .with_context(|| format!("Failed to read raw model JSON data for {location:?}"))?;
             let model_template: Template = serde_json::from_slice(&json_bytes)
                 .with_context(|| format!("Failed to parse model JSON data for {location:?}"))?;
@@ -229,7 +229,7 @@ impl ModelRegistryBuilder {
         {
             (template.as_ref().clone(), Some(template.clone()))
         } else {
-            let json_bytes = get_resource_file(&ResourceType::Model, location)
+            let json_bytes = get_resource_file(ResourceType::Model, location)
                 .with_context(|| format!("Failed to read raw model JSON data for {location:?}"))?;
             let mut model_template: Template = serde_json::from_slice(&json_bytes)
                 .with_context(|| format!("Failed to parse model JSON data for {location:?}"))?;

@@ -1,29 +1,64 @@
 pub mod chunk;
 pub mod debug;
 pub mod egui_renderer;
+pub mod environment;
 
 use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
 use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
-use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
-use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState};
+use crate::graphics::lightmap::{RawLightmapTexture, generate_lightmap_texture};
+use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::anyhow;
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
-use nalgebra::{Perspective3, Point3};
 use portable_std::{Arc, FastHashMap, FastHashMapEntry, FastHashSet};
-use resources::block::ResourceData;
-use resources::block::model::{ModelRegistry, Tint};
+use resources::GameResourceData;
+use resources::block::model::Tint;
 use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
 use wgpu::util::DeviceExt as _;
 use winit::window::Window;
 
+mod wesl_include {
+    /// Makes a [`wgpu::ShaderModuleDescriptor`] from the given WESL module name.
+    /// The WESL module must have been specified in the `build.rs` file.
+    macro_rules! include_wesl_module {
+        ($module_name:literal) => {
+            ::wgpu::ShaderModuleDescriptor {
+                label: Some($module_name),
+                source: ::wgpu::ShaderSource::Wgsl(::wesl::include_wesl!($module_name).into()),
+            }
+        };
+    }
+    pub(crate) use include_wesl_module;
+}
+pub(crate) use wesl_include::include_wesl_module;
+
+mod common_bind_group_idxs {
+    include!("shaders/common_bind_group_idxs.wesl");
+    /// Render info uniform buffer.
+    pub const RENDER_INFO_IDX: u32 = RENDER_INFO;
+    /// Lightmap storage buffer.
+    pub const LIGHTMAP_IDX: u32 = LIGHTMAP;
+    /// Basic sampler used for textures.
+    pub const BASIC_SAMPLER_IDX: u32 = BASIC_SAMPLER;
+    /// Block and item atlas texture.
+    pub const BLOCK_ITEM_ATLAS_IDX: u32 = BLOCK_ITEM_ATLAS;
+    /// Custom block faces storage buffer.
+    pub const CUSTOM_BLOCK_FACES_IDX: u32 = CUSTOM_BLOCK_FACES;
+    /// Sun texture.
+    pub const SUN_IDX: u32 = SUN;
+    /// Moon phases texture.
+    pub const MOON_PHASES_IDX: u32 = MOON_PHASES;
+}
+
 pub struct GraphicsResources {
     pub block_registry: resources::block::Registry,
-    pub model_registry: ModelRegistry,
+    pub model_registry: resources::block::model::ModelRegistry,
     pub surface: wgpu::Surface<'static>,
     pub queue: wgpu::Queue,
     pub device: wgpu::Device,
@@ -70,68 +105,64 @@ impl SubchunkDataStorage {
     }
 }
 
+pub struct EnvironmentGraphicsState {
+    pub sun_render_pipeline: wgpu::RenderPipeline,
+    pub moon_render_pipeline: wgpu::RenderPipeline,
+    pub star_render_pipeline: wgpu::RenderPipeline,
+    pub star_quads_buffer: wgpu::Buffer,
+    pub moon_phases_texture: HypercubedWgpuTexture,
+    pub sun_texture: HypercubedWgpuTexture,
+}
+
 pub struct GraphicsState {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub resources: Arc<GraphicsResources>,
     pub config: wgpu::SurfaceConfiguration,
     pub graphics_options: GraphicsOptions,
+    pub common_bind_group_layout: wgpu::BindGroupLayout,
+    pub common_bind_group: wgpu::BindGroup,
     pub block_render_pipeline: wgpu::RenderPipeline,
     pub tinted_block_render_pipeline: wgpu::RenderPipeline,
     pub custom_block_render_pipeline: wgpu::RenderPipeline,
     pub debug_point_render_pipeline: wgpu::RenderPipeline,
     pub debug_line_render_pipeline: wgpu::RenderPipeline,
     pub debug_triangle_render_pipeline: wgpu::RenderPipeline,
-    pub debug_crosshair_render_pipeline: wgpu::RenderPipeline,
     pub egui_renderer: egui_renderer::Renderer,
     pub depth_texture: Texture,
     pub custom_block_faces_buffer: wgpu::Buffer,
-    pub block_item_atlas: TextureAtlas,
-    pub block_item_atlas_bind_group: wgpu::BindGroup,
-    pub view_info_buffer: wgpu::Buffer,
-    pub view_info_bind_group: wgpu::BindGroup,
-    pub view_info_bind_group_layout: wgpu::BindGroupLayout,
-    pub matrices_bind_group: wgpu::BindGroup,
-    pub custom_block_faces_bind_group: wgpu::BindGroup,
-    pub debug_crosshair_view_info_buffer: wgpu::Buffer,
-    pub debug_crosshair_view_info_bind_group: wgpu::BindGroup,
-    pub debug_crosshair_vertex_buffer: wgpu::Buffer,
-    pub clear_color: wgpu::Color,
+    pub block_item_atlas: HypercubedWgpuTexture,
+    pub base_render_info: RenderInfo,
+    pub render_info_buffer: wgpu::Buffer,
+    pub lightmap_buffer: wgpu::Buffer,
+    pub environment_state: EnvironmentGraphicsState,
     pub subchunk_data_storage: SubchunkDataStorage,
     pub pending_subchunk_tx: Sender<Option<chunk::RawSubchunk>>,
     pub pending_subchunk_rx: Receiver<Option<chunk::RawSubchunk>>,
     pub current_dispatch_id_counter: u64,
     pub num_pending_subchunks: usize,
+    pub sky_extrapolation_state: SkyExtrapolationState,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct ViewInfo {
-    view_matrix: [[f32; 4]; 4],
-    screen_size: [u32; 2],
-    padding: [u32; 2],
-}
-
-impl ViewInfo {
-    pub fn new(camera: &Camera, screen_size: winit::dpi::PhysicalSize<u32>) -> Self {
-        Self {
-            view_matrix: camera.generate_reversed_depth_view_matrix_slice(),
-            screen_size: screen_size.into(),
-            padding: [0; 2],
-        }
-    }
-
-    pub fn new_debug_crosshair(camera: &Camera) -> Self {
-        Self {
-            view_matrix: camera.generate_debug_crosshair_view_matrix_slice(),
-            screen_size: [0; 2],
-            padding: [0; 2],
-        }
-    }
+pub struct RenderInfo {
+    pub view_matrix: [[f32; 4]; 4],
+    pub sky_matrix: [[f32; 4]; 4],
+    /// `[1.0 / screen.width, 1.0 / screen.height]`
+    pub recip_screen_size: [f32; 2],
+    /// `[1.0 / atlas.width, 1.0 / atlas.height]`
+    pub recip_block_item_atlas_size: [f32; 2],
+    pub face_matrices: [[[f32; 4]; 3]; 6],
+    /// `time_of_day.rem_euclid(192_000.0)`
+    pub time_of_day: f32,
+    pub star_brightness: f32,
+    /// Required padding, as WGSL uniforms have a required alignment of 16.
+    pub padding_0: [u32; 2],
 }
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
+    fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -159,7 +190,7 @@ impl GraphicsBackend for GraphicsState {
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps.formats[0];
         // HACK: On Windows, the "preferred" format is an sRGB format, when this doesn't actually
-        //       seem to be correct? Just fix it up here, for now.
+        //       seem to be correct? Just fix it up here for now.
         #[cfg(target_os = "windows")]
         let surface_format = surface_format.remove_srgb_suffix();
         let graphics_options = GraphicsOptions::default();
@@ -174,54 +205,14 @@ impl GraphicsBackend for GraphicsState {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let view_info_bind_group_layout =
+        let depth_texture = Texture::create_depth_texture(&device, &config, "Depth Texture");
+        let common_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("View Info Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-        let matrices_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Matrices Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-        let custom_block_faces_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Custom Block Faces Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-        let atlas_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Atlas Bind Group Layout"),
+                label: Some("Common Bind Group Layout"),
                 entries: &[
+                    // Render info.
                     wgpu::BindGroupLayoutEntry {
-                        binding: 0,
+                        binding: common_bind_group_idxs::RENDER_INFO_IDX,
                         visibility: wgpu::ShaderStages::VERTEX,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -230,24 +221,90 @@ impl GraphicsBackend for GraphicsState {
                         },
                         count: None,
                     },
+                    // Lightmap storage buffer.
                     wgpu::BindGroupLayoutEntry {
-                        binding: 1,
+                        binding: common_bind_group_idxs::LIGHTMAP_IDX,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Basic texture sampler.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: common_bind_group_idxs::BASIC_SAMPLER_IDX,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                    // Block and item atlas texture.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: common_bind_group_idxs::BLOCK_ITEM_ATLAS_IDX,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         },
                         count: None,
                     },
+                    // Custom block faces buffer.
                     wgpu::BindGroupLayoutEntry {
-                        binding: 2,
+                        binding: common_bind_group_idxs::CUSTOM_BLOCK_FACES_IDX,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Sun texture.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: common_bind_group_idxs::SUN_IDX,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        },
+                        count: None,
+                    },
+                    // Moon phases texture.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: common_bind_group_idxs::MOON_PHASES_IDX,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        },
                         count: None,
                     },
                 ],
             });
+        let common_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Common Sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        // Load game resources.
+        let resources::GameResourceData {
+            block_data,
+            environment_data,
+        } = game_data;
+        let resources::block::ResourceData {
+            block_registry,
+            model_registry,
+            atlas,
+        } = block_data;
+        let resources::environment::ResourceData {
+            moon_phases_texture,
+            sun_texture,
+        } = environment_data;
         let (
             block_item_texture_atlas,
             block_item_atlas_size,
@@ -255,14 +312,12 @@ impl GraphicsBackend for GraphicsState {
             block_registry,
             model_registry,
         ) = {
-            // Load game resources.
-            let ResourceData {
-                block_registry,
-                model_registry,
-                atlas,
-            } = resource_data;
-            let atlas_texture =
-                TextureAtlas::new(&atlas, &device, &queue, Some("Block and Item Atlas"));
+            let atlas_texture = HypercubedWgpuTexture::create_from_resource_atlas(
+                &atlas,
+                &device,
+                &queue,
+                Some("Block and Item Atlas"),
+            );
             let custom_block_faces: Vec<_> = model_registry
                 .custom_block_faces
                 .iter()
@@ -283,7 +338,7 @@ impl GraphicsBackend for GraphicsState {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Custom Block Vertices Buffer"),
                     contents: bytemuck::cast_slice(&custom_block_faces),
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+                    usage: wgpu::BufferUsages::STORAGE,
                 });
             (
                 atlas_texture,
@@ -293,64 +348,80 @@ impl GraphicsBackend for GraphicsState {
                 model_registry,
             )
         };
-        let block_item_atlas_size_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Block and Item Atlas Size Buffer"),
-                contents: bytemuck::cast_slice(&block_item_atlas_size.map(|x| x as f32)),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let block_item_atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("block_item_atlas_bind_group"),
-            layout: &atlas_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: block_item_atlas_size_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&block_item_texture_atlas.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&block_item_texture_atlas.sampler),
-                },
-            ],
-        });
-        let depth_texture = Texture::create_depth_texture(&device, &config, "depth_texture");
-        // Block pipelines
-        let generic_block_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Chunk Block Pipeline Layout"),
-                bind_group_layouts: &[
-                    &view_info_bind_group_layout,
-                    &atlas_bind_group_layout,
-                    &matrices_bind_group_layout,
-                    &custom_block_faces_bind_group_layout,
-                ],
-                push_constant_ranges: &[],
-            });
-        let block_render_pipeline = chunk::block_face::create_render_pipeline(
+        // Load sun and moon textures.
+        let sun_texture = HypercubedWgpuTexture::create_from_resource_texture(
+            &sun_texture,
             &device,
-            &config,
-            &generic_block_pipeline_layout,
+            &queue,
+            Some("Sun"),
         );
+        let moon_phases_texture = HypercubedWgpuTexture::create_from_resource_texture(
+            &moon_phases_texture,
+            &device,
+            &queue,
+            Some("Moon Phases"),
+        );
+        // Create base rendering info, constant between frames.
+        let base_render_info = RenderInfo {
+            view_matrix: Default::default(),
+            recip_screen_size: Default::default(),
+            recip_block_item_atlas_size: block_item_atlas_size.map(|n| (n as f32).recip()),
+            face_matrices: chunk::block_face::face_matrices::generate_array(),
+            sky_matrix: Default::default(),
+            time_of_day: Default::default(),
+            star_brightness: Default::default(),
+            padding_0: Default::default(),
+        };
+        // Block render pipelines.
+        let common_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Common Pipeline Layout"),
+                bind_group_layouts: &[&common_bind_group_layout],
+                immediate_size: 0,
+            });
+        let block_render_pipeline =
+            chunk::block_face::create_render_pipeline(&device, &config, &common_pipeline_layout);
         let tinted_block_render_pipeline = chunk::tinted_block_face::create_render_pipeline(
             &device,
             &config,
-            &generic_block_pipeline_layout,
+            &common_pipeline_layout,
         );
-        let custom_block_render_pipeline = chunk::custom_block::create_render_pipeline(
+        let custom_block_render_pipeline =
+            chunk::custom_block::create_render_pipeline(&device, &config, &common_pipeline_layout);
+        // Environment render pipelines.
+        let sun_render_pipeline =
+            environment::sky::create_sun_render_pipeline(&device, &config, &common_pipeline_layout);
+        let moon_render_pipeline = environment::sky::create_moon_render_pipeline(
             &device,
             &config,
-            &generic_block_pipeline_layout,
+            &common_pipeline_layout,
         );
-        // Debug pipelines
+        let star_render_pipeline = environment::sky::create_star_render_pipeline(
+            &device,
+            &config,
+            &common_pipeline_layout,
+        );
+        // Star quads buffer.
+        let star_quads_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Star Quads Buffer"),
+            contents: bytemuck::cast_slice(
+                &STAR_QUADS
+                    .iter()
+                    .map(|&[p1, p2, p3, p4]| {
+                        environment::sky::StarInstance(
+                            [p1, p2, p4, p3].map(environment::sky::StarVertex),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        // Debug render pipelines.
         let debug_graphics_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Debug Graphics Render Pipeline Layout"),
-                bind_group_layouts: &[&view_info_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[&common_bind_group_layout],
+                immediate_size: 0,
             });
         let debug_point_render_pipeline =
             debug::point::create_render_pipeline(&device, &config, &debug_graphics_pipeline_layout);
@@ -361,14 +432,10 @@ impl GraphicsBackend for GraphicsState {
             &config,
             &debug_graphics_pipeline_layout,
         );
-        let debug_crosshair_render_pipeline = debug::crosshair::create_render_pipeline(
-            &device,
-            &config,
-            &debug_graphics_pipeline_layout,
-        );
-        // egui renderer
-        let egui_renderer = egui_renderer::Renderer::new(&device, &config);
-        // Buffer managers
+        // `egui` renderer.
+        let egui_renderer =
+            egui_renderer::Renderer::new(&device, &config, &common_bind_group_layout);
+        // Buffer managers.
         let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device);
         let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device);
         let tinted_block_face_vertex_buffer_manager =
@@ -377,75 +444,54 @@ impl GraphicsBackend for GraphicsState {
             TintedBlockFaceInstanceBufferManager::new(&device);
         let custom_block_instance_buffer_manager = CustomBlockInstanceBufferManager::new(&device);
         // Buffers
-        let proj_matrix = Perspective3::new(
-            (size.width as f32) / (size.height as f32),
-            f32::to_radians(super::DEFAULT_FOV),
-            super::DEFAULT_ZNEAR,
-            super::DEFAULT_ZFAR,
-        );
-        let camera = Camera {
-            pos: Point3::new(0.0, 124.0, 0.0),
-            proj_matrix,
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-        };
-        let view_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("View Info Buffer"),
-            contents: bytemuck::cast_slice(&[ViewInfo::new(&camera, size)]),
+        let render_info_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Render Info Buffer"),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            size: core::mem::size_of::<RenderInfo>().try_into().unwrap(),
+            mapped_at_creation: false,
         });
-        let view_info_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("View Info Bind Group"),
-            layout: &view_info_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: view_info_buffer.as_entire_binding(),
-            }],
+        let lightmap_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Lightmap Buffer"),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            size: core::mem::size_of::<RawLightmapTexture>()
+                .try_into()
+                .unwrap(),
+            mapped_at_creation: false,
         });
-        let face_matrices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Face Matrices Buffer"),
-            contents: bytemuck::cast_slice(&chunk::block_face::face_matrices::generate_array()),
-            usage: wgpu::BufferUsages::UNIFORM,
+        let common_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Common Bind Group"),
+            layout: &common_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: common_bind_group_idxs::RENDER_INFO_IDX,
+                    resource: render_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: common_bind_group_idxs::LIGHTMAP_IDX,
+                    resource: lightmap_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: common_bind_group_idxs::BASIC_SAMPLER_IDX,
+                    resource: wgpu::BindingResource::Sampler(&common_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: common_bind_group_idxs::BLOCK_ITEM_ATLAS_IDX,
+                    resource: wgpu::BindingResource::TextureView(&block_item_texture_atlas.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: common_bind_group_idxs::CUSTOM_BLOCK_FACES_IDX,
+                    resource: custom_block_faces_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: common_bind_group_idxs::SUN_IDX,
+                    resource: wgpu::BindingResource::TextureView(&sun_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: common_bind_group_idxs::MOON_PHASES_IDX,
+                    resource: wgpu::BindingResource::TextureView(&moon_phases_texture.view),
+                },
+            ],
         });
-        let matrices_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Matrices Bind Group"),
-            layout: &matrices_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: face_matrices_buffer.as_entire_binding(),
-            }],
-        });
-        let custom_block_faces_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Custom Block Faces Bind Group"),
-            layout: &custom_block_faces_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: custom_block_faces_buffer.as_entire_binding(),
-            }],
-        });
-        // Debug buffers
-        let debug_crosshair_view_info_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Debug Crosshair View Info Buffer"),
-                contents: bytemuck::cast_slice(&[ViewInfo::new_debug_crosshair(&camera)]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-        let debug_crosshair_view_info_bind_group =
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Debug Crosshair View Info Bind Group"),
-                layout: &view_info_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: debug_crosshair_view_info_buffer.as_entire_binding(),
-                }],
-            });
-        let debug_crosshair_vertex_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Debug Crosshair Vertex Buffer"),
-                contents: bytemuck::cast_slice(debug::crosshair::VERTICES),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
         let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
         Ok(Box::new(Self {
             resources: Arc::new(GraphicsResources {
@@ -457,34 +503,30 @@ impl GraphicsBackend for GraphicsState {
             }),
             config,
             graphics_options,
+            common_bind_group_layout,
+            common_bind_group,
             block_render_pipeline,
             tinted_block_render_pipeline,
             custom_block_render_pipeline,
             debug_point_render_pipeline,
             debug_line_render_pipeline,
             debug_triangle_render_pipeline,
-            debug_crosshair_render_pipeline,
             egui_renderer,
             depth_texture,
             custom_block_faces_buffer,
             block_item_atlas: block_item_texture_atlas,
-            block_item_atlas_bind_group,
-            view_info_buffer,
-            view_info_bind_group,
-            view_info_bind_group_layout,
-            matrices_bind_group,
-            custom_block_faces_bind_group,
-            debug_crosshair_view_info_buffer,
-            debug_crosshair_view_info_bind_group,
-            debug_crosshair_vertex_buffer,
-            size,
-            // Minecraft plains biome sky color
-            clear_color: wgpu::Color {
-                r: 0.471,
-                g: 0.655,
-                b: 1.0,
-                a: 1.0,
+            base_render_info,
+            render_info_buffer,
+            lightmap_buffer,
+            environment_state: EnvironmentGraphicsState {
+                sun_render_pipeline,
+                moon_render_pipeline,
+                star_render_pipeline,
+                star_quads_buffer,
+                moon_phases_texture,
+                sun_texture,
             },
+            size,
             subchunk_data_storage: SubchunkDataStorage {
                 subchunks: FastHashMap::new(),
                 loaded_chunks: FastHashSet::new(),
@@ -498,6 +540,7 @@ impl GraphicsBackend for GraphicsState {
             pending_subchunk_rx,
             current_dispatch_id_counter: 0,
             num_pending_subchunks: 0,
+            sky_extrapolation_state: SkyExtrapolationState::new(),
         }))
     }
 
@@ -613,7 +656,8 @@ impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
     fn render(
         &mut self,
-        camera: &Camera,
+        play_state: &ClientPlayState,
+        current_time_s: f64,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
@@ -621,6 +665,7 @@ impl GraphicsBackend for GraphicsState {
         debug_lines: &[DebugLine],
         debug_triangles: &[DebugTriangle],
     ) -> anyhow::Result<Option<DebugOutput>> {
+        let camera = &play_state.camera;
         // Upload pending subchunks.
         if self.num_pending_subchunks > 0 {
             let span = tracing::trace_span!("upload_pending_subchunks");
@@ -660,15 +705,49 @@ impl GraphicsBackend for GraphicsState {
         }
         let pixels_per_point = egui_full_output.pixels_per_point;
         let egui_primitives = egui_ctx.tessellate(egui_full_output.shapes, pixels_per_point);
+        // Calculate the time of day and a sky colour for the current frame.
+        let time_of_day = self
+            .sky_extrapolation_state
+            .update(play_state, current_time_s);
+        let [sky_r, sky_g, sky_b] = crate::graphics::environment::sky::get_rgb(time_of_day);
+        // Generate environment info.
+        let sky_matrix: [[f32; 4]; 4] = {
+            let sky_model_matrix = nalgebra::Isometry3::new(
+                camera.pos.coords,
+                nalgebra::Vector3::new(
+                    0.0,
+                    0.0,
+                    crate::graphics::environment::sky::get_day_cycle_rotation(time_of_day),
+                ),
+            )
+            .to_matrix()
+            .prepend_scaling(camera.get_zfar() * 0.95);
+            (camera.generate_reversed_depth_view_matrix() * sky_model_matrix).into()
+        };
+        let star_brightness = crate::graphics::environment::sky::get_star_brightness(time_of_day);
+        // Update rendering info.
         self.resources.queue.write_buffer(
-            &self.view_info_buffer,
+            &self.render_info_buffer,
             0,
-            bytemuck::cast_slice(&[ViewInfo::new(camera, self.size)]),
+            bytemuck::bytes_of(&RenderInfo {
+                view_matrix: camera.generate_reversed_depth_view_matrix_slice(),
+                sky_matrix,
+                recip_screen_size: <[u32; 2]>::from(self.size).map(|n| (n as f32).recip()),
+                face_matrices: self.base_render_info.face_matrices,
+                recip_block_item_atlas_size: self.base_render_info.recip_block_item_atlas_size,
+                time_of_day: time_of_day.rem_euclid(192_000.0) as f32,
+                star_brightness,
+                padding_0: Default::default(),
+            }),
         );
+        // Update lightmap.
         self.resources.queue.write_buffer(
-            &self.debug_crosshair_view_info_buffer,
+            &self.lightmap_buffer,
             0,
-            bytemuck::cast_slice(&camera.generate_debug_crosshair_view_matrix_slice()),
+            bytemuck::bytes_of(&generate_lightmap_texture(
+                self.graphics_options.lightmap_gamma_setting,
+                time_of_day,
+            )),
         );
         let egui_render_data = self.egui_renderer.prepare(
             &self.resources,
@@ -696,7 +775,7 @@ impl GraphicsBackend for GraphicsState {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Render Encoder"),
                 });
-        // Main render pass
+        // Main render pass.
         let block_face_draw_args_buffer;
         let tinted_block_face_draw_args_buffer;
         let custom_block_draw_args_buffer;
@@ -712,7 +791,12 @@ impl GraphicsBackend for GraphicsState {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.clear_color),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: sky_r as f64,
+                            g: sky_g as f64,
+                            b: sky_b as f64,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -720,13 +804,13 @@ impl GraphicsBackend for GraphicsState {
                     view: &self.depth_texture.view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        // TODO: Check this, was previously set to `Store`
                         store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
             let camera_chunk_coords = {
                 let camera_pos = camera.pos;
@@ -796,11 +880,8 @@ impl GraphicsBackend for GraphicsState {
                     }
                 },
             );
-            render_pass.set_bind_group(0, &self.view_info_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.block_item_atlas_bind_group, &[]);
-            render_pass.set_bind_group(2, &self.matrices_bind_group, &[]);
-            render_pass.set_bind_group(3, &self.custom_block_faces_bind_group, &[]);
-            // Base block faces
+            render_pass.set_bind_group(0, &self.common_bind_group, &[]);
+            // Draw basic block faces.
             if !block_face_draw_args.is_empty() {
                 block_face_draw_args_buffer =
                     self.resources
@@ -823,7 +904,7 @@ impl GraphicsBackend for GraphicsState {
                     block_face_draw_args.len().try_into().unwrap(),
                 );
             }
-            // Tinted block faces
+            // Draw tinted block faces.
             if !tinted_block_face_draw_args.is_empty() {
                 tinted_block_face_draw_args_buffer =
                     self.resources
@@ -852,7 +933,7 @@ impl GraphicsBackend for GraphicsState {
                     tinted_block_face_draw_args.len().try_into().unwrap(),
                 );
             }
-            // Custom blocks
+            // Draw custom blocks.
             if !custom_block_draw_args.is_empty() {
                 custom_block_draw_args_buffer =
                     self.resources
@@ -873,7 +954,21 @@ impl GraphicsBackend for GraphicsState {
                     custom_block_draw_args.len().try_into().unwrap(),
                 );
             }
-            // Debug graphics
+            // Render sky.
+            {
+                // Draw sun.
+                render_pass.set_pipeline(&self.environment_state.sun_render_pipeline);
+                render_pass.draw(0..4, 0..1);
+                // Draw moon.
+                render_pass.set_pipeline(&self.environment_state.moon_render_pipeline);
+                render_pass.draw(0..4, 0..1);
+                // Draw stars.
+                render_pass.set_pipeline(&self.environment_state.star_render_pipeline);
+                render_pass
+                    .set_vertex_buffer(0, self.environment_state.star_quads_buffer.slice(..));
+                render_pass.draw(0..4, 0..STAR_QUADS.len() as u32);
+            }
+            // Render debug graphics.
             if !debug_points.is_empty() {
                 debug_point_buffer =
                     self.resources
@@ -914,13 +1009,6 @@ impl GraphicsBackend for GraphicsState {
                 render_pass.set_pipeline(&self.debug_triangle_render_pipeline);
                 render_pass.set_vertex_buffer(0, debug_triangle_buffer.slice(..));
                 render_pass.draw(0..4, 0..debug_triangles.len().try_into().unwrap());
-            }
-            // Debug crosshair
-            {
-                render_pass.set_pipeline(&self.debug_crosshair_render_pipeline);
-                render_pass.set_bind_group(0, &self.debug_crosshair_view_info_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.debug_crosshair_vertex_buffer.slice(..));
-                render_pass.draw(0..6, 0..1);
             }
             // egui
             if let Some(egui_render_data) = egui_render_data {
@@ -977,7 +1065,7 @@ impl Texture {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             compare: Some(wgpu::CompareFunction::LessEqual),
             lod_min_clamp: 0.0,
             lod_max_clamp: 100.0,
@@ -992,22 +1080,58 @@ impl Texture {
 }
 
 #[derive(Debug)]
-pub struct TextureAtlas {
+pub struct HypercubedWgpuTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
 }
 
-impl TextureAtlas {
-    pub fn new(
+impl HypercubedWgpuTexture {
+    pub fn create_from_resource_atlas(
         atlas: &resources::texture::Atlas,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: Option<&str>,
     ) -> Self {
+        Self::create_from_raw(
+            &atlas.texture_bytes,
+            atlas.width,
+            atlas.height,
+            wgpu::TextureFormat::Rgba8Unorm,
+            device,
+            queue,
+            label,
+        )
+    }
+
+    pub fn create_from_resource_texture(
+        atlas: &resources::texture::RawTexture,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: Option<&str>,
+    ) -> Self {
+        Self::create_from_raw(
+            &atlas.texture_bytes,
+            atlas.width,
+            atlas.height,
+            wgpu::TextureFormat::Rgba8Unorm,
+            device,
+            queue,
+            label,
+        )
+    }
+
+    pub fn create_from_raw(
+        texture_bytes: &[u8],
+        width: u32,
+        height: u32,
+        texture_format: wgpu::TextureFormat,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: Option<&str>,
+    ) -> Self {
         let size = wgpu::Extent3d {
-            width: atlas.width,
-            height: atlas.height,
+            width,
+            height,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1016,7 +1140,7 @@ impl TextureAtlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: texture_format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -1027,20 +1151,15 @@ impl TextureAtlas {
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
-            &atlas.texture_bytes,
+            texture_bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(atlas.width * 4),
-                rows_per_image: Some(atlas.height),
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
             },
             size,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
-        Self {
-            texture,
-            view,
-            sampler,
-        }
+        Self { texture, view }
     }
 }

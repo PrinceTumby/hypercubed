@@ -18,6 +18,8 @@ mod std_imports {
     pub use super::model::ModelRegistryBuilder;
 }
 
+// TODO: Create a `GameResourceData` struct, load in sky textures.
+
 #[derive(Serialize, Deserialize)]
 pub struct ResourceData {
     pub block_registry: Registry,
@@ -25,32 +27,31 @@ pub struct ResourceData {
     pub atlas: texture::Atlas,
 }
 
-/// Loads the vanilla game data from either a vanilla client `minecraft.jar` file, or from an
-/// extracted `assets`.
-/// Can be used either to load the game data at run time, or from a build script to then embed the
-/// resource data at compile time.
 #[cfg(feature = "std")]
-pub fn load_vanilla_resource_data() -> anyhow::Result<ResourceData> {
-    // TODO: Don't provide an atlas size, have the atlas builder automatically double the smaller
-    //       dimension size as needed.
-    //       For example, the builder could start at 64x64, then (when it's run out of space)
-    //       double to 128x64, then 128x128, and so on.
-    let size = [1024, 1024];
-    let square_length = 16;
-    let mut atlas_builder = crate::texture::AtlasBuilder::new(size[0], size[1], square_length);
-    let mut model_registry_builder = ModelRegistryBuilder::new();
-    let mut block_registry = Registry::new();
-    register_vanilla_blocks(
-        &mut block_registry,
-        &mut model_registry_builder,
-        &mut atlas_builder,
-    )?;
-    let atlas = atlas_builder.finish();
-    Ok(ResourceData {
-        block_registry,
-        model_registry: model_registry_builder.finish(),
-        atlas,
-    })
+impl ResourceData {
+    /// Loads the vanilla game data from either a vanilla client `minecraft.jar` file, or from an
+    /// extracted `assets`.
+    /// Can be used either to load the game data at run time, or from a build script to then embed
+    /// the resource data at compile time.
+    #[cfg(feature = "std")]
+    pub fn load_vanilla_data() -> anyhow::Result<ResourceData> {
+        let square_length = 16;
+        let mut atlas_builder = crate::texture::AtlasBuilder::new(square_length);
+        let mut model_registry_builder = ModelRegistryBuilder::new();
+        let mut block_registry = Registry::new();
+        register_vanilla_blocks(
+            &mut block_registry,
+            &mut model_registry_builder,
+            &mut atlas_builder,
+        )?;
+        let atlas = atlas_builder.finish();
+        log::info!("Atlas dimensions = {}x{}px", atlas.width, atlas.height);
+        Ok(Self {
+            block_registry,
+            model_registry: model_registry_builder.finish(),
+            atlas,
+        })
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

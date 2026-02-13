@@ -6,12 +6,15 @@ compile_error!("The Vulkan backend requires full use of `std`");
 pub mod chunk;
 pub mod debug;
 pub mod egui_renderer;
+pub mod environment;
 pub mod shader_exports;
 
 use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
 use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
-use crate::graphics::{Camera, DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
-use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState};
+use crate::graphics::lightmap::{RawLightmapTexture, generate_lightmap_texture};
+use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::{Context, anyhow};
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
@@ -19,9 +22,9 @@ use chunk::{
     tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
 };
 use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
-use resources::block::ResourceData;
-use resources::block::model::{ModelRegistry, Tint};
-use shader_exports::RawViewInfo;
+use resources::GameResourceData;
+use resources::block::model::Tint;
+use shader_exports::{CommonDescriptorSetIdxs, RawRenderInfo};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
@@ -31,7 +34,7 @@ use winit::window::Window;
 #[derive(Clone)]
 pub struct GraphicsResources {
     pub block_registry: Arc<resources::block::Registry>,
-    pub model_registry: Arc<ModelRegistry>,
+    pub model_registry: Arc<resources::block::model::ModelRegistry>,
     pub device: Arc<vulkano::device::Device>,
     pub render_queue: Arc<vulkano::device::Queue>,
     pub compute_queue: Arc<vulkano::device::Queue>,
@@ -82,6 +85,15 @@ impl SubchunkDataStorage {
     }
 }
 
+pub struct EnvironmentGraphicsState {
+    pub sun_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
+    pub moon_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
+    pub star_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
+    pub star_quads_buffer: VulkanSubbuffer<[[environment::sky::StarVertex; 4]]>,
+    pub moon_phases_image: HypercubedVkImage,
+    pub sun_image: HypercubedVkImage,
+}
+
 pub struct GraphicsState {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub resources: GraphicsResources,
@@ -91,21 +103,23 @@ pub struct GraphicsState {
     pub egui_renderer: egui_renderer::Renderer,
     pub graphics_options: GraphicsOptions,
     pub block_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
-    pub generic_block_graphics_pipeline_layout: Arc<VulkanPipelineLayout>,
+    pub generic_pipeline_layout: Arc<VulkanPipelineLayout>,
     pub tinted_block_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
     pub custom_block_graphics_pipeline: Arc<VulkanGraphicsPipeline>,
     pub custom_block_faces_buffer: VulkanSubbuffer<[[chunk::custom_block::Vertex; 4]]>,
-    pub custom_block_faces_descriptor_set: Arc<VulkanDescriptorSet>,
-    pub view_info_buffer: VulkanSubbuffer<RawViewInfo>,
-    pub camera_descriptor_set: Arc<VulkanDescriptorSet>,
-    pub matrices_descriptor_set: Arc<VulkanDescriptorSet>,
-    pub block_item_atlas: TextureAtlas,
-    pub block_item_atlas_descriptor_set: Arc<VulkanDescriptorSet>,
+    pub common_descriptor_set: Arc<VulkanDescriptorSet>,
+    /// Contains rendering information that is constant between frames.
+    pub base_render_info: RawRenderInfo,
+    pub render_info_buffer: VulkanSubbuffer<RawRenderInfo>,
+    pub block_item_atlas: HypercubedVkImage,
+    pub lightmap_buffer: VulkanSubbuffer<RawLightmapTexture>,
+    pub environment_state: EnvironmentGraphicsState,
     pub subchunk_data_storage: SubchunkDataStorage,
     pub pending_subchunk_tx: Sender<Option<chunk::RawSubchunk>>,
     pub pending_subchunk_rx: Receiver<Option<chunk::RawSubchunk>>,
     pub current_dispatch_id_counter: u64,
     pub num_pending_subchunks: usize,
+    pub sky_extrapolation_state: SkyExtrapolationState,
     // Debug state
     pub debug_point_pipeline: Arc<VulkanGraphicsPipeline>,
     pub debug_line_pipeline: Arc<VulkanGraphicsPipeline>,
@@ -114,9 +128,9 @@ pub struct GraphicsState {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(window: Arc<Window>, resource_data: ResourceData) -> anyhow::Result<Box<Self>> {
+    fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
-        // Initialise Vulkan state
+        // Initialise Vulkan state.
         let library = VulkanLibrary::new().context("Failed to load Vulkan library")?;
         let surface_required_extensions = VulkanSurface::required_extensions(&window)
             .context("Failed to retrieve required surface extensions from window")?;
@@ -133,7 +147,7 @@ impl GraphicsBackend for GraphicsState {
         .context("Failed to create Vulkan instance")?;
         let surface =
             VulkanSurface::from_window(&instance, &window).context("Failed to create surface")?;
-        // Find a suitable physical device
+        // Find a suitable physical device.
         let required_extensions = VulkanDeviceExtensions {
             khr_swapchain: true,
             ..VulkanDeviceExtensions::empty()
@@ -182,7 +196,8 @@ impl GraphicsBackend for GraphicsState {
                 _ => 4,
             })
             .context("Error while finding any suitable Vulkan devices")?;
-        dbg!(render_queue_family_index, compute_queue_family_index);
+        log::debug!("Vulkan render queue family index: {render_queue_family_index}");
+        log::debug!("Vulkan compute queue family index: {compute_queue_family_index}");
         let surface_capabilities = physical_device
             .surface_capabilities(&surface, &Default::default())
             .context("Error while getting Vulkan surface capabilities")?;
@@ -292,46 +307,64 @@ impl GraphicsBackend for GraphicsState {
             },
         )
         .context("Error while creating depth image")?;
-        // Initialise egui renderer, for debug UI
-        let egui_renderer = egui_renderer::Renderer::new(
-            &device,
-            &(memory_allocator.clone() as Arc<_>),
-            &(descriptor_set_allocator.clone() as Arc<_>),
-            &render_pass,
-        )
-        .context("Error while creating egui renderer")?;
-        // Initialise game state
-        let (
-            block_item_texture_atlas,
-            block_item_atlas_size,
-            custom_block_faces_buffer,
+        // Generate dummy lightmap buffer and view, updated during frame render.
+        let (lightmap_buffer, lightmap_buffer_view) = {
+            let lightmap_buffer: VulkanSubbuffer<RawLightmapTexture> = VulkanBuffer::new_sized(
+                &memory_allocator,
+                &VulkanBufferCreateInfo {
+                    usage: VulkanBufferUsage::UNIFORM_TEXEL_BUFFER
+                        | VulkanBufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &VulkanAllocationCreateInfo {
+                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
+                    ..Default::default()
+                },
+            )
+            .context("Error while creating lightmap buffer")?;
+            let lightmap_buffer_view = VulkanBufferView::new(
+                &lightmap_buffer,
+                &VulkanBufferViewCreateInfo {
+                    format: VulkanFormat::R8G8B8A8_UNORM,
+                    ..Default::default()
+                },
+            )
+            .context("Error while creating lightmap buffer view")?;
+            (lightmap_buffer, lightmap_buffer_view)
+        };
+        // Load game resources.
+        let resources::GameResourceData {
+            block_data,
+            environment_data,
+        } = game_data;
+        let resources::block::ResourceData {
             block_registry,
             model_registry,
-        ) = {
-            // Load game resources.
-            let ResourceData {
-                block_registry,
-                model_registry,
-                atlas,
-            } = resource_data;
-            let atlas_texture = TextureAtlas::new(
+            atlas,
+        } = block_data;
+        let resources::environment::ResourceData {
+            moon_phases_texture,
+            sun_texture,
+        } = environment_data;
+        let (block_item_texture_atlas, block_item_atlas_size, custom_block_faces_buffer) = {
+            let atlas_texture = HypercubedVkImage::create_from_resource_atlas(
                 &atlas,
                 &device,
                 &render_queue,
                 &(memory_allocator.clone() as Arc<_>),
                 command_buffer_allocator.clone(),
             )
-            .context("Failed while building block and item atlas")?;
-            let custom_block_faces_buffer = VulkanBuffer::from_iter(
-                &memory_allocator,
+            .context("Error while creating block and item atlas image")?;
+            let custom_block_faces_buffer = vulkan_buffer_from_iter_staged(
+                render_queue.clone(),
+                command_buffer_allocator.clone(),
+                &(memory_allocator.clone() as Arc<_>),
                 &VulkanBufferCreateInfo {
                     usage: VulkanBufferUsage::STORAGE_BUFFER,
                     ..Default::default()
                 },
                 &VulkanAllocationCreateInfo {
-                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
-                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
+                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
                     ..Default::default()
                 },
                 model_registry.custom_block_faces.iter().map(|face| {
@@ -350,103 +383,108 @@ impl GraphicsBackend for GraphicsState {
                 atlas_texture,
                 [atlas.width, atlas.height],
                 custom_block_faces_buffer,
-                block_registry,
-                model_registry,
             )
         };
-        // Block graphics descriptor set layouts
-        let camera_descriptor_set_layout = VulkanDescriptorSetLayout::new(
+        // Load sun and moon textures.
+        let sun_image = HypercubedVkImage::create_from_resource_texture(
+            &sun_texture,
+            &device,
+            &render_queue,
+            &(memory_allocator.clone() as Arc<_>),
+            command_buffer_allocator.clone(),
+        )
+        .context("Error while creating sun image")?;
+        let moon_phases_image = HypercubedVkImage::create_from_resource_texture(
+            &moon_phases_texture,
+            &device,
+            &render_queue,
+            &(memory_allocator.clone() as Arc<_>),
+            command_buffer_allocator.clone(),
+        )
+        .context("Error while creating moon phases image")?;
+        // Common descriptor set, used for all rendering.
+        let common_descriptor_set_layout = VulkanDescriptorSetLayout::new(
             &device.clone(),
             &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[VulkanDescriptorSetLayoutBinding {
-                    binding: 0,
-                    binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    descriptor_type: VulkanDescriptorType::UniformBuffer,
-                    descriptor_count: 1,
-                    stages: VulkanShaderStages::VERTEX,
-                    immutable_samplers: &[],
-                    _ne: vulkano_non_exhaustive(),
-                }],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating camera descriptor set layout")?;
-        let matrices_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[VulkanDescriptorSetLayoutBinding {
-                    binding: 0,
-                    binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    descriptor_type: VulkanDescriptorType::UniformBuffer,
-                    descriptor_count: 1,
-                    stages: VulkanShaderStages::VERTEX | VulkanShaderStages::COMPUTE,
-                    immutable_samplers: &[],
-                    _ne: vulkano_non_exhaustive(),
-                }],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating matrices descriptor set layout")?;
-        let custom_block_faces_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
-                bindings: &[VulkanDescriptorSetLayoutBinding {
-                    binding: 0,
-                    binding_flags: VulkanDescriptorBindingFlags::empty(),
-                    descriptor_type: VulkanDescriptorType::StorageBuffer,
-                    descriptor_count: 1,
-                    stages: VulkanShaderStages::VERTEX | VulkanShaderStages::COMPUTE,
-                    immutable_samplers: &[],
-                    _ne: vulkano_non_exhaustive(),
-                }],
-                ..Default::default()
-            },
-        )
-        .context("Error while creating custom block faces descriptor set layout")?;
-        let block_item_atlas_descriptor_set_layout = VulkanDescriptorSetLayout::new(
-            &device,
-            &VulkanDescriptorSetLayoutCreateInfo {
                 bindings: &[
-                    // Block and item atlas image
+                    // Render info.
                     VulkanDescriptorSetLayoutBinding {
-                        binding: 0,
+                        binding: CommonDescriptorSetIdxs::RenderInfo as u32,
                         binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::SampledImage,
+                        descriptor_type: VulkanDescriptorType::UniformBuffer,
                         descriptor_count: 1,
-                        stages: VulkanShaderStages::FRAGMENT | VulkanShaderStages::COMPUTE,
+                        stages: VulkanShaderStages::VERTEX,
                         immutable_samplers: &[],
                         _ne: vulkano_non_exhaustive(),
                     },
-                    // Block and item sampler
+                    // Lightmap uniform texel buffer.
                     VulkanDescriptorSetLayoutBinding {
-                        binding: 1,
+                        binding: CommonDescriptorSetIdxs::Lightmap as u32,
                         binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::Sampler,
+                        descriptor_type: VulkanDescriptorType::UniformTexelBuffer,
                         descriptor_count: 1,
-                        stages: VulkanShaderStages::FRAGMENT | VulkanShaderStages::COMPUTE,
+                        stages: VulkanShaderStages::VERTEX,
+                        immutable_samplers: &[],
+                        _ne: vulkano_non_exhaustive(),
+                    },
+                    // Block and item atlas image.
+                    VulkanDescriptorSetLayoutBinding {
+                        binding: CommonDescriptorSetIdxs::BlockItemAtlasCombinedImageSampler as u32,
+                        binding_flags: VulkanDescriptorBindingFlags::empty(),
+                        descriptor_type: VulkanDescriptorType::CombinedImageSampler,
+                        descriptor_count: 1,
+                        stages: VulkanShaderStages::FRAGMENT,
                         immutable_samplers: &[&VulkanSampler::new(
                             &device,
                             &VulkanSamplerCreateInfo::default(),
                         )
-                        .context("Error while creating block atlas image sampler")?],
+                        .context("Error while creating block and item atlas sampler")?],
                         _ne: vulkano_non_exhaustive(),
                     },
+                    // Custom block faces.
                     VulkanDescriptorSetLayoutBinding {
-                        binding: 2,
+                        binding: CommonDescriptorSetIdxs::CustomBlockFaces as u32,
                         binding_flags: VulkanDescriptorBindingFlags::empty(),
-                        descriptor_type: VulkanDescriptorType::UniformBuffer,
+                        descriptor_type: VulkanDescriptorType::StorageBuffer,
                         descriptor_count: 1,
-                        stages: VulkanShaderStages::VERTEX | VulkanShaderStages::COMPUTE,
+                        stages: VulkanShaderStages::VERTEX,
                         immutable_samplers: &[],
+                        _ne: vulkano_non_exhaustive(),
+                    },
+                    // Sun image.
+                    VulkanDescriptorSetLayoutBinding {
+                        binding: CommonDescriptorSetIdxs::SunCombinedImageSampler as u32,
+                        binding_flags: VulkanDescriptorBindingFlags::empty(),
+                        descriptor_type: VulkanDescriptorType::CombinedImageSampler,
+                        descriptor_count: 1,
+                        stages: VulkanShaderStages::FRAGMENT,
+                        immutable_samplers: &[&VulkanSampler::new(
+                            &device,
+                            &VulkanSamplerCreateInfo::default(),
+                        )
+                        .context("Error while creating sun image sampler")?],
+                        _ne: vulkano_non_exhaustive(),
+                    },
+                    // Moon phases image.
+                    VulkanDescriptorSetLayoutBinding {
+                        binding: CommonDescriptorSetIdxs::MoonPhasesCombinedImageSampler as u32,
+                        binding_flags: VulkanDescriptorBindingFlags::empty(),
+                        descriptor_type: VulkanDescriptorType::CombinedImageSampler,
+                        descriptor_count: 1,
+                        stages: VulkanShaderStages::FRAGMENT,
+                        immutable_samplers: &[&VulkanSampler::new(
+                            &device,
+                            &VulkanSamplerCreateInfo::default(),
+                        )
+                        .context("Error while creating moon phases image sampler")?],
                         _ne: vulkano_non_exhaustive(),
                     },
                 ],
                 ..Default::default()
             },
         )
-        .context("Error while creating image descriptor set layout")?;
-        // Block graphics buffers and descriptor sets
-        let view_info_buffer: VulkanSubbuffer<RawViewInfo> = VulkanBuffer::new_sized(
+        .context("Error while creating common descriptor set layout")?;
+        let render_info_buffer: VulkanSubbuffer<RawRenderInfo> = VulkanBuffer::new_sized(
             &memory_allocator,
             &VulkanBufferCreateInfo {
                 usage: VulkanBufferUsage::UNIFORM_BUFFER | VulkanBufferUsage::TRANSFER_DST,
@@ -457,106 +495,120 @@ impl GraphicsBackend for GraphicsState {
                 ..Default::default()
             },
         )
-        .context("Error while creating view info buffer")?;
-        let view_info_descriptor_set = VulkanDescriptorSet::new(
+        .context("Error while creating render info buffer")?;
+        let common_descriptor_set = VulkanDescriptorSet::new(
             descriptor_set_allocator.clone(),
-            camera_descriptor_set_layout.clone(),
-            [VulkanWriteDescriptorSet::buffer(
-                0,
-                view_info_buffer.clone(),
-            )],
-            [],
-        )
-        .context("Error while creating view info descriptor set")?;
-        let matrices_buffer = VulkanBuffer::from_data(
-            &memory_allocator,
-            &VulkanBufferCreateInfo {
-                usage: VulkanBufferUsage::UNIFORM_BUFFER,
-                ..Default::default()
-            },
-            &VulkanAllocationCreateInfo {
-                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
-                    | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            chunk::block_face::face_matrices::generate_array(),
-        )
-        .context("Error while creating face matrices buffer")?;
-        let matrices_descriptor_set = VulkanDescriptorSet::new(
-            descriptor_set_allocator.clone(),
-            matrices_descriptor_set_layout.clone(),
-            [VulkanWriteDescriptorSet::buffer(0, matrices_buffer.clone())],
-            [],
-        )
-        .context("Error while creating matrices descriptor set")?;
-        let custom_block_faces_descriptor_set = VulkanDescriptorSet::new(
-            descriptor_set_allocator.clone(),
-            custom_block_faces_descriptor_set_layout.clone(),
-            [VulkanWriteDescriptorSet::buffer(
-                0,
-                custom_block_faces_buffer.clone(),
-            )],
-            [],
-        )
-        .context("Error while creating custom block faces descriptor set")?;
-        let block_item_atlas_size_buffer = VulkanBuffer::from_data(
-            &memory_allocator,
-            &VulkanBufferCreateInfo {
-                usage: VulkanBufferUsage::UNIFORM_BUFFER,
-                ..Default::default()
-            },
-            &VulkanAllocationCreateInfo {
-                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
-                    | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            block_item_atlas_size.map(|n| n as f32),
-        )
-        .context("Error while creating face matrices buffer")?;
-        let block_item_atlas_descriptor_set = VulkanDescriptorSet::new(
-            descriptor_set_allocator.clone(),
-            block_item_atlas_descriptor_set_layout.clone(),
+            common_descriptor_set_layout.clone(),
             [
-                VulkanWriteDescriptorSet::image_view(0, block_item_texture_atlas.view.clone()),
-                // Sampler already in binding 1
-                VulkanWriteDescriptorSet::buffer(2, block_item_atlas_size_buffer),
+                // Render info uniform buffer.
+                VulkanWriteDescriptorSet::buffer(
+                    CommonDescriptorSetIdxs::RenderInfo as u32,
+                    render_info_buffer.clone(),
+                ),
+                // Lightmap uniform texel buffer.
+                VulkanWriteDescriptorSet::buffer_view(
+                    CommonDescriptorSetIdxs::Lightmap as u32,
+                    lightmap_buffer_view.clone(),
+                ),
+                // Block and item atlas image (immutable sampler already embedded in layout).
+                VulkanWriteDescriptorSet::image_view(
+                    CommonDescriptorSetIdxs::BlockItemAtlasCombinedImageSampler as u32,
+                    block_item_texture_atlas.view.clone(),
+                ),
+                // Custom block faces buffer.
+                VulkanWriteDescriptorSet::buffer(
+                    CommonDescriptorSetIdxs::CustomBlockFaces as u32,
+                    custom_block_faces_buffer.clone(),
+                ),
+                // Sun image (immutable sampler already embedded in layout).
+                VulkanWriteDescriptorSet::image_view(
+                    CommonDescriptorSetIdxs::SunCombinedImageSampler as u32,
+                    sun_image.view.clone(),
+                ),
+                // Moon phases image (immutable sampler already embedded in layout).
+                VulkanWriteDescriptorSet::image_view(
+                    CommonDescriptorSetIdxs::MoonPhasesCombinedImageSampler as u32,
+                    moon_phases_image.view.clone(),
+                ),
             ],
             [],
         )
-        .context("Error while creating matrices descriptor set")?;
-        // Block graphics pipelines
-        let generic_block_graphics_pipeline_layout = VulkanPipelineLayout::new(
+        .context("Error while creating view info descriptor set")?;
+        // Create base rendering info, constant between frames.
+        let base_render_info = RawRenderInfo {
+            view_matrix: Default::default(),
+            recip_screen_size: Default::default(),
+            recip_block_item_atlas_size: block_item_atlas_size.map(|n| (n as f32).recip()),
+            face_matrices: chunk::block_face::face_matrices::generate_array(),
+            sky_matrix: Default::default(),
+            time_of_day: Default::default(),
+            star_brightness: Default::default(),
+        };
+        // Block graphics pipelines.
+        let generic_pipeline_layout = VulkanPipelineLayout::new(
             &device,
             &VulkanPipelineLayoutCreateInfo {
-                set_layouts: &[
-                    &camera_descriptor_set_layout,
-                    &block_item_atlas_descriptor_set_layout,
-                    &matrices_descriptor_set_layout,
-                    &custom_block_faces_descriptor_set_layout,
-                ],
+                set_layouts: &[&common_descriptor_set_layout],
                 ..Default::default()
             },
         )
         .context("Error while creating block graphics pipeline layout")?;
         let block_graphics_pipeline = chunk::block_face::create_graphics_pipeline(
             &device,
-            &generic_block_graphics_pipeline_layout,
+            &generic_pipeline_layout,
             &render_pass.first_subpass(),
         )
         .context("Error while creating block graphics pipeline")?;
         let tinted_block_graphics_pipeline = chunk::tinted_block_face::create_graphics_pipeline(
             &device,
-            &generic_block_graphics_pipeline_layout,
+            &generic_pipeline_layout,
             &render_pass.first_subpass(),
         )
         .context("Error while creating tinted block graphics pipeline")?;
         let custom_block_graphics_pipeline = chunk::custom_block::create_graphics_pipeline(
             &device,
-            &generic_block_graphics_pipeline_layout,
+            &generic_pipeline_layout,
             &render_pass.first_subpass(),
         )
         .context("Error while creating custom block graphics pipeline")?;
-        // Buffer managers
+        // Environment graphics pipelines.
+        let sun_graphics_pipeline = environment::sky::create_sun_graphics_pipeline(
+            &device,
+            &generic_pipeline_layout,
+            &render_pass.first_subpass(),
+        )
+        .context("Error while creating sun graphics pipeline")?;
+        let moon_graphics_pipeline = environment::sky::create_moon_graphics_pipeline(
+            &device,
+            &generic_pipeline_layout,
+            &render_pass.first_subpass(),
+        )
+        .context("Error while creating moon graphics pipeline")?;
+        let star_graphics_pipeline = environment::sky::create_star_graphics_pipeline(
+            &device,
+            &generic_pipeline_layout,
+            &render_pass.first_subpass(),
+        )
+        .context("Error while creating star graphics pipeline")?;
+        // Star quads buffer.
+        let star_quads_buffer = vulkan_buffer_from_iter_staged(
+            render_queue.clone(),
+            command_buffer_allocator.clone(),
+            &(memory_allocator.clone() as Arc<_>),
+            &VulkanBufferCreateInfo {
+                usage: VulkanBufferUsage::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            &VulkanAllocationCreateInfo {
+                memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            STAR_QUADS
+                .iter()
+                .map(|&[p1, p2, p3, p4]| [p1, p2, p4, p3].map(environment::sky::StarVertex)),
+        )
+        .context("Error while creating star quads buffer")?;
+        // Buffer managers.
         let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device)
             .context("Error while creating block face vertex buffer manager")?;
         let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device)
@@ -570,22 +622,26 @@ impl GraphicsBackend for GraphicsState {
         let custom_block_instance_buffer_manager =
             CustomBlockInstanceBufferManager::new(&device)
                 .context("Error while creating custom block instance buffer manager")?;
-        // Debug pipelines
+        // Debug pipelines.
         let debug_point_pipeline = debug::point::create_graphics_pipeline(
             &device,
-            &generic_block_graphics_pipeline_layout,
+            &generic_pipeline_layout,
             &render_pass.first_subpass(),
         )?;
         let debug_line_pipeline = debug::line::create_graphics_pipeline(
             &device,
-            &generic_block_graphics_pipeline_layout,
+            &generic_pipeline_layout,
             &render_pass.first_subpass(),
         )?;
         let debug_triangle_pipeline = debug::triangle::create_graphics_pipeline(
             &device,
-            &generic_block_graphics_pipeline_layout,
+            &generic_pipeline_layout,
             &render_pass.first_subpass(),
         )?;
+        // Initialise egui renderer, for debug UI.
+        let egui_renderer =
+            egui_renderer::Renderer::new(&device, &common_descriptor_set_layout, &render_pass)
+                .context("Error while creating egui renderer")?;
         let (pending_subchunk_tx, pending_subchunk_rx) = std::sync::mpsc::channel();
         Ok(Box::new(Self {
             size,
@@ -606,16 +662,23 @@ impl GraphicsBackend for GraphicsState {
             egui_renderer,
             graphics_options,
             block_graphics_pipeline,
-            generic_block_graphics_pipeline_layout,
+            generic_pipeline_layout,
             tinted_block_graphics_pipeline,
             custom_block_graphics_pipeline,
+            common_descriptor_set,
+            base_render_info,
+            render_info_buffer,
             custom_block_faces_buffer,
-            custom_block_faces_descriptor_set,
-            view_info_buffer,
-            camera_descriptor_set: view_info_descriptor_set,
-            matrices_descriptor_set,
             block_item_atlas: block_item_texture_atlas,
-            block_item_atlas_descriptor_set,
+            lightmap_buffer,
+            environment_state: EnvironmentGraphicsState {
+                sun_graphics_pipeline,
+                moon_graphics_pipeline,
+                star_graphics_pipeline,
+                star_quads_buffer,
+                moon_phases_image,
+                sun_image,
+            },
             subchunk_data_storage: SubchunkDataStorage {
                 subchunks: FastHashMap::new(),
                 loaded_chunks: FastHashSet::new(),
@@ -629,6 +692,7 @@ impl GraphicsBackend for GraphicsState {
             pending_subchunk_rx,
             current_dispatch_id_counter: 0,
             num_pending_subchunks: 0,
+            sky_extrapolation_state: SkyExtrapolationState::new(),
             debug_point_pipeline,
             debug_line_pipeline,
             debug_triangle_pipeline,
@@ -678,7 +742,7 @@ impl GraphicsBackend for GraphicsState {
                     ..Default::default()
                 },
             )
-            .context("Error while creating depth image")
+            .context("Error while creating new depth image")
             .unwrap();
         }
     }
@@ -690,7 +754,7 @@ impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
     fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
         let old_options = std::mem::replace(&mut self.graphics_options, new_options);
-        // Swapchain update in `resize` also updates VSync
+        // Swapchain update in `resize` also updates VSync.
         if new_options.vsync != old_options.vsync {
             self.resize(self.size);
         }
@@ -761,7 +825,8 @@ impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
     fn render(
         &mut self,
-        camera: &Camera,
+        play_state: &ClientPlayState,
+        current_time_s: f64,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
         debug_state: &DebugState,
@@ -769,6 +834,7 @@ impl GraphicsBackend for GraphicsState {
         debug_lines: &[DebugLine],
         debug_triangles: &[DebugTriangle],
     ) -> anyhow::Result<Option<DebugOutput>> {
+        let camera = &play_state.camera;
         // Upload pending subchunks.
         let mut subchunk_upload_semaphore: Option<VulkanSemaphore> = None;
         let mut _subchunk_upload_command_buffer: Option<Arc<_>> = None;
@@ -845,13 +911,49 @@ impl GraphicsBackend for GraphicsState {
             VulkanCommandBufferUsage::OneTimeSubmit,
         )
         .context("Error while creating command buffer builder")?;
+        // Calculate the time of day and a sky colour for the current frame.
+        let time_of_day = self
+            .sky_extrapolation_state
+            .update(play_state, current_time_s);
+        let [sky_r, sky_g, sky_b] = crate::graphics::environment::sky::get_rgb(time_of_day);
+        // Generate environment info.
+        let sky_matrix: [[f32; 4]; 4] = {
+            let sky_model_matrix = nalgebra::Isometry3::new(
+                camera.pos.coords,
+                nalgebra::Vector3::new(
+                    0.0,
+                    0.0,
+                    crate::graphics::environment::sky::get_day_cycle_rotation(time_of_day),
+                ),
+            )
+            .to_matrix()
+            .prepend_scaling(camera.get_zfar() * 0.95);
+            (camera.generate_reversed_depth_view_matrix() * sky_model_matrix).into()
+        };
+        let star_brightness = crate::graphics::environment::sky::get_star_brightness(time_of_day);
+        // Update rendering info.
         command_buffer
             .update_buffer(
-                self.view_info_buffer.clone(),
-                Box::new(RawViewInfo {
+                self.render_info_buffer.clone(),
+                Box::new(RawRenderInfo {
                     view_matrix: camera.generate_reversed_depth_view_matrix_slice(),
-                    screen_size: self.size.into(),
+                    sky_matrix,
+                    recip_screen_size: <[u32; 2]>::from(self.size).map(|n| (n as f32).recip()),
+                    face_matrices: self.base_render_info.face_matrices,
+                    recip_block_item_atlas_size: self.base_render_info.recip_block_item_atlas_size,
+                    time_of_day: time_of_day.rem_euclid(192_000.0) as f32,
+                    star_brightness,
                 }),
+            )
+            .unwrap();
+        // Update lightmap.
+        command_buffer
+            .update_buffer(
+                self.lightmap_buffer.clone(),
+                Box::new(generate_lightmap_texture(
+                    self.graphics_options.lightmap_gamma_setting,
+                    time_of_day,
+                )),
             )
             .unwrap();
         let egui_render_data = self
@@ -865,7 +967,7 @@ impl GraphicsBackend for GraphicsState {
                 pixels_per_point,
             )
             .context("Error while preparing egui renderer")?;
-        // Main render subpass
+        // Main render subpass.
         let (swapchain_image_i, is_swapchain_suboptimal, swapchain_semaphore) = unsafe {
             let semaphore = VulkanSemaphore::from_pool(&self.resources.device)
                 .map(Arc::new)
@@ -910,7 +1012,7 @@ impl GraphicsBackend for GraphicsState {
         command_buffer
             .begin_render_pass(
                 VulkanRenderPassBeginInfo {
-                    clear_values: vec![Some([0.471, 0.655, 1.0, 1.0].into()), Some(0.0.into())],
+                    clear_values: vec![Some([sky_r, sky_g, sky_b, 1.0].into()), Some(0.0.into())],
                     ..VulkanRenderPassBeginInfo::framebuffer(framebuffer.clone())
                 },
                 VulkanSubpassBeginInfo {
@@ -919,7 +1021,7 @@ impl GraphicsBackend for GraphicsState {
                 },
             )
             .unwrap();
-        // Block rendering
+        // Block rendering.
         let mut block_face_draw_commands_buffer = None;
         let mut tinted_block_face_draw_commands_buffer = None;
         let mut custom_block_draw_commands_buffer = None;
@@ -955,7 +1057,7 @@ impl GraphicsBackend for GraphicsState {
                         if skip_face_dir {
                             continue;
                         }
-                        // Base block faces
+                        // Base block faces.
                         if subchunk.block_face_start_vertices[i] != u32::MAX {
                             block_face_draw_commands.push(VulkanDrawIndirectCommand {
                                 vertex_count: 4,
@@ -964,7 +1066,7 @@ impl GraphicsBackend for GraphicsState {
                                 first_instance: subchunk.block_face_instance_groups[i].0,
                             });
                         }
-                        // Tinted block faces
+                        // Tinted block faces.
                         if subchunk.tinted_block_face_start_vertices[i] != u32::MAX {
                             tinted_block_face_draw_commands.push(VulkanDrawIndirectCommand {
                                 vertex_count: 4,
@@ -974,7 +1076,7 @@ impl GraphicsBackend for GraphicsState {
                             });
                         }
                     }
-                    // Custom blocks
+                    // Custom blocks.
                     for group in &subchunk.custom_block_groups {
                         custom_block_draw_commands.push(VulkanDrawIndirectCommand {
                             vertex_count: group.start_face_and_len[1] * 6,
@@ -1040,21 +1142,17 @@ impl GraphicsBackend for GraphicsState {
                 );
             }
         }
-        // Render blocks
+        // Render subchunks.
         command_buffer
-            // Need to bind a pipeline with compatible layout for binding descriptor sets
+            // We need to bind a pipeline with a compatible layout for binding descriptor sets, so
+            // bind the block graphics pipeline here.
             .bind_pipeline_graphics(self.block_graphics_pipeline.clone())
             .unwrap()
             .bind_descriptor_sets(
                 VulkanPipelineBindPoint::Graphics,
-                self.generic_block_graphics_pipeline_layout.clone(),
+                self.generic_pipeline_layout.clone(),
                 0,
-                (
-                    self.camera_descriptor_set.clone(),
-                    self.block_item_atlas_descriptor_set.clone(),
-                    self.matrices_descriptor_set.clone(),
-                    self.custom_block_faces_descriptor_set.clone(),
-                ),
+                self.common_descriptor_set.clone(),
             )
             .unwrap()
             .set_viewport(
@@ -1065,9 +1163,10 @@ impl GraphicsBackend for GraphicsState {
                 }] as &[_]),
             )
             .unwrap();
+        // Draw basic block faces.
         if let Some(draw_commands_buffer) = block_face_draw_commands_buffer {
             unsafe {
-                // Block graphics pipeline already bound
+                // Block graphics pipeline already bound, see above.
                 command_buffer
                     .bind_vertex_buffers(
                         0,
@@ -1081,6 +1180,7 @@ impl GraphicsBackend for GraphicsState {
                     .unwrap();
             }
         }
+        // Draw tinted block faces.
         if let Some(draw_commands_buffer) = tinted_block_face_draw_commands_buffer {
             unsafe {
                 command_buffer
@@ -1100,6 +1200,7 @@ impl GraphicsBackend for GraphicsState {
                     .unwrap();
             }
         }
+        // Draw custom blocks.
         if let Some(draw_commands_buffer) = custom_block_draw_commands_buffer {
             unsafe {
                 command_buffer
@@ -1107,14 +1208,47 @@ impl GraphicsBackend for GraphicsState {
                     .unwrap()
                     .bind_vertex_buffers(
                         0,
-                        (subchunk_data_storage.custom_block_instance.get_buffer(),),
+                        subchunk_data_storage.custom_block_instance.get_buffer(),
                     )
                     .unwrap()
                     .draw_indirect(draw_commands_buffer)
                     .unwrap();
             }
         }
-        // Render debug graphics
+        // Render sky.
+        {
+            // Draw sun.
+            unsafe {
+                command_buffer
+                    .bind_pipeline_graphics(self.environment_state.sun_graphics_pipeline.clone())
+                    .unwrap()
+                    .draw(4, 1, 0, 0)
+                    .unwrap();
+            }
+            // Draw moon.
+            unsafe {
+                command_buffer
+                    .bind_pipeline_graphics(self.environment_state.moon_graphics_pipeline.clone())
+                    .unwrap()
+                    .draw(4, 1, 0, 0)
+                    .unwrap();
+            }
+            // Draw stars.
+            if star_brightness > 0.0 {
+                unsafe {
+                    command_buffer
+                        .bind_pipeline_graphics(
+                            self.environment_state.star_graphics_pipeline.clone(),
+                        )
+                        .unwrap()
+                        .bind_vertex_buffers(0, self.environment_state.star_quads_buffer.clone())
+                        .unwrap()
+                        .draw(4, STAR_QUADS.len() as u32, 0, 0)
+                        .unwrap();
+                }
+            }
+        }
+        // Render debug graphics.
         let mut debug_point_buffer = None;
         let mut debug_line_buffer = None;
         let mut debug_triangle_buffer = None;
@@ -1177,7 +1311,7 @@ impl GraphicsBackend for GraphicsState {
                 command_buffer
                     .bind_pipeline_graphics(self.debug_point_pipeline.clone())
                     .unwrap()
-                    .bind_vertex_buffers(0, (buffer,))
+                    .bind_vertex_buffers(0, buffer)
                     .unwrap()
                     .draw(debug_points.len().try_into().unwrap(), 1, 0, 0)
                     .unwrap();
@@ -1188,7 +1322,7 @@ impl GraphicsBackend for GraphicsState {
                 command_buffer
                     .bind_pipeline_graphics(self.debug_line_pipeline.clone())
                     .unwrap()
-                    .bind_vertex_buffers(0, (buffer,))
+                    .bind_vertex_buffers(0, buffer)
                     .unwrap()
                     // Shader converts lines to quads, so we need 4 vertices per instance.
                     .draw(4, debug_lines.len().try_into().unwrap(), 0, 0)
@@ -1200,16 +1334,16 @@ impl GraphicsBackend for GraphicsState {
                 command_buffer
                     .bind_pipeline_graphics(self.debug_triangle_pipeline.clone())
                     .unwrap()
-                    .bind_vertex_buffers(0, (buffer,))
+                    .bind_vertex_buffers(0, buffer)
                     .unwrap()
                     .draw(3, debug_triangles.len().try_into().unwrap(), 0, 0)
                     .unwrap();
             }
         }
-        // Render egui UI
+        // Render egui UI.
         if let Some(egui_render_data) = egui_render_data {
             self.egui_renderer
-                .render(&mut command_buffer, self.size, egui_render_data);
+                .render(&mut command_buffer, egui_render_data);
         }
         command_buffer
             .end_render_pass(VulkanSubpassEndInfo::default())
@@ -1295,15 +1429,56 @@ impl GraphicsBackend for GraphicsState {
 }
 
 #[derive(Debug)]
-pub struct TextureAtlas {
+pub struct HypercubedVkImage {
     pub image: Arc<VulkanImage>,
     pub view: Arc<VulkanImageView>,
-    pub sampler: Arc<VulkanSampler>,
 }
 
-impl TextureAtlas {
-    pub fn new(
+impl HypercubedVkImage {
+    pub fn create_from_resource_atlas(
         atlas: &resources::texture::Atlas,
+        device: &Arc<VulkanDevice>,
+        queue: &Arc<VulkanQueue>,
+        memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
+        command_buffer_allocator: Arc<dyn VulkanCommandBufferAllocator>,
+    ) -> anyhow::Result<Self> {
+        Self::create_from_raw(
+            &atlas.texture_bytes,
+            atlas.width,
+            atlas.height,
+            VulkanFormat::R8G8B8A8_UNORM,
+            device,
+            queue,
+            memory_allocator,
+            command_buffer_allocator,
+        )
+    }
+
+    pub fn create_from_resource_texture(
+        texture: &resources::texture::RawTexture,
+        device: &Arc<VulkanDevice>,
+        queue: &Arc<VulkanQueue>,
+        memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
+        command_buffer_allocator: Arc<dyn VulkanCommandBufferAllocator>,
+    ) -> anyhow::Result<Self> {
+        Self::create_from_raw(
+            &texture.texture_bytes,
+            texture.width,
+            texture.height,
+            VulkanFormat::R8G8B8A8_UNORM,
+            device,
+            queue,
+            memory_allocator,
+            command_buffer_allocator,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_from_raw(
+        texture_bytes: &[u8],
+        width: u32,
+        height: u32,
+        image_format: VulkanFormat,
         device: &Arc<VulkanDevice>,
         queue: &Arc<VulkanQueue>,
         memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
@@ -1313,14 +1488,13 @@ impl TextureAtlas {
             memory_allocator,
             &VulkanImageCreateInfo {
                 image_type: VulkanImageType::Dim2d,
-                format: VulkanFormat::R8G8B8A8_UNORM,
-                extent: [atlas.width, atlas.height, 1],
+                format: image_format,
+                extent: [width, height, 1],
                 usage: VulkanImageUsage::SAMPLED | VulkanImageUsage::TRANSFER_DST,
                 ..Default::default()
             },
             &VulkanAllocationCreateInfo {
                 memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE,
-                allocate_preference: VulkanMemoryAllocatePreference::AlwaysAllocate,
                 ..Default::default()
             },
         )
@@ -1336,7 +1510,7 @@ impl TextureAtlas {
                     | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            atlas.texture_bytes.iter().copied(),
+            texture_bytes.iter().copied(),
         )
         .context("Error while creating atlas pixel staging buffer")?;
         let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
@@ -1359,12 +1533,6 @@ impl TextureAtlas {
             .unwrap();
         let view = VulkanImageView::new_default(&image)
             .context("Failed while creating Vulkan atlas image view")?;
-        let sampler = VulkanSampler::new(device, &VulkanSamplerCreateInfo::default())
-            .context("Failed while creating Vulkan atlas sampler")?;
-        Ok(Self {
-            image,
-            view,
-            sampler,
-        })
+        Ok(Self { image, view })
     }
 }

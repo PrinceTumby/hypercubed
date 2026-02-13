@@ -1,14 +1,11 @@
-use super::{GraphicsResources, Texture};
+use super::{GraphicsResources, Texture, include_wesl_module};
 use ahash::AHashMap;
 use egui::{TextureId, epaint};
 use portable_std::Cow;
 use wgpu::util::DeviceExt as _;
-use wgpu::{include_wgsl, vertex_attr_array};
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
-    screen_size_buffer: wgpu::Buffer,
-    screen_size_bind_group: wgpu::BindGroup,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     textures: AHashMap<TextureId, TextureData>,
     sampler_cache: AHashMap<epaint::textures::TextureOptions, wgpu::Sampler>,
@@ -35,7 +32,7 @@ pub struct Vertex {
 }
 
 impl Vertex {
-    const ATTRIBUTES: &'static [wgpu::VertexAttribute] = &vertex_attr_array![
+    const ATTRIBUTES: &'static [wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
         // pos
         0 => Float32x2,
         // uvs
@@ -76,44 +73,14 @@ struct ScreenSize {
 }
 
 impl Renderer {
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
-        let screen_size_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Screen Size Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-        let screen_size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("egui Screen Size Buffer"),
-            contents: bytemuck::cast_slice(&[ScreenSize {
-                width: 0.0,
-                height: 0.0,
-            }]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let screen_size_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("egui Screen Size Bind Group"),
-            layout: &screen_size_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &screen_size_buffer,
-                    offset: 0,
-                    size: None,
-                }),
-            }],
-        });
+    pub fn new(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        common_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Texture Bind Group Layout"),
+                label: Some("`egui` Texture Bind Group Layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -133,15 +100,14 @@ impl Renderer {
                     },
                 ],
             });
-        // Render pipeline
-        let shader = device.create_shader_module(include_wgsl!("shaders/egui.wgsl"));
+        let shader = device.create_shader_module(include_wesl_module!("egui"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("egui Pipeline Layout"),
-            bind_group_layouts: &[&screen_size_bind_group_layout, &texture_bind_group_layout],
-            push_constant_ranges: &[],
+            label: Some("`egui` Pipeline Layout"),
+            bind_group_layouts: &[common_bind_group_layout, &texture_bind_group_layout],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("egui Render Pipeline"),
+            label: Some("`egui` Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -191,13 +157,11 @@ impl Renderer {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         Self {
             pipeline,
-            screen_size_buffer,
-            screen_size_bind_group,
             texture_bind_group_layout,
             textures: AHashMap::new(),
             sampler_cache: AHashMap::new(),
@@ -346,11 +310,6 @@ impl Renderer {
         let queue = &graphics_resources.queue;
         let width = physical_size.width as f32;
         let height = physical_size.height as f32;
-        graphics_resources.queue.write_buffer(
-            &self.screen_size_buffer,
-            0,
-            bytemuck::cast_slice(&[ScreenSize { width, height }]),
-        );
         self.update_textures(device, queue, texture_updates);
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
@@ -416,7 +375,6 @@ impl Renderer {
         render_data: RenderData,
     ) {
         render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.screen_size_bind_group, &[]);
         render_pass.set_vertex_buffer(0, render_data.vertex_buffer.slice(..));
         render_pass.set_index_buffer(
             render_data.index_buffer.slice(..),

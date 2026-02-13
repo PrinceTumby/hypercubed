@@ -1,22 +1,50 @@
 #![allow(unexpected_cfgs)]
+#![allow(clippy::too_many_arguments)]
 
 pub mod chunk;
 pub mod debug;
 pub mod egui;
+pub mod sky;
+
+/// Chunk descriptor set binding indices.
+/// Must be manually kept in sync with shader function definitions.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CommonDescriptorSetIdxs {
+    RenderInfo = 0,
+    Lightmap = 1,
+    BlockItemAtlasCombinedImageSampler = 2,
+    CustomBlockFaces = 3,
+    SunCombinedImageSampler = 4,
+    MoonPhasesCombinedImageSampler = 5,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
-pub struct RawViewInfo {
+pub struct RawRenderInfo {
     pub view_matrix: [[f32; 4]; 4],
-    pub screen_size: [u32; 2],
+    pub sky_matrix: [[f32; 4]; 4],
+    /// `[1.0 / screen.width, 1.0 / screen.height]`
+    pub recip_screen_size: [f32; 2],
+    /// `[1.0 / atlas.width, 1.0 / atlas.height]`
+    pub recip_block_item_atlas_size: [f32; 2],
+    pub face_matrices: [[[f32; 4]; 3]; 6],
+    /// `time_of_day.rem_euclid(192_000.0)`
+    pub time_of_day: f32,
+    pub star_brightness: f32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViewInfo {
+pub struct RenderInfo {
     pub view_matrix: spirv_std::glam::Mat4,
-    pub screen_size: spirv_std::glam::UVec2,
+    pub sky_matrix: spirv_std::glam::Mat4,
+    pub recip_screen_size: spirv_std::glam::Vec2,
+    pub recip_block_item_atlas_size: spirv_std::glam::Vec2,
+    pub face_matrices: [spirv_std::glam::Mat3A; 6],
+    pub time_of_day: f32,
+    pub star_brightness: f32,
 }
 
 pub type RawAtlasImage = spirv_std::image::Image!(
@@ -25,6 +53,13 @@ pub type RawAtlasImage = spirv_std::image::Image!(
     // type=f32,
     depth = false,
     sampled = false,
+);
+
+pub type LightmapImage = spirv_std::image::Image!(
+    buffer,
+    type = f32,
+    depth = false,
+    sampled = true,
 );
 
 cfg_if::cfg_if! {
@@ -52,7 +87,7 @@ cfg_if::cfg_if! {
 
 #[cfg(not(target_arch = "spirv"))]
 pub fn cpu_dummy_ray_query() -> spirv_std::ray_tracing::RayQuery {
-    unsafe { std::mem::transmute(0u32) }
+    unsafe { core::mem::transmute(0u32) }
 }
 
 #[macro_export]
@@ -128,6 +163,12 @@ pub mod shader_modules {
             module!("chunk", "tinted_block_face", "fragment");
             module!("chunk", "custom_block", "vertex");
             module!("chunk", "custom_block", "fragment");
+            module!("sky", "sun", "vertex");
+            module!("sky", "sun", "fragment");
+            module!("sky", "moon", "vertex");
+            module!("sky", "moon", "fragment");
+            module!("sky", "star", "vertex");
+            module!("sky", "star", "fragment");
             module!("egui", "vertex");
             module!("egui", "fragment");
             module!("debug", "point", "vertex");
@@ -136,7 +177,6 @@ pub mod shader_modules {
             module!("debug", "line", "fragment");
             module!("debug", "triangle", "vertex");
             module!("debug", "triangle", "fragment");
-            // module!("render_raytraced");
             map.shrink_to_fit();
             map
         };

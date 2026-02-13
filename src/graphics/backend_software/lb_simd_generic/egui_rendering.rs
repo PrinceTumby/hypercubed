@@ -10,9 +10,6 @@ use image::RgbaImage;
 use portable_std::FastHashMap;
 use std::sync::Arc;
 
-// TODO: Figure out why this is rendering too dark.
-// - Pre-multiplied vs unmultiplied alpha?
-
 #[derive(Default)]
 pub struct Renderer {
     images: FastHashMap<egui::TextureId, ImageData>,
@@ -289,7 +286,10 @@ impl RenderMeshInfo {
                 .map(|v| EguiRenderVertex {
                     pos: v.pos * pixels_per_point,
                     uv: v.uv,
-                    colour: v.color.into(),
+                    // We need to multiply vertex and texture colours in gamma space, so this is
+                    // actually correct.
+                    // If we were to convert to linear space colour, the UI would look too dark.
+                    colour: Rgba::from_array(v.color.to_normalized_gamma_f32()),
                 })
                 .collect(),
             indices: mesh.indices.into_boxed_slice(),

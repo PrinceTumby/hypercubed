@@ -1,18 +1,13 @@
 use super::{SubchunkDataStorage, gl};
-use crate::basic_types::AxisDirection;
 use crate::graphics::chunk::{HasSubchunkData, SubchunkConnectivity, SubchunkData};
-use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32};
-use ahash::AHasher;
-use core::hash::Hasher;
-use fixedbitset::FixedBitSet;
+use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use gl::buffer::BufferType;
 use nalgebra::{Matrix4, Point3, Rotation3, Vector3, Vector4};
-use portable_std::{FastHashMap, FastHashSet};
+use portable_std::FastHashMap;
 use resources::block::RightAngleRotation;
-use resources::block::blockstate::{self, BlockOpacity};
+use resources::block::blockstate::BlockOpacity;
 use resources::block::model::{ModelIndex, ModelType};
 use resources::block::model::{ModelRegistry, Tint};
-use resources::identifier;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
@@ -80,7 +75,9 @@ pub struct BlockVertex {
     pub subchunk_fixed_point_pos: [i16; 3],
     // FIXME: This should be `i16`.
     pub uvs: [u16; 2],
-    pub colour_rgba: [u8; 4],
+    pub tint_colour_and_dir_light_rgba: [u8; 4],
+    /// `[Sky light level, Block light level]`
+    pub light_levels: [u8; 2],
 }
 
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -134,20 +131,17 @@ impl BlockFace {
             RightAngleRotation::TwoSeventy => [2, 0, 3, 1],
         };
         let rotated_uvs = rotated_uv_indices.map(|i| base_uvs[i]);
-        // Calculate block lighting.
-        let block_light_rgb_vec3 = Self::calculate_light_rgb_vec3(light_levels);
         // Calculate per-face directional lighting.
         let face_normal = face_matrix.transform_vector(&Vector3::y());
         let dir_light_coef = Self::calculate_dir_light_coef(face_normal);
         // Calculate final face colour.
-        let colour_rgb_vec3 = block_light_rgb_vec3 * dir_light_coef;
-        let colour_rgba_vec4 = colour_rgb_vec3.push(1.0);
-        let colour_rgba: [u8; 4] = colour_rgba_vec4.map(|n| (n * 255.0).round() as u8).into();
+        let tint_colour_and_dir_light_rgba: [u8; 4] = [(dir_light_coef * 255.0).round() as u8; 4];
         // Assemble vertices.
         let face_vertices: [BlockVertex; 4] = core::array::from_fn(|i| BlockVertex {
             subchunk_fixed_point_pos: subchunk_fixed_point_positions[i],
             uvs: rotated_uvs[i],
-            colour_rgba,
+            tint_colour_and_dir_light_rgba,
+            light_levels,
         });
         Self([0, 1, 3, 2].map(|i| face_vertices[i]))
     }
@@ -199,22 +193,20 @@ impl BlockFace {
             RightAngleRotation::TwoSeventy => [2, 0, 3, 1],
         };
         let rotated_uvs = rotated_uv_indices.map(|i| base_uvs[i]);
-        // Calculate block lighting.
-        let block_light_rgb_vec3 = Self::calculate_light_rgb_vec3(light_levels);
         // Calculate per-face directional lighting.
         let face_normal = face_matrix.transform_vector(&Vector3::y());
         let dir_light_coef = Self::calculate_dir_light_coef(face_normal);
         // Calculate final face colour.
-        let light_rgb_vec3 = block_light_rgb_vec3 * dir_light_coef;
-        let light_rgba_vec4 = light_rgb_vec3.push(1.0);
         let tint_rgba_vec4 = Vector4::from(tint_rgba.map(|x| x as f32 / 255.0));
-        let colour_rgba_vec4 = light_rgba_vec4.component_mul(&tint_rgba_vec4);
-        let colour_rgba: [u8; 4] = colour_rgba_vec4.map(|n| (n * 255.0).round() as u8).into();
+        let colour_rgba_vec4 = tint_rgba_vec4 * dir_light_coef;
+        let tint_colour_and_dir_light_rgba: [u8; 4] =
+            colour_rgba_vec4.map(|n| (n * 255.0).round() as u8).into();
         // Assemble vertices.
         let face_vertices: [BlockVertex; 4] = core::array::from_fn(|i| BlockVertex {
             subchunk_fixed_point_pos: subchunk_fixed_point_positions[i],
             uvs: rotated_uvs[i],
-            colour_rgba,
+            tint_colour_and_dir_light_rgba,
+            light_levels,
         });
         Self([0, 1, 3, 2].map(|i| face_vertices[i]))
     }
@@ -246,7 +238,7 @@ impl BlockFace {
             let subchunk_fixed_point_pos: [i16; 3] =
                 (subchunk_pos * 1024.0).map(|n| n.round() as i16).into();
             // Calculate block lighting.
-            let block_light_rgb_vec3 = {
+            let light_levels = {
                 // Try to find the block light levels that are "most applicable" for the current
                 // vertex. The light levels sampled are the levels for the block itself, followed
                 // by all six neighbours.
@@ -281,37 +273,21 @@ impl BlockFace {
                             }
                         },
                     );
-                let closest_light_levels = light_levels[closest_light_i];
-                Self::calculate_light_rgb_vec3(closest_light_levels)
+                light_levels[closest_light_i]
             };
-            // Combine the block lighting with the per-face directional lighting, expand to RGBA.
-            let light_rgb_vec3 = block_light_rgb_vec3 * dir_light_coef;
-            let light_rgba_vec4 = light_rgb_vec3.push(1.0);
-            // Final vertex colour is the tint colour combined with lighting.
-            let colour_rgba_vec4 = applied_tint_rgba_vec4.component_mul(&light_rgba_vec4);
-            let colour_rgba: [u8; 4] = colour_rgba_vec4.map(|n| (n * 255.0).round() as u8).into();
+            // Combine tint colour with directional lighting.
+            let tint_colour_and_dir_light_rgba_vec4 = applied_tint_rgba_vec4 * dir_light_coef;
+            let tint_colour_and_dir_light_rgba: [u8; 4] = tint_colour_and_dir_light_rgba_vec4
+                .map(|n| (n * 255.0).round() as u8)
+                .into();
             BlockVertex {
                 subchunk_fixed_point_pos,
                 uvs: v.uvs,
-                colour_rgba,
+                tint_colour_and_dir_light_rgba,
+                light_levels,
             }
         });
         Self([2, 3, 1, 0].map(|i| face_vertices[i]))
-    }
-
-    pub(super) fn calculate_light_rgb_vec3(light_levels: [u8; 2]) -> Vector3<f32> {
-        debug_assert!(light_levels[0] < 16);
-        debug_assert!(light_levels[1] < 16);
-        let [sky_light_level, block_light_level] = light_levels;
-        let light_percentage = f32::clamp(
-            // FIXME: I think sky light and block light have different maxima?
-            f32::max(sky_light_level as f32, block_light_level as f32) / 14.0,
-            0.001,
-            1.0,
-        );
-        let gamma = 0.5;
-        let light_gamma = light_percentage.powf(1.0 / gamma);
-        Vector3::repeat(0.02).lerp(&Vector3::repeat(1.0), light_gamma)
     }
 
     fn calculate_dir_light_coef(normal: Vector3<f32>) -> f32 {
@@ -339,305 +315,43 @@ pub fn process_subchunk(
     subchunk_coords: [i32; 3],
     dispatch_id: u64,
 ) {
-    let spruce_leaves_registry_index = block_registry
-        .get_index_from_identifier(&identifier!("minecraft:spruce_leaves"))
-        .unwrap();
     let [subchunk_x, subchunk_y, subchunk_z] = subchunk_coords;
-    let Some(chunk) = &raw_chunks.get(&[subchunk_x, subchunk_z]) else {
-        pending_subchunk_tx.send(None).unwrap();
-        return;
-    };
-    let chunk_section = &chunk.sections[usize::try_from(subchunk_y).unwrap()];
-    if chunk_section.block_count == 0 {
-        pending_subchunk_tx.send(None).unwrap();
-        return;
-    }
-    // Skip chunks with missing neighbours, so that for every chunk we actually render, it
-    // has all its neighbours to decide whether border faces should be rendered.
-    // I believe Minecraft does the same.
-    {
-        let surrounding_chunk_coords = [
-            [subchunk_x - 1, subchunk_z],
-            [subchunk_x + 1, subchunk_z],
-            [subchunk_x, subchunk_z - 1],
-            [subchunk_x, subchunk_z + 1],
-        ];
-        for neighbour_chunk in surrounding_chunk_coords {
-            if !raw_chunks.contains_key(&neighbour_chunk) {
-                pending_subchunk_tx.send(None).unwrap();
-                return;
-            }
-        }
-    }
     let mut face_groups: [Vec<BlockFace>; 7] = Default::default();
-    for y in 0..SUBCHUNK_AXIS_LEN {
-        let global_y_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y) + y as i32 + MIN_HEIGHT_I32;
-        let global_y = global_y_i32 as f32;
-        for z in 0..SUBCHUNK_AXIS_LEN {
-            let global_z_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_z) + z as i32;
-            let global_z = global_z_i32 as f32;
-            for x in 0..SUBCHUNK_AXIS_LEN {
-                let global_x_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_x) + x as i32;
-                let global_x = global_x_i32 as f32;
-                let global_palette_index = chunk_section.block_states.get(x, y, z);
-                let blockstate_info = &block_registry[global_palette_index];
-                let model_idx = match &blockstate_info.model_data {
-                    blockstate::ModelData::Single(model_idx) => *model_idx,
-                    blockstate::ModelData::RandomChoice(models) => 'model_blk: {
-                        // Find weight for model by hashed position.
-                        let mut block_hasher = AHasher::default();
-                        block_hasher.write_i32(global_x_i32);
-                        block_hasher.write_i32(global_y_i32);
-                        block_hasher.write_i32(global_z_i32);
-                        let hash = block_hasher.finish();
-                        let mut current_percentage = (hash % 65537) as f32 / 65536.0;
-                        for variant in models.iter() {
-                            if current_percentage <= variant.weight {
-                                break 'model_blk variant.model;
-                            } else {
-                                current_percentage -= variant.weight;
-                            }
-                        }
-                        // Should be unreachable
-                        let variant = &models[models.len() - 1];
-                        variant.model
-                    }
-                };
-                let block_opacity = blockstate_info.extra_info.opacity;
-                let direction_map = [
-                    (x as i32, y as i32 + 1, z as i32),
-                    (x as i32, y as i32 - 1, z as i32),
-                    (x as i32, y as i32, z as i32 - 1),
-                    (x as i32, y as i32, z as i32 + 1),
-                    (x as i32 + 1, y as i32, z as i32),
-                    (x as i32 - 1, y as i32, z as i32),
-                ];
-                let mut face_cull_map = [false; 6];
-                let mut face_light_map = [[0u8; 2]; 6];
-                for (i, (x, y, z)) in direction_map.into_iter().enumerate() {
-                    let check_global_y = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) + MIN_HEIGHT_I32;
-                    let check_chunk = match [x, z].iter().any(|n| !(0..=15).contains(n)) {
-                        false => chunk,
-                        true => match (x, z) {
-                            (-1, _) => &raw_chunks[&[subchunk_x - 1, subchunk_z]],
-                            (16, _) => &raw_chunks[&[subchunk_x + 1, subchunk_z]],
-                            (_, -1) => &raw_chunks[&[subchunk_x, subchunk_z - 1]],
-                            (_, 16) => &raw_chunks[&[subchunk_x, subchunk_z + 1]],
-                            _ => unreachable!(),
-                        },
-                    };
-                    // Get lighting
-                    {
-                        let light_section = check_chunk
-                            .lighting
-                            .get_section(
-                                MIN_HEIGHT_I32,
-                                check_global_y.div_euclid(SUBCHUNK_AXIS_LEN_I32),
-                            )
-                            .unwrap();
-                        let (x, y, z) = (
-                            ((x + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                            y.rem_euclid(16) as usize,
-                            ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                        );
-                        face_light_map[i] = light_section.get(x, y, z);
-                    }
-                    if !(MIN_HEIGHT_I32..=MAX_HEIGHT_I32).contains(&check_global_y) {
-                        continue;
-                    }
-                    let check_sections = &check_chunk.sections;
-                    let indexing_section = &check_sections[usize::try_from(
-                        (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) / SUBCHUNK_AXIS_LEN_I32,
-                    )
-                    .unwrap()];
-                    let (x, y, z) = (
-                        ((x + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                        y as usize,
-                        ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                    );
-                    let global_palette_index = indexing_section.block_states.get(x, y % 16, z);
-                    let neighbour_blockstate_info = &block_registry[global_palette_index];
-                    let neighbour_block_opacity = neighbour_blockstate_info.extra_info.opacity;
-                    face_cull_map[i] = match (block_opacity, neighbour_block_opacity) {
-                        (_, BlockOpacity::Opaque) => true,
-                        (BlockOpacity::Glass, BlockOpacity::Glass) => true,
-                        (BlockOpacity::GlassPane, BlockOpacity::GlassPane) => true,
-                        (_, _) => false,
-                    };
-                }
-                // Spruce Leaves are hardcoded, so override tint colour here
-                let tint_color = match blockstate_info.block_index {
-                    ident if ident == spruce_leaves_registry_index => [0x61, 0x99, 0x61, 0xFF],
-                    _ => [0x91, 0xBD, 0x59, 0xFF],
-                };
-                process_subchunk_model(
-                    &mut face_groups,
-                    model_registry,
-                    chunk,
-                    block_opacity,
-                    face_cull_map,
-                    face_light_map,
-                    tint_color,
-                    [subchunk_x, subchunk_y, subchunk_z],
-                    [global_x, global_y, global_z],
-                    [x, y, z],
-                    model_idx,
-                );
-            }
-        }
-    }
-    // Runs a variant of Minecraft's cave culling algorithm, specifically the connected
-    // face generation.
-    // Outlined here: https://tomcc.github.io/2014/08/31/visibility-1.html
-    let connectivity = 'connectivity: {
-        use crate::protocol::chunk::Palette;
-        // If we can immediately tell all the subchunk blocks are opaque, skip this entire
-        // process and just return that no subchunk faces are connected.
-        match chunk_section.block_states.palette() {
-            Palette::SingleValue(global_palette_index) => {
-                let blockstate_info = &block_registry[*global_palette_index];
-                break 'connectivity match blockstate_info.extra_info.opacity {
-                    BlockOpacity::Opaque => SubchunkConnectivity::empty(),
-                    _ => SubchunkConnectivity::full(),
-                };
-            }
-            Palette::Palette(indices) => {
-                let mut num_opaque = 0;
-                for global_palette_index in indices {
-                    let blockstate_info = &block_registry[*global_palette_index];
-                    if blockstate_info.extra_info.opacity == BlockOpacity::Opaque {
-                        num_opaque += 1;
-                    }
-                }
-                if num_opaque == 0 {
-                    break 'connectivity SubchunkConnectivity::full();
-                } else if num_opaque == indices.len() {
-                    break 'connectivity SubchunkConnectivity::empty();
-                }
-            }
-            Palette::Direct => {}
-        }
-        #[repr(transparent)]
-        #[derive(Clone, Copy)]
-        struct FaceSet(pub u8);
-        impl FaceSet {
-            pub fn empty() -> Self {
-                Self(0)
-            }
-
-            pub fn add_dir(&mut self, dir: AxisDirection) {
-                self.0 |= 1 << (dir as u8);
-            }
-
-            pub fn get_directions(&self) -> [(AxisDirection, bool); 6] {
-                [
-                    AxisDirection::Down,
-                    AxisDirection::Up,
-                    AxisDirection::North,
-                    AxisDirection::South,
-                    AxisDirection::West,
-                    AxisDirection::East,
-                ]
-                .map(|dir| (dir, self.0 & (1 << (dir as u8)) != 0))
-            }
-        }
-        let mut current_group: usize = 0;
-        let mut current_group_faces = FaceSet::empty();
-        let mut group_faces: Vec<FaceSet> = Vec::new();
-        // Y major, then Z, then X.
-        let mut unchecked_blocks = FixedBitSet::with_capacity(SUBCHUNK_AXIS_LEN.pow(3));
-        #[inline]
-        fn coords_to_bit_idx(coords: [i8; 3]) -> usize {
-            let [x, y, z] = coords.map(|n| n as usize);
-            y * SUBCHUNK_AXIS_LEN.pow(2) + z * SUBCHUNK_AXIS_LEN + x
-        }
-        unchecked_blocks.clear();
-        // Add all non-opaque blocks
-        for x in 0..SUBCHUNK_AXIS_LEN {
-            for y in 0..SUBCHUNK_AXIS_LEN {
-                for z in 0..SUBCHUNK_AXIS_LEN {
-                    let global_palette_index = chunk_section.block_states.get(x, y, z);
-                    let blockstate_info = &block_registry[global_palette_index];
-                    if blockstate_info.extra_info.opacity != BlockOpacity::Opaque {
-                        let bit_index = coords_to_bit_idx([x, y, z].map(|n| n as i8));
-                        unchecked_blocks.insert(bit_index);
-                    }
-                }
-            }
-        }
-        // Flood fill from each non-opaque block, to split all the blocks into groups.
-        let mut queue: FastHashSet<[i8; 3]> = FastHashSet::new();
-        while !queue.is_empty() || !unchecked_blocks.is_clear() {
-            let [x, y, z] = queue
-                .iter()
-                .copied()
-                .next()
-                .inspect(|coord| {
-                    queue.remove(coord);
-                })
-                .unwrap_or_else(|| {
-                    // No more blocks in queue, make a new group and grab a new block
-                    // that hasn't been checked yet.
-                    let coord = {
-                        let bit_index = unchecked_blocks.minimum().unwrap();
-                        [
-                            (bit_index & 0xF) as i8,
-                            ((bit_index >> 8) & 0xF) as i8,
-                            ((bit_index >> 4) & 0xF) as i8,
-                        ]
-                    };
-                    group_faces.push(current_group_faces);
-                    current_group += 1;
-                    current_group_faces = FaceSet::empty();
-                    coord
-                });
-            unchecked_blocks.remove(coords_to_bit_idx([x, y, z]));
-            let surrounding_block_coords = [
-                [x - 1, y, z],
-                [x + 1, y, z],
-                [x, y, z - 1],
-                [x, y, z + 1],
-                [x, y - 1, z],
-                [x, y + 1, z],
-            ];
-            for new_coord in surrounding_block_coords {
-                let [new_x, new_y, new_z] = new_coord;
-                // If fill escapes subchunk, add escaping face to group
-                if new_x < 0 {
-                    current_group_faces.add_dir(AxisDirection::West);
-                } else if new_x >= SUBCHUNK_AXIS_LEN as i8 {
-                    current_group_faces.add_dir(AxisDirection::East);
-                } else if new_y < 0 {
-                    current_group_faces.add_dir(AxisDirection::Down);
-                } else if new_y >= SUBCHUNK_AXIS_LEN as i8 {
-                    current_group_faces.add_dir(AxisDirection::Up);
-                } else if new_z < 0 {
-                    current_group_faces.add_dir(AxisDirection::North);
-                } else if new_z >= SUBCHUNK_AXIS_LEN as i8 {
-                    current_group_faces.add_dir(AxisDirection::South);
-                } else if unchecked_blocks.contains(coords_to_bit_idx(new_coord)) {
-                    queue.insert(new_coord);
-                }
-            }
-        }
-        group_faces.push(current_group_faces);
-        // Add connected faces for each group to subchunk connectivity
-        let mut subchunk_connectivity = SubchunkConnectivity::empty();
-        for face_set in group_faces {
-            let directions = face_set.get_directions();
-            for (face_1, face_1_in_set) in directions {
-                if !face_1_in_set {
-                    continue;
-                }
-                for (face_2, face_2_in_set) in directions {
-                    if !face_2_in_set {
-                        continue;
-                    }
-                    subchunk_connectivity.add_connection(&face_1, &face_2);
-                }
-            }
-        }
-        subchunk_connectivity
+    let Some(connectivity) = crate::graphics::chunk::process_subchunk_models(
+        block_registry,
+        model_registry,
+        raw_chunks,
+        subchunk_coords,
+        |model_processing_args| {
+            let crate::graphics::chunk::ModelProcessingArgs {
+                model_registry,
+                chunk,
+                block_opacity,
+                face_cull_map,
+                face_light_map,
+                tint_color,
+                subchunk_xyz,
+                global_xyz,
+                xyz,
+                model_idx,
+            } = model_processing_args;
+            process_subchunk_model(
+                &mut face_groups,
+                model_registry,
+                chunk,
+                block_opacity,
+                face_cull_map,
+                face_light_map,
+                tint_color,
+                subchunk_xyz,
+                global_xyz,
+                xyz,
+                model_idx,
+            );
+        },
+    ) else {
+        // Skip subchunk if `process_subchunk_models` returns that it's invisible.
+        return;
     };
     let start_coords = [
         SUBCHUNK_AXIS_LEN_I32 * subchunk_x,

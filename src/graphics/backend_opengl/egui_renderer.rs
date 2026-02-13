@@ -4,9 +4,9 @@ use ahash::AHashMap;
 use image::RgbaImage;
 use portable_std::FastHashMap;
 
-use gl::array::{ColorPointerType, IndexType, TextureCoordPointerType, VertexPointerType};
+use gl::array::{ColorType, IndexType, TextureCoordType, VertexType};
 use gl::client_state::ClientArrayType;
-use gl::fragment::{BlendEquationFunc, BlendFactor};
+use gl::fragment::{BlendEquationFunc, DstBlendFactor, SrcBlendFactor};
 use gl::matrix::MatrixMode;
 use gl::texture::{
     TexEnvMode, TexEnvTarget, TexFilterMode, TexTarget, TexWrapMode, Texture2dFormat,
@@ -14,10 +14,11 @@ use gl::texture::{
 };
 use gl::{GLint, GLsizei, ShapeMode};
 
-// TODO: Use texture buffer objects, update textures using OpenGL.
+// TODO: Update textures using OpenGL.
 
 pub struct Renderer {
     images: FastHashMap<egui::TextureId, ImageData>,
+    next_user_image_id: u64,
 }
 
 impl Default for Renderer {
@@ -35,7 +36,7 @@ struct ScreenSize {
 
 pub struct ImageData {
     pub image: RgbaImage,
-    gl_texture: gl::texture::batch_collected::Texture,
+    gl_texture: gl::texture::batch_collected::TextureHandle,
 }
 
 impl ImageData {
@@ -44,7 +45,7 @@ impl ImageData {
     /// The main OpenGL context must be current.
     pub unsafe fn new(image: RgbaImage, options: egui::TextureOptions) -> Self {
         unsafe {
-            let [gl_texture] = gl::texture::batch_collected::Texture::make_array();
+            let [gl_texture] = gl::texture::batch_collected::TextureHandle::make_array();
             gl_texture.bind(TexTarget::Texture2D);
             Self::apply_egui_texture_options_to_current(options);
             gl::texture::set_image_2d(
@@ -137,6 +138,7 @@ impl Renderer {
     pub fn new() -> Self {
         Self {
             images: AHashMap::new(),
+            next_user_image_id: 0,
         }
     }
 
@@ -247,7 +249,7 @@ impl Renderer {
             gl::client_state::enable(ClientArrayType::TextureCoordArray);
             // Set blending mode.
             gl::fragment::set_blend_equation(BlendEquationFunc::Add);
-            gl::fragment::set_blend_function(BlendFactor::One, BlendFactor::OneMinusSrcAlpha);
+            gl::fragment::set_blend_function(SrcBlendFactor::One, DstBlendFactor::OneMinusSrcAlpha);
             // Reset matrices.
             gl::matrix::switch_mode(MatrixMode::ModelView);
             gl::matrix::load_identity();
@@ -295,19 +297,19 @@ impl Renderer {
                 // Set vertex attributes.
                 gl::array::vertex_pointer(
                     2, // 2D vertices
-                    VertexPointerType::F32,
+                    VertexType::F32,
                     core::mem::size_of::<Vertex>().try_into().unwrap(), // Stride
                     (&raw const mesh.vertices[0].pos).addr(),           // Pointer to first element
                 );
                 gl::array::color_pointer(
                     4, // RGBA colours
-                    ColorPointerType::U8,
+                    ColorType::U8,
                     core::mem::size_of::<Vertex>().try_into().unwrap(), // Stride
                     (&raw const mesh.vertices[0].color).addr(),         // Pointer to first element
                 );
                 gl::array::texture_coord_pointer(
                     2, // 2D texture coordinates
-                    TextureCoordPointerType::F32,
+                    TextureCoordType::F32,
                     core::mem::size_of::<Vertex>().try_into().unwrap(), // Stride
                     (&raw const mesh.vertices[0].uvs).addr(),           // Pointer to first element
                 );
@@ -327,5 +329,18 @@ impl Renderer {
             gl::disable(gl::EnableComponent::ScissorTest);
             gl::enable(gl::EnableComponent::DepthTest);
         }
+    }
+
+    pub fn register_user_texture(&mut self, image: ImageData) -> egui::TextureId {
+        let texture_id = egui::TextureId::User(self.next_user_image_id);
+        self.next_user_image_id += 1;
+        self.images.insert(texture_id, image);
+        texture_id
+    }
+
+    /// Panics if `id` does not refer to a registered user texture.
+    pub fn get_user_image_mut(&mut self, id: egui::TextureId) -> &mut ImageData {
+        assert!(matches!(&id, egui::TextureId::User(_)));
+        self.images.get_mut(&id).unwrap()
     }
 }

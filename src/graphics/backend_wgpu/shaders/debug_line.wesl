@@ -1,5 +1,4 @@
-@group(0) @binding(0)
-var<uniform> view_info: ViewInfo;
+import package::common::render_info;
 
 struct ViewInfo {
     view_matrix: mat4x4<f32>,
@@ -9,8 +8,8 @@ struct ViewInfo {
 struct InstanceInput {
     @location(0) p1: vec3<f32>,
     @location(1) p2: vec3<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) size: f32,
+    @location(2) size: f32,
+    @location(3) color: vec4<f32>,
     @location(4) flags: u32,
 }
 
@@ -26,12 +25,12 @@ fn vs_main(
     in: InstanceInput,
 ) -> VertexOutput {
     var out: VertexOutput;
-    let p1_clip_pos = view_info.view_matrix * vec4(in.p1, 1.0);
-    let p2_clip_pos = view_info.view_matrix * vec4(in.p2, 1.0);
+    let p1_clip_pos = render_info.view_matrix * vec4(in.p1, 1.0);
+    let p2_clip_pos = render_info.view_matrix * vec4(in.p2, 1.0);
     let clip_diff_norm: vec2<f32> = normalize(p2_clip_pos.xy - p1_clip_pos.xy);
     // Calculate the perpendicular vector offset.
-    let screen_size_f32 = vec2<f32>(view_info.screen_size);
-    let offset_right = clip_diff_norm.yx * vec2(-1.0, 1.0) * in.size / screen_size_f32;
+    let recip_screen_size = render_info.recip_screen_size;
+    let offset_right = clip_diff_norm.yx * vec2(-1.0, 1.0) * in.size * recip_screen_size;
     let offset = select(offset_right, -offset_right, vertex_i % 2 == 0);
     var vertex_clip_pos = select(p1_clip_pos, p2_clip_pos, vertex_i / 2 != 0);
     vertex_clip_pos += vec4(offset * vertex_clip_pos.w, 0.0, 0.0);

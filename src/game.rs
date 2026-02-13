@@ -27,8 +27,7 @@ pub fn process_game_events(
     clientbound_tx: &sync::mpsc::Sender<ClientboundPacket>,
     clientbound_rx: &sync::mpsc::Receiver<ClientboundPacket>,
     current_time_s: f64,
-    last_tick_time_s: &mut f64,
-    next_tick_time_s: &mut f64,
+    last_player_tick_time_s: &mut f64,
     delta_time: f32,
 ) {
     let span = tracing::trace_span!("process_game_events");
@@ -409,6 +408,10 @@ pub fn process_game_events(
                 }
                 // TODO: Add explosion velocity to player
             }
+            ClientboundPacket::UpdateTime(new_time) => play_state.world_time = new_time,
+            ClientboundPacket::SetTickingState(new_ticking_state) => {
+                play_state.ticking_state = new_ticking_state
+            }
             // other => println!("{other:?}"),
             _ => {}
         }
@@ -427,17 +430,10 @@ pub fn process_game_events(
             subchunks_to_dispatch,
         );
     }
-    // Run tick updates.
+    // Run player tick updates.
     {
         let span = tracing::trace_span!("tick_updates");
         let _enter = span.enter();
-        let mut tick_this_frame = if current_time_s >= *next_tick_time_s {
-            *last_tick_time_s = current_time_s;
-            *next_tick_time_s += 1.0 / 20.0;
-            true
-        } else {
-            false
-        };
         let player = &mut play_state.player;
         let player_last_tick = &mut play_state.player_last_tick;
         let camera = &mut play_state.camera;
@@ -445,7 +441,17 @@ pub fn process_game_events(
             player.yaw = camera.yaw;
             player.pitch = camera.pitch;
         }
-        while tick_this_frame {
+        let num_player_ticks_this_frame = {
+            let mut num_ticks: usize = 0;
+            let mut next_player_tick_time_s = *last_player_tick_time_s + (1.0 / 20.0);
+            while current_time_s >= next_player_tick_time_s {
+                num_ticks += 1;
+                *last_player_tick_time_s = next_player_tick_time_s;
+                next_player_tick_time_s += 1.0 / 20.0;
+            }
+            num_ticks
+        };
+        for _ in 0..num_player_ticks_this_frame {
             *player_last_tick = player.clone();
             match player.game_mode {
                 GameMode::Spectator => {}
@@ -485,14 +491,10 @@ pub fn process_game_events(
                     }
                 }
             }
-            tick_this_frame = if current_time_s >= *next_tick_time_s {
-                *last_tick_time_s = current_time_s;
-                *next_tick_time_s += 1.0 / 20.0;
-                true
-            } else {
-                false
-            };
         }
+        // TODO: Make this movement interpolation code more of a robust state machine, and perform
+        //       interpolation each frame before handing off to rendering, instead of updating play
+        //       state with interpolated values.
         match player.game_mode {
             GameMode::Spectator if !debug_state.free_cam => {
                 input_state.update_fly_camera_pos(camera, delta_time);
@@ -511,9 +513,9 @@ pub fn process_game_events(
                         let diff = next_tick - last_tick.clone();
                         last_tick + (diff * tick_percentage)
                     }
-                    let tick_duration = *next_tick_time_s - *last_tick_time_s;
-                    let time_since_last_tick = current_time_s - *last_tick_time_s;
-                    let tick_percentage = time_since_last_tick / tick_duration;
+                    let player_tick_duration = 1.0 / 20.0;
+                    let time_since_last_tick = current_time_s - *last_player_tick_time_s;
+                    let tick_percentage = time_since_last_tick / player_tick_duration;
                     let tick_percentage_f32 = tick_percentage as f32;
                     (
                         // Camera pos.
@@ -547,13 +549,14 @@ pub fn process_game_events(
             let _enter = span.enter();
             let player = &play_state.player;
             let (mc_yaw, mc_pitch) = player.get_mc_rot();
-            if tick_this_frame {
+            if num_player_ticks_this_frame > 0 {
                 // TODO: Send `PlayerCommand` and `PlayerInput` packets
                 server_connection
                     .send_packet(serverbound_packets::SetPlayerPositionAndRotation {
                         // x: player.pos.x as f64,
                         // feet_y: player.pos.y as f64,
                         // z: player.pos.z as f64,
+                        // XXX: DEBUG
                         x: 15.0,
                         feet_y: 162.0,
                         z: -16.0,

@@ -1,36 +1,22 @@
 use super::super::TextureAtlas;
+use super::types::*;
 use super::{
     RENDER_MICRO_TILE_DIM, RENDER_MICRO_TILE_PIXEL_DIM, RENDER_PIXEL_GROUP_DIM, RENDER_TILE_DIM,
     RENDER_TILE_PIXEL_DIM, RenderMicroTileDepth, RenderMicroTileRgba, RenderPixelGroupDepth,
     RenderPixelGroupRgba, RenderTileBins, RenderTileHiZChain, RenderTileRgba, Rgba, Rgba8Ne,
     rgba_4xunorm8x16_to_u32x16, rgba_u32x16_to_unorm8x16,
 };
-use crate::basic_types::AxisDirection;
 use crate::graphics::chunk::{HasSubchunkData, SubchunkConnectivity, SubchunkData};
-use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32};
-use ahash::AHasher;
+use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use bitfield::bitfield;
-use core::hash::Hasher;
 use core::num::NonZeroU32;
-use core::simd::prelude::*;
-use fixedbitset::FixedBitSet;
 use nalgebra::{Matrix4, Point2, Point3, Rotation3, Vector2, Vector3};
-use portable_std::{FastHashMap, FastHashSet};
+use portable_std::FastHashMap;
 use resources::block::RightAngleRotation;
-use resources::block::blockstate::{self, BlockOpacity};
+use resources::block::blockstate::BlockOpacity;
 use resources::block::model::{ModelIndex, ModelRegistry, ModelType, Tint};
-use resources::identifier;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-
-// TODO: Extend Hi-Z occlusion culling.
-// - Currently we're just checking if an entire triangle is completely behind the entire tile.
-// - If we had a way to quickly compute the max dist for a micro-tile, then we could compare that
-//   directly with the micro-tile Hi-Z value to skip entire micro-tiles.
-// - For partial tile draws, compare all micro-tile max dists against Hi-Zs in SIMD, then AND with
-//   visible micro-tile mask used for iteration.
-// - Could do the same for whole tile draws, just by changing the for-loop to a masked loop.
-// - Micro-tiles used as example here, but also applies to pixel groups.
 
 pub struct Subchunk {
     pub dispatch_id: u64,
@@ -487,12 +473,6 @@ fn near_clip_tri(
     }
 }
 
-#[multiversion::multiversion(targets(
-    "x86_64+sse4.2+bmi1+bmi2+fma+lzcnt+movbe+avx512f+avx512vl+avx512dq+avx512bw",
-    "x86_64+sse4.2+bmi1+bmi2+fma+lzcnt+movbe+avx2",
-    "x86/i686+sse2",
-    "arm+neon",
-))]
 #[tracing::instrument(skip_all)]
 pub fn bin_subchunk(
     out_bins: &Mutex<&mut RenderTileBins>,
@@ -1068,14 +1048,9 @@ fn bin_block_face_tri(
     }
 }
 
-#[multiversion::multiversion(targets(
-    "x86_64+sse4.2+bmi1+bmi2+fma+lzcnt+movbe+avx512f+avx512vl+avx512dq+avx512bw",
-    "x86_64+sse4.2+bmi1+bmi2+fma+lzcnt+movbe+avx2",
-    "x86/i686+sse2",
-    "arm+neon",
-))]
+#[inline(always)]
 #[tracing::instrument(skip_all)]
-pub fn render_tile(
+pub(super) fn render_tile(
     out_tile: &mut RenderTileRgba,
     out_tile_hi_z: &mut RenderTileHiZChain,
     (tile_x, tile_y): (usize, usize),
@@ -1096,11 +1071,18 @@ pub fn render_tile(
     for draw_cmd in draw_cmds {
         let tri_info = &draw_cmd.tri_info;
         let tri = &tri_info.tri;
+        let tri_max_z = tri
+            .iter()
+            .map(|v| v.pos.z)
+            .reduce(|acc, z| acc.max(z))
+            .unwrap();
         match draw_cmd.ty {
             TileDrawCommandType::WholeTile => {
                 // If all of the triangle's points are behind the tile's current minimum Z, then
                 // it's fully occluded, and we can skip it.
-                if tri.iter().all(|v| v.pos.z < out_tile_hi_z.tile) {
+                // We also check each micro-tile and pixel group.
+                let tile_hi_z = &mut out_tile_hi_z.tile;
+                if tri_max_z < *tile_hi_z {
                     continue;
                 }
                 for micro_tile_i in 0..RENDER_TILE_DIM.pow(2) {
@@ -1110,6 +1092,10 @@ pub fn render_tile(
                         &mut out_tile[micro_tile_y][micro_tile_x];
                     let micro_tile_depth: &mut RenderMicroTileDepth =
                         &mut out_tile_hi_z.pixel[micro_tile_i];
+                    let micro_tile_hi_z = &mut out_tile_hi_z.micro_tile[micro_tile_i];
+                    if tri_max_z < *micro_tile_hi_z {
+                        continue;
+                    }
                     let micro_tile_start_x =
                         tile_start_x + (micro_tile_x * RENDER_MICRO_TILE_PIXEL_DIM);
                     let micro_tile_start_y =
@@ -1122,6 +1108,11 @@ pub fn render_tile(
                             &mut micro_tile[pixel_group_y][pixel_group_x];
                         let pixel_group_depth: &mut RenderPixelGroupDepth =
                             &mut micro_tile_depth[pixel_group_i];
+                        let pixel_group_hi_z =
+                            &mut out_tile_hi_z.pixel_group[micro_tile_i][pixel_group_i];
+                        if tri_max_z < *pixel_group_hi_z {
+                            continue;
+                        }
                         let pixel_group_start_x =
                             micro_tile_start_x + (pixel_group_x * RENDER_PIXEL_GROUP_DIM);
                         let pixel_group_start_y =
@@ -1194,7 +1185,7 @@ pub fn render_tile(
                             + (f32x16::splat(tri[1].pos.z) * screen_bary_vs)
                             + (f32x16::splat(tri[2].pos.z) * screen_bary_ws);
                         // Depth-test pixels.
-                        let old_pixel_depths = f32x16::from_array(*pixel_group_depth);
+                        let old_pixel_depths = *pixel_group_depth;
                         let mut visible_pixels = pixel_depths.simd_ge(old_pixel_depths);
                         // Convert tri RGBA to Unorm8s.
                         let [
@@ -1212,7 +1203,7 @@ pub fn render_tile(
                         ] = atlas_texture.sample_nearest_simd16(pixel_us, pixel_vs);
                         // Alpha test pixels.
                         if tri_info.alpha_test {
-                            visible_pixels &= pixel_tex_alphas.0.simd_gt(u8x16::splat(0x00)).cast();
+                            visible_pixels &= pixel_tex_alphas.0.simd_gt(u8x16::splat(0x00));
                         }
                         // Calculate final pixel colours.
                         let new_pixel_reds = pixel_tri_reds * pixel_tex_reds;
@@ -1226,24 +1217,24 @@ pub fn render_tile(
                             new_pixel_blues,
                             new_pixel_alphas,
                         ]);
-                        new_pixel_rgbas.store_select(pixel_group.as_mut_array(), visible_pixels);
+                        new_pixel_rgbas.store_masked(pixel_group, visible_pixels);
                         // Update pixel depths.
-                        pixel_depths.store_select(pixel_group_depth, visible_pixels);
+                        pixel_depths.store_masked(pixel_group_depth, visible_pixels);
                         // Update pixel group occlusion culling info.
-                        out_tile_hi_z.pixel_group[micro_tile_i][pixel_group_i] =
-                            f32x16::from_array(*pixel_group_depth).reduce_min();
+                        *pixel_group_hi_z = pixel_group_depth.reduce_min();
                     }
                     // Update micro-tile occlusion culling info.
-                    out_tile_hi_z.micro_tile[micro_tile_i] =
-                        f32x16::from_array(out_tile_hi_z.pixel_group[micro_tile_i]).reduce_min();
+                    *micro_tile_hi_z = out_tile_hi_z.pixel_group[micro_tile_i].reduce_min();
                 }
                 // Update tile occlusion culling info.
-                out_tile_hi_z.tile = f32x16::from_array(out_tile_hi_z.micro_tile).reduce_min();
+                *tile_hi_z = out_tile_hi_z.micro_tile.reduce_min();
             }
             TileDrawCommandType::PartialTile => {
                 // If all of the triangle's points are behind the tile's current minimum Z, then
                 // it's fully occluded, and we can skip it.
-                if tri.iter().all(|v| v.pos.z < out_tile_hi_z.tile) {
+                // We also check each micro-tile and pixel group.
+                let tile_hi_z = &mut out_tile_hi_z.tile;
+                if tri_max_z < *tile_hi_z {
                     continue;
                 }
                 let tri_edges = tri_info.tri_edges;
@@ -1267,7 +1258,7 @@ pub fn render_tile(
                     + (y_offsets * u32x16::splat(RENDER_MICRO_TILE_PIXEL_DIM as u32));
                 // Find micro-tiles partially or fully inside every clip edge.
                 // TODO: Might be worth doing trivial accept checks at each level as well.
-                let mut visible_micro_tiles = mask32x16::splat(true);
+                let mut visible_micro_tiles = mask16::splat(true);
                 for edge in &tri_edges {
                     // Calculate trivial reject corner positions for this (micro-tile, edge)
                     // combination.
@@ -1286,8 +1277,8 @@ pub fn render_tile(
                     // that the entire micro-tile lies outside the triangle, and can be skipped.
                     let [a, b, c] = edge.half_plane_params;
                     let reject_test_vals = (f32x16::splat(a)
-                        * micro_tile_trivial_reject_xs.cast::<f32>())
-                        + (f32x16::splat(b) * micro_tile_trivial_reject_ys.cast::<f32>());
+                        * micro_tile_trivial_reject_xs.cast_f32())
+                        + (f32x16::splat(b) * micro_tile_trivial_reject_ys.cast_f32());
                     let edge_visible_micro_tiles = if edge.flags.is_half_plane_closed() {
                         reject_test_vals.simd_le(f32x16::splat(c))
                     } else {
@@ -1304,6 +1295,10 @@ pub fn render_tile(
                         &mut out_tile[micro_tile_y][micro_tile_x];
                     let micro_tile_depth: &mut RenderMicroTileDepth =
                         &mut out_tile_hi_z.pixel[micro_tile_i];
+                    let micro_tile_hi_z = &mut out_tile_hi_z.micro_tile[micro_tile_i];
+                    if tri_max_z < *micro_tile_hi_z {
+                        continue;
+                    }
                     let micro_tile_start_x = micro_tile_start_xs[micro_tile_i];
                     let micro_tile_start_y = micro_tile_start_ys[micro_tile_i];
                     let pixel_group_start_xs = u32x16::splat(micro_tile_start_x)
@@ -1311,7 +1306,7 @@ pub fn render_tile(
                     let pixel_group_start_ys = u32x16::splat(micro_tile_start_y)
                         + (y_offsets * u32x16::splat(RENDER_PIXEL_GROUP_DIM as u32));
                     // Find pixel groups partially or fully inside every clip edge.
-                    let mut visible_pixel_groups = mask32x16::splat(true);
+                    let mut visible_pixel_groups = mask16::splat(true);
                     for edge in &tri_edges {
                         // Calculate trivial reject corner positions for this (pixel group, edge)
                         // combination.
@@ -1331,8 +1326,8 @@ pub fn render_tile(
                         // be skipped.
                         let [a, b, c] = edge.half_plane_params;
                         let reject_test_vals = (f32x16::splat(a)
-                            * pixel_group_trivial_reject_xs.cast::<f32>())
-                            + (f32x16::splat(b) * pixel_group_trivial_reject_ys.cast::<f32>());
+                            * pixel_group_trivial_reject_xs.cast_f32())
+                            + (f32x16::splat(b) * pixel_group_trivial_reject_ys.cast_f32());
                         let edge_visible_pixel_groups = if edge.flags.is_half_plane_closed() {
                             reject_test_vals.simd_le(f32x16::splat(c))
                         } else {
@@ -1349,16 +1344,19 @@ pub fn render_tile(
                             &mut micro_tile[pixel_group_y][pixel_group_x];
                         let pixel_group_depth: &mut RenderPixelGroupDepth =
                             &mut micro_tile_depth[pixel_group_i];
+                        let pixel_group_hi_z =
+                            &mut out_tile_hi_z.pixel_group[micro_tile_i][pixel_group_i];
+                        if tri_max_z < *pixel_group_hi_z {
+                            continue;
+                        }
                         let pixel_group_start_x = pixel_group_start_xs[pixel_group_i];
                         let pixel_group_start_y = pixel_group_start_ys[pixel_group_i];
-                        let pixel_xs = (u32x16::splat(pixel_group_start_x) + x_offsets)
-                            .cast::<f32>()
+                        let pixel_xs = (u32x16::splat(pixel_group_start_x) + x_offsets).cast_f32()
                             + f32x16::splat(0.5);
-                        let pixel_ys = (u32x16::splat(pixel_group_start_y) + y_offsets)
-                            .cast::<f32>()
+                        let pixel_ys = (u32x16::splat(pixel_group_start_y) + y_offsets).cast_f32()
                             + f32x16::splat(0.5);
                         // Find pixels inside all clip edges.
-                        let mut visible_pixels = mask32x16::splat(true);
+                        let mut visible_pixels = mask16::splat(true);
                         for edge in &tri_edges {
                             // Test the trivial reject corner.
                             // If this corner lies outside of the edge's half-plane, then we can be
@@ -1436,16 +1434,13 @@ pub fn render_tile(
                         );
                         // Alpha test pixels.
                         if tri_info.alpha_test {
-                            visible_pixels &= pixel_tex_alphas.0.simd_gt(u8x16::splat(0x00)).cast();
+                            visible_pixels &= pixel_tex_alphas.0.simd_gt(u8x16::splat(0x00));
                         }
                         // Depth-test pixels.
                         // Only loading depth values for pixels which could be visible has the
                         // potential to save us a small amount of memory bandwidth.
-                        let loaded_pixel_group_depths = f32x16::load_select(
-                            pixel_group_depth,
-                            visible_pixels,
-                            f32x16::splat(0.0),
-                        );
+                        let loaded_pixel_group_depths =
+                            f32x16::load_zmasked(pixel_group_depth, visible_pixels);
                         visible_pixels &= pixel_depths.simd_ge(loaded_pixel_group_depths);
                         // Calculate final pixel colours.
                         let new_pixel_reds = pixel_tri_reds * pixel_tex_reds;
@@ -1459,19 +1454,17 @@ pub fn render_tile(
                             new_pixel_blues,
                             new_pixel_alphas,
                         ]);
-                        new_pixel_rgbas.store_select(pixel_group.as_mut_array(), visible_pixels);
+                        new_pixel_rgbas.store_masked(pixel_group, visible_pixels);
                         // Update pixel depths.
-                        pixel_depths.store_select(pixel_group_depth, visible_pixels);
+                        pixel_depths.store_masked(pixel_group_depth, visible_pixels);
                         // Update pixel group occlusion culling info.
-                        out_tile_hi_z.pixel_group[micro_tile_i][pixel_group_i] =
-                            f32x16::from_array(*pixel_group_depth).reduce_min();
+                        *pixel_group_hi_z = pixel_group_depth.reduce_min();
                     }
                     // Update micro-tile occlusion culling info.
-                    out_tile_hi_z.micro_tile[micro_tile_i] =
-                        f32x16::from_array(out_tile_hi_z.pixel_group[micro_tile_i]).reduce_min();
+                    *micro_tile_hi_z = out_tile_hi_z.pixel_group[micro_tile_i].reduce_min();
                 }
                 // Update tile occlusion culling info.
-                out_tile_hi_z.tile = f32x16::from_array(out_tile_hi_z.micro_tile).reduce_min();
+                *tile_hi_z = out_tile_hi_z.micro_tile.reduce_min();
             }
         }
     }
@@ -1486,309 +1479,47 @@ pub fn process_subchunk(
     subchunk_coords: [i32; 3],
     dispatch_id: u64,
 ) {
-    let spruce_leaves_registry_index = block_registry
-        .get_index_from_identifier(&identifier!("minecraft:spruce_leaves"))
-        .unwrap();
     let [subchunk_x, subchunk_y, subchunk_z] = subchunk_coords;
-    let Some(chunk) = &raw_chunks.get(&[subchunk_x, subchunk_z]) else {
-        pending_subchunk_tx.send(None).unwrap();
-        return;
-    };
-    let chunk_section = &chunk.sections[usize::try_from(subchunk_y).unwrap()];
-    if chunk_section.block_count == 0 {
-        pending_subchunk_tx.send(None).unwrap();
-        return;
-    }
-    // Skip chunks with missing neighbours, so that for every chunk we actually render, it
-    // has all its neighbours to decide whether border faces should be rendered.
-    // I believe Minecraft does the same.
-    {
-        let surrounding_chunk_coords = [
-            [subchunk_x - 1, subchunk_z],
-            [subchunk_x + 1, subchunk_z],
-            [subchunk_x, subchunk_z - 1],
-            [subchunk_x, subchunk_z + 1],
-        ];
-        for neighbour_chunk in surrounding_chunk_coords {
-            if !raw_chunks.contains_key(&neighbour_chunk) {
-                pending_subchunk_tx.send(None).unwrap();
-                return;
-            }
-        }
-    }
     let mut block_faces: [Vec<BlockFace>; 6] = Default::default();
     let mut tinted_block_faces: [Vec<TintedBlockFace>; 6] = Default::default();
     let mut custom_block_faces: Vec<CustomBlockFace> = Vec::new();
-    for y in 0..SUBCHUNK_AXIS_LEN {
-        let global_y_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y) + y as i32 + MIN_HEIGHT_I32;
-        let global_y = global_y_i32 as f32;
-        for z in 0..SUBCHUNK_AXIS_LEN {
-            let global_z_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_z) + z as i32;
-            let global_z = global_z_i32 as f32;
-            for x in 0..SUBCHUNK_AXIS_LEN {
-                let global_x_i32 = (SUBCHUNK_AXIS_LEN_I32 * subchunk_x) + x as i32;
-                let global_x = global_x_i32 as f32;
-                let global_palette_index = chunk_section.block_states.get(x, y, z);
-                let blockstate_info = &block_registry[global_palette_index];
-                let model_idx = match &blockstate_info.model_data {
-                    blockstate::ModelData::Single(model_idx) => *model_idx,
-                    blockstate::ModelData::RandomChoice(models) => 'model_blk: {
-                        // Find weight for model by hashed position.
-                        let mut block_hasher = AHasher::default();
-                        block_hasher.write_i32(global_x_i32);
-                        block_hasher.write_i32(global_y_i32);
-                        block_hasher.write_i32(global_z_i32);
-                        let hash = block_hasher.finish();
-                        let mut current_percentage = (hash % 65537) as f32 / 65536.0;
-                        for variant in models.iter() {
-                            if current_percentage <= variant.weight {
-                                break 'model_blk variant.model;
-                            } else {
-                                current_percentage -= variant.weight;
-                            }
-                        }
-                        // Should be unreachable
-                        let variant = &models[models.len() - 1];
-                        variant.model
-                    }
-                };
-                let block_opacity = blockstate_info.extra_info.opacity;
-                let direction_map = [
-                    (x as i32, y as i32 + 1, z as i32),
-                    (x as i32, y as i32 - 1, z as i32),
-                    (x as i32, y as i32, z as i32 - 1),
-                    (x as i32, y as i32, z as i32 + 1),
-                    (x as i32 + 1, y as i32, z as i32),
-                    (x as i32 - 1, y as i32, z as i32),
-                ];
-                let mut face_cull_map = [false; 6];
-                let mut face_light_map = [[0u8; 2]; 6];
-                for (i, (x, y, z)) in direction_map.into_iter().enumerate() {
-                    let check_global_y = (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) + MIN_HEIGHT_I32;
-                    let check_chunk = match [x, z].iter().any(|n| !(0..=15).contains(n)) {
-                        false => chunk,
-                        true => match (x, z) {
-                            (-1, _) => &raw_chunks[&[subchunk_x - 1, subchunk_z]],
-                            (16, _) => &raw_chunks[&[subchunk_x + 1, subchunk_z]],
-                            (_, -1) => &raw_chunks[&[subchunk_x, subchunk_z - 1]],
-                            (_, 16) => &raw_chunks[&[subchunk_x, subchunk_z + 1]],
-                            _ => unreachable!(),
-                        },
-                    };
-                    // Get lighting
-                    {
-                        let light_section = check_chunk
-                            .lighting
-                            .get_section(
-                                MIN_HEIGHT_I32,
-                                check_global_y.div_euclid(SUBCHUNK_AXIS_LEN_I32),
-                            )
-                            .unwrap();
-                        let (x, y, z) = (
-                            ((x + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                            y.rem_euclid(16) as usize,
-                            ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                        );
-                        face_light_map[i] = light_section.get(x, y, z);
-                    }
-                    if !(MIN_HEIGHT_I32..=MAX_HEIGHT_I32).contains(&check_global_y) {
-                        continue;
-                    }
-                    let check_sections = &check_chunk.sections;
-                    let indexing_section = &check_sections[usize::try_from(
-                        (SUBCHUNK_AXIS_LEN_I32 * subchunk_y + y) / SUBCHUNK_AXIS_LEN_I32,
-                    )
-                    .unwrap()];
-                    let (x, y, z) = (
-                        ((x + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                        y as usize,
-                        ((z + SUBCHUNK_AXIS_LEN_I32) % SUBCHUNK_AXIS_LEN_I32) as usize,
-                    );
-                    let global_palette_index = indexing_section.block_states.get(x, y % 16, z);
-                    let neighbour_blockstate_info = &block_registry[global_palette_index];
-                    let neighbour_block_opacity = neighbour_blockstate_info.extra_info.opacity;
-                    face_cull_map[i] = match (block_opacity, neighbour_block_opacity) {
-                        (_, BlockOpacity::Opaque) => true,
-                        (BlockOpacity::Glass, BlockOpacity::Glass) => true,
-                        (BlockOpacity::GlassPane, BlockOpacity::GlassPane) => true,
-                        (_, _) => false,
-                    };
-                }
-                // Spruce Leaves are hardcoded, so override tint colour here.
-                let tint_color = match blockstate_info.block_index {
-                    ident if ident == spruce_leaves_registry_index => [0x61, 0x99, 0x61, 0xFF],
-                    _ => [0x91, 0xBD, 0x59, 0xFF],
-                };
-                process_subchunk_model(
-                    &mut block_faces,
-                    &mut tinted_block_faces,
-                    &mut custom_block_faces,
-                    model_registry,
-                    chunk,
-                    block_opacity,
-                    face_cull_map,
-                    face_light_map,
-                    tint_color,
-                    [subchunk_x, subchunk_y, subchunk_z],
-                    [global_x, global_y, global_z],
-                    [x, y, z],
-                    model_idx,
-                );
-            }
-        }
-    }
-    // Runs a variant of Minecraft's cave culling algorithm, specifically the connected
-    // face generation.
-    // Outlined here: https://tomcc.github.io/2014/08/31/visibility-1.html
-    let connectivity = 'connected_faces: {
-        use crate::protocol::chunk::Palette;
-        // If we can immediately tell all the subchunk blocks are opaque, skip this entire
-        // process and just return that no subchunk faces are connected.
-        match chunk_section.block_states.palette() {
-            Palette::SingleValue(global_palette_index) => {
-                let blockstate_info = &block_registry[*global_palette_index];
-                break 'connected_faces match blockstate_info.extra_info.opacity {
-                    BlockOpacity::Opaque => SubchunkConnectivity::empty(),
-                    _ => SubchunkConnectivity::full(),
-                };
-            }
-            Palette::Palette(indices) => {
-                let mut num_opaque = 0;
-                for global_palette_index in indices {
-                    let blockstate_info = &block_registry[*global_palette_index];
-                    if blockstate_info.extra_info.opacity == BlockOpacity::Opaque {
-                        num_opaque += 1;
-                    }
-                }
-                if num_opaque == 0 {
-                    break 'connected_faces SubchunkConnectivity::full();
-                } else if num_opaque == indices.len() {
-                    break 'connected_faces SubchunkConnectivity::empty();
-                }
-            }
-            Palette::Direct => {}
-        }
-        #[repr(transparent)]
-        #[derive(Clone, Copy)]
-        struct FaceSet(pub u8);
-        impl FaceSet {
-            pub fn empty() -> Self {
-                Self(0)
-            }
-
-            pub fn add_dir(&mut self, dir: AxisDirection) {
-                self.0 |= 1 << (dir as u8);
-            }
-
-            pub fn get_directions(&self) -> [(AxisDirection, bool); 6] {
-                [
-                    AxisDirection::Down,
-                    AxisDirection::Up,
-                    AxisDirection::North,
-                    AxisDirection::South,
-                    AxisDirection::West,
-                    AxisDirection::East,
-                ]
-                .map(|dir| (dir, self.0 & (1 << (dir as u8)) != 0))
-            }
-        }
-        let mut current_group: usize = 0;
-        let mut current_group_faces = FaceSet::empty();
-        let mut group_faces: Vec<FaceSet> = Vec::new();
-        // Y major, then Z, then X.
-        let mut unchecked_blocks = FixedBitSet::with_capacity(SUBCHUNK_AXIS_LEN.pow(3));
-        #[inline]
-        fn coords_to_bit_idx(coords: [i8; 3]) -> usize {
-            let [x, y, z] = coords.map(|n| n as usize);
-            y * SUBCHUNK_AXIS_LEN.pow(2) + z * SUBCHUNK_AXIS_LEN + x
-        }
-        unchecked_blocks.clear();
-        // Add all non-opaque blocks
-        for x in 0..SUBCHUNK_AXIS_LEN {
-            for y in 0..SUBCHUNK_AXIS_LEN {
-                for z in 0..SUBCHUNK_AXIS_LEN {
-                    let global_palette_index = chunk_section.block_states.get(x, y, z);
-                    let blockstate_info = &block_registry[global_palette_index];
-                    if blockstate_info.extra_info.opacity != BlockOpacity::Opaque {
-                        let bit_index = coords_to_bit_idx([x, y, z].map(|n| n as i8));
-                        unchecked_blocks.insert(bit_index);
-                    }
-                }
-            }
-        }
-        // Flood fill from each non-opaque block, to split all the blocks into groups.
-        let mut queue: FastHashSet<[i8; 3]> = FastHashSet::new();
-        while !queue.is_empty() || !unchecked_blocks.is_clear() {
-            let [x, y, z] = queue
-                .iter()
-                .copied()
-                .next()
-                .inspect(|coord| {
-                    queue.remove(coord);
-                })
-                .unwrap_or_else(|| {
-                    // No more blocks in queue, make a new group and grab a new block
-                    // that hasn't been checked yet.
-                    let coord = {
-                        let bit_index = unchecked_blocks.minimum().unwrap();
-                        [
-                            (bit_index & 0xF) as i8,
-                            ((bit_index >> 8) & 0xF) as i8,
-                            ((bit_index >> 4) & 0xF) as i8,
-                        ]
-                    };
-                    group_faces.push(current_group_faces);
-                    current_group += 1;
-                    current_group_faces = FaceSet::empty();
-                    coord
-                });
-            unchecked_blocks.remove(coords_to_bit_idx([x, y, z]));
-            let surrounding_block_coords = [
-                [x - 1, y, z],
-                [x + 1, y, z],
-                [x, y, z - 1],
-                [x, y, z + 1],
-                [x, y - 1, z],
-                [x, y + 1, z],
-            ];
-            for new_coord in surrounding_block_coords {
-                let [new_x, new_y, new_z] = new_coord;
-                // If fill escapes subchunk, add escaping face to group
-                if new_x < 0 {
-                    current_group_faces.add_dir(AxisDirection::West);
-                } else if new_x >= SUBCHUNK_AXIS_LEN as i8 {
-                    current_group_faces.add_dir(AxisDirection::East);
-                } else if new_y < 0 {
-                    current_group_faces.add_dir(AxisDirection::Down);
-                } else if new_y >= SUBCHUNK_AXIS_LEN as i8 {
-                    current_group_faces.add_dir(AxisDirection::Up);
-                } else if new_z < 0 {
-                    current_group_faces.add_dir(AxisDirection::North);
-                } else if new_z >= SUBCHUNK_AXIS_LEN as i8 {
-                    current_group_faces.add_dir(AxisDirection::South);
-                } else if unchecked_blocks.contains(coords_to_bit_idx(new_coord)) {
-                    queue.insert(new_coord);
-                }
-            }
-        }
-        group_faces.push(current_group_faces);
-        // Add connected faces for each group to subchunk connectivity
-        let mut subchunk_connectivity = SubchunkConnectivity::empty();
-        for face_set in group_faces {
-            let directions = face_set.get_directions();
-            for (face_1, face_1_in_set) in directions {
-                if !face_1_in_set {
-                    continue;
-                }
-                for (face_2, face_2_in_set) in directions {
-                    if !face_2_in_set {
-                        continue;
-                    }
-                    subchunk_connectivity.add_connection(&face_1, &face_2);
-                }
-            }
-        }
-        subchunk_connectivity
+    let Some(connectivity) = crate::graphics::chunk::process_subchunk_models(
+        block_registry,
+        model_registry,
+        raw_chunks,
+        subchunk_coords,
+        |model_processing_args| {
+            let crate::graphics::chunk::ModelProcessingArgs {
+                model_registry,
+                chunk,
+                block_opacity,
+                face_cull_map,
+                face_light_map,
+                tint_color,
+                subchunk_xyz,
+                global_xyz,
+                xyz,
+                model_idx,
+            } = model_processing_args;
+            process_subchunk_model(
+                &mut block_faces,
+                &mut tinted_block_faces,
+                &mut custom_block_faces,
+                model_registry,
+                chunk,
+                block_opacity,
+                face_cull_map,
+                face_light_map,
+                tint_color,
+                subchunk_xyz,
+                global_xyz,
+                xyz,
+                model_idx,
+            );
+        },
+    ) else {
+        // Skip subchunk if `process_subchunk_models` returns that it's invisible.
+        return;
     };
     let start_coords = [
         SUBCHUNK_AXIS_LEN_I32 * subchunk_x,

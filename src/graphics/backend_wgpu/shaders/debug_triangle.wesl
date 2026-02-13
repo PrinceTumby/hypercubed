@@ -1,5 +1,4 @@
-@group(0) @binding(0)
-var<uniform> view_matrix: mat4x4<f32>;
+import package::common::render_info;
 
 struct InstanceInput {
     @builtin(vertex_index) index: u32,
@@ -30,7 +29,7 @@ fn vs_main(in: InstanceInput) -> VertexOutput {
             vertex_pos = in.p3;
         }
     }
-    var pos = view_matrix * vec4(vertex_pos, 1.0);
+    var pos = render_info.view_matrix * vec4(vertex_pos, 1.0);
     // `ignore_depth` flag.
     if (in.flags & 0x1u) != 0u {
         pos.z = sign(pos.z);

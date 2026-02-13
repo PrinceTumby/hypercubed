@@ -17,10 +17,13 @@ pub use vulkano::acceleration_structure::{
     BuildAccelerationStructureMode as VulkanBuildAccelerationStructureMode,
     GeometryFlags as VulkanGeometryFlags, GeometryInstanceFlags as VulkanGeometryInstanceFlags,
 };
+pub use vulkano::buffer::view::{
+    BufferView as VulkanBufferView, BufferViewCreateInfo as VulkanBufferViewCreateInfo,
+};
 pub use vulkano::buffer::{
-    Buffer as VulkanBuffer, BufferCreateInfo as VulkanBufferCreateInfo,
-    BufferUsage as VulkanBufferUsage, IndexBuffer as VulkanIndexBuffer,
-    RawBuffer as VulkanRawBuffer, Subbuffer as VulkanSubbuffer,
+    Buffer as VulkanBuffer, BufferCreateFlags as VulkanBufferCreateFlags,
+    BufferCreateInfo as VulkanBufferCreateInfo, BufferUsage as VulkanBufferUsage,
+    IndexBuffer as VulkanIndexBuffer, RawBuffer as VulkanRawBuffer, Subbuffer as VulkanSubbuffer,
 };
 pub use vulkano::command_buffer::allocator::{
     CommandBufferAllocator as VulkanCommandBufferAllocator,
@@ -246,20 +249,73 @@ macro_rules! vulkan_vertex_attributes {
     }};
 }
 
-// TODO: Send a pull request to vulkano about Buffer::new_slice. I think it's pretty confusing that
-// it creates a buffer with `len` bytes, rather than `size_of::<T> * len` bytes.
-
-// FIXME: Delete me! If this works!
-
-/// Creates a new uninitialized buffer for a slice.
-/// Contains enough space to store `len` items of `T`.
-pub fn vulkan_new_buffer_slice<T: vulkano::buffer::BufferContents>(
-    allocator: &std::sync::Arc<dyn VulkanMemoryAllocator>,
+/// Creates a new buffer, and writes all elements of `iter` into it using a temporary CPU staging
+/// buffer.
+///
+/// This is not particularly efficient, so is best used for long-lived GPU buffers.
+///
+/// [`VulkanBufferUsage::TRANSFER_DST`] will be automatically added to `create_info.usage`.
+pub fn vulkan_buffer_from_iter_staged<T, I>(
+    queue: std::sync::Arc<VulkanQueue>,
+    command_buffer_allocator: std::sync::Arc<dyn VulkanCommandBufferAllocator>,
+    memory_allocator: &std::sync::Arc<dyn VulkanMemoryAllocator>,
     create_info: &VulkanBufferCreateInfo,
     allocation_info: &VulkanAllocationCreateInfo,
-    num_items: VulkanDeviceSize,
-) -> Result<VulkanSubbuffer<[T]>, VulkanValidated<vulkano::buffer::AllocateBufferError>> {
-    VulkanBuffer::new_slice(allocator, create_info, allocation_info, num_items)
+    iter: I,
+) -> anyhow::Result<VulkanSubbuffer<[T]>>
+where
+    T: vulkano::buffer::BufferContents,
+    I: IntoIterator<Item = T>,
+    I::IntoIter: ExactSizeIterator,
+{
+    use anyhow::Context;
+    // Create temporary staging buffer with our data.
+    let staging_buffer: VulkanSubbuffer<[T]> = VulkanBuffer::from_iter(
+        memory_allocator,
+        &VulkanBufferCreateInfo {
+            usage: VulkanBufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        &VulkanAllocationCreateInfo {
+            memory_type_filter: VulkanMemoryTypeFilter::PREFER_HOST
+                | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        iter,
+    )
+    .context("Error while creating temporary staging buffer")?;
+    // Create final buffer to be returned.
+    let buffer: VulkanSubbuffer<[T]> = VulkanBuffer::new_slice(
+        memory_allocator,
+        &VulkanBufferCreateInfo {
+            usage: create_info.usage | VulkanBufferUsage::TRANSFER_DST,
+            ..*create_info
+        },
+        allocation_info,
+        staging_buffer.len(),
+    )
+    .context("Error while creating return buffer")?;
+    // Queue a copy from the staging buffer to the device buffer.
+    let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
+        command_buffer_allocator,
+        queue.queue_family_index(),
+        VulkanCommandBufferUsage::OneTimeSubmit,
+    )
+    .context("Error while creating command buffer builder")?;
+    command_buffer
+        .copy_buffer(VulkanCopyBufferInfoTyped::new(
+            staging_buffer,
+            buffer.clone(),
+        ))
+        .context("Error while recording buffer copy command")?;
+    command_buffer
+        .build()
+        .context("Error while building copy command buffer")?
+        .execute(queue)
+        .context("Error while executing copy command buffer on queue")?
+        .flush()
+        .context("Error while flushing copy command buffer future")?;
+    Ok(buffer)
 }
 
 /// Creates a new uninitialized buffer for a slice, with a specified alignment for the device

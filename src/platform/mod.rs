@@ -10,18 +10,18 @@ cfg_if::cfg_if! {
     }
 }
 
-pub fn load_resource_data() -> anyhow::Result<resources::block::ResourceData> {
+pub fn load_resource_data() -> anyhow::Result<resources::GameResourceData> {
     cfg_if::cfg_if! {
         if #[cfg(feature = "use_embedded_cache")] {
             Ok(extract_embedded_resource_data_cache())
         } else {
-            resources::block::load_vanilla_resource_data()
+            resources::GameResourceData::load_vanilla_data()
         }
     }
 }
 
 #[cfg(feature = "use_embedded_cache")]
-fn extract_embedded_resource_data_cache() -> resources::block::ResourceData {
+fn extract_embedded_resource_data_cache() -> resources::GameResourceData {
     // FIXME: Fix up old implementation of this, current one uses too much memory.
     static EMBEDDED_CACHE_COMPRESSED_BYTES: &[u8] =
         include_bytes!(concat!(env!("OUT_DIR"), "/embedded_cache.postcard.zlib"));

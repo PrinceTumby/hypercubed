@@ -1,5 +1,4 @@
-@group(0) @binding(0)
-var<uniform> view_matrix: mat4x4<f32>;
+import package::common::render_info;
 
 struct InstanceInput {
     @location(0) pos: vec3<f32>,
@@ -26,7 +25,7 @@ fn vs_main(
     in: InstanceInput,
 ) -> VertexOutput {
     var out: VertexOutput;
-    var centre_pos = view_matrix * vec4(in.pos, 1.0);
+    var centre_pos = render_info.view_matrix * vec4(in.pos, 1.0);
     // `ignore_depth` flag.
     if (in.flags & 0x1u) != 0u {
         centre_pos.z = sign(centre_pos.z);

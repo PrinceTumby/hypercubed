@@ -10,7 +10,7 @@ pub struct VertexOutput {
 #[spirv(vertex)]
 pub fn vertex(
     // Bindings
-    #[spirv(uniform, descriptor_set = 0, binding = 0)] screen_size: &Vec2,
+    #[spirv(uniform, descriptor_set = 0, binding = 0)] render_info: &crate::RenderInfo,
     // Inputs
     pos: Vec2,
     uvs: Vec2,
@@ -19,7 +19,7 @@ pub fn vertex(
     #[spirv(position)] output_pos: &mut Vec4,
     output_data: &mut VertexOutput,
 ) {
-    let screen_pos = pos / *screen_size;
+    let screen_pos = pos * render_info.recip_screen_size;
     *output_pos = vec4(screen_pos.x * 2.0 - 1.0, screen_pos.y * 2.0 - 1.0, 0.0, 1.0);
     *output_data = VertexOutput { uvs, colour };
 }

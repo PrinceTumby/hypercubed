@@ -2,6 +2,7 @@
 
 pub mod aabb;
 pub mod block;
+pub mod environment;
 pub mod identifier;
 #[cfg(feature = "std")]
 pub mod manager;
@@ -9,14 +10,38 @@ pub mod texture;
 
 pub use identifier::{Atom as IdentifierAtom, Identifier, ParseIdentifierError};
 
+use anyhow::Context;
 use bimap::BiMap;
 use portable_std::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize)]
+pub struct GameResourceData {
+    pub block_data: block::ResourceData,
+    pub environment_data: environment::ResourceData,
+}
+
+#[cfg(feature = "std")]
+impl GameResourceData {
+    /// Loads the vanilla game data from either a vanilla client `minecraft.jar` file, or from an
+    /// extracted `assets`.
+    /// Can be used either to load the game data at run time, or from a build script to then embed
+    /// the data at compile time.
+    #[cfg(feature = "std")]
+    pub fn load_vanilla_data() -> anyhow::Result<GameResourceData> {
+        let block_data = block::ResourceData::load_vanilla_data()
+            .context("Error while loading block resource data")?;
+        let environment_data = environment::ResourceData::load_vanilla_data()
+            .context("Error while loading environment resource data")?;
+        Ok(Self {
+            block_data,
+            environment_data,
+        })
+    }
+}
+
 #[repr(transparent)]
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RegistryIndex(u16);
 
 #[derive(Default, Serialize, Deserialize)]

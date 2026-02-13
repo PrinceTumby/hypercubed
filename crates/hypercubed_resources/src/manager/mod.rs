@@ -11,15 +11,17 @@ use std::path::PathBuf;
 use std::sync::RwLock;
 use zip::ZipArchive;
 
+// TODO: Move this whole system from global functions and statics to a `Manager` struct.
+
 pub fn get_resource_file(
-    resource_type: &ResourceType,
+    resource_type: ResourceType,
     identifier: &Identifier,
 ) -> anyhow::Result<Cow<'static, [u8]>> {
     let overlay_set = GLOBAL_OVERLAY_SET.read().unwrap();
     let set = match resource_type {
-        &ResourceType::Blockstate => &overlay_set.blockstates,
-        &ResourceType::Model => &overlay_set.models,
-        &ResourceType::Texture | &ResourceType::TextureMeta => &overlay_set.textures,
+        ResourceType::Blockstate => &overlay_set.blockstates,
+        ResourceType::Model => &overlay_set.models,
+        ResourceType::Texture | ResourceType::TextureMeta => &overlay_set.textures,
     };
     if let Some(&filesystem_index) = set.get(identifier) {
         let filesystem = &overlay_set.filesystems[filesystem_index];
@@ -31,18 +33,18 @@ pub fn get_resource_file(
         };
         path.push(identifier.namespace.as_ref());
         path.push(match resource_type {
-            &ResourceType::Blockstate => "blockstates",
-            &ResourceType::Model => "models",
-            &ResourceType::Texture | &ResourceType::TextureMeta => "textures",
+            ResourceType::Blockstate => "blockstates",
+            ResourceType::Model => "models",
+            ResourceType::Texture | ResourceType::TextureMeta => "textures",
         });
         for segment in &identifier.path_prefix_segments {
             path.push(segment.as_ref());
         }
         path.push(identifier.path_name.as_ref());
         path.set_extension(match resource_type {
-            &ResourceType::Blockstate | &ResourceType::Model => "json",
-            &ResourceType::Texture => "png",
-            &ResourceType::TextureMeta => "png.mcmeta",
+            ResourceType::Blockstate | ResourceType::Model => "json",
+            ResourceType::Texture => "png",
+            ResourceType::TextureMeta => "png.mcmeta",
         });
         match &*MAIN_FILESYSTEM {
             MainFilesystem::JarFile(zip_archive) => {
@@ -107,7 +109,7 @@ lazy_static! {
 trait Filesystem: Send + Sync {
     fn get(
         &self,
-        resource_type: &ResourceType,
+        resource_type: ResourceType,
         identifier: &Identifier,
     ) -> anyhow::Result<Cow<'static, [u8]>>;
 }

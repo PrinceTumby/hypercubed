@@ -14,6 +14,34 @@ mod std_imports {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RawTexture {
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8 format.
+    pub texture_bytes: Box<[u8]>,
+}
+
+#[cfg(feature = "std")]
+impl RawTexture {
+    pub fn from_image(img: RgbaImage) -> Self {
+        Self {
+            width: img.width(),
+            height: img.height(),
+            texture_bytes: img.into_vec().into_boxed_slice(),
+        }
+    }
+
+    pub fn load_from_resource(identifier: &Identifier) -> anyhow::Result<Self> {
+        let texture_bytes = get_resource_file(ResourceType::Texture, identifier)
+            .with_context(|| format!("Failed to read raw image texture data for {identifier:?}"))?;
+        let texture = image::load_from_memory_with_format(&texture_bytes, ImageFormat::Png)
+            .with_context(|| format!("Failed to parse image texture for {identifier:?}"))?
+            .into_rgba8();
+        Ok(Self::from_image(texture))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Atlas {
     pub width: u32,
     pub height: u32,
@@ -37,7 +65,7 @@ impl core::ops::Index<(u32, u32)> for Atlas {
 #[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 pub struct AtlasBuilder {
-    pub texture: RgbaImage,
+    texture: RgbaImage,
     square_length: u16,
     usage_bitmap: UsageBitmap2d,
     stored_textures: FastHashMap<Identifier, TextureInfo>,
@@ -54,28 +82,29 @@ pub struct TextureInfo {
 pub enum StitchError {
     #[error("invalid texture size")]
     InvalidTextureSize,
-    #[error("out of space")]
+    #[error("error during expansion - `{0}`")]
+    ExpandError(ImageError),
+    #[error("out of texture space")]
     OutOfSpace,
-    #[error("image error: `{0}`")]
+    #[error("image error - `{0}`")]
     ImageError(#[from] ImageError),
 }
 
 #[cfg(feature = "std")]
 impl AtlasBuilder {
-    pub fn new(pixel_width: u32, pixel_height: u32, square_length: u16) -> Self {
-        assert!(pixel_width < 65536);
-        assert!(pixel_height < 65536);
-        assert_eq!(pixel_width % square_length as u32, 0);
-        assert_eq!(pixel_height % square_length as u32, 0);
-        assert_eq!(65536 % pixel_width, 0);
-        assert_eq!(65536 % pixel_height, 0);
+    pub const MAX_DIM: u32 = 32768;
+
+    pub fn new(square_length: u16) -> Self {
+        assert!(square_length.is_power_of_two());
+        let initial_pixel_dim = square_length as u32 * 8;
+        assert!(initial_pixel_dim <= Self::MAX_DIM);
+        let initial_usage_bitmap_dim: u16 = (initial_pixel_dim / square_length as u32)
+            .try_into()
+            .unwrap();
         Self {
-            texture: RgbaImage::new(pixel_width, pixel_height),
+            texture: RgbaImage::new(initial_pixel_dim, initial_pixel_dim),
             square_length,
-            usage_bitmap: UsageBitmap2d::new(
-                (pixel_width / square_length as u32).try_into().unwrap(),
-                (pixel_height / square_length as u32).try_into().unwrap(),
-            ),
+            usage_bitmap: UsageBitmap2d::new(initial_usage_bitmap_dim, initial_usage_bitmap_dim),
             stored_textures: FastHashMap::new(),
         }
     }
@@ -85,19 +114,19 @@ impl AtlasBuilder {
         self.square_length
     }
 
-    pub fn get_or_load_texture(&mut self, location: &Identifier) -> anyhow::Result<TextureInfo> {
-        if let Some(&texture_info) = self.stored_textures.get(location) {
+    pub fn get_or_load_texture(&mut self, identifier: &Identifier) -> anyhow::Result<TextureInfo> {
+        if let Some(&texture_info) = self.stored_textures.get(identifier) {
             Ok(texture_info)
         } else {
             let texture_bytes =
-                get_resource_file(&ResourceType::Texture, location).with_context(|| {
-                    format!("Failed to read raw image texture data for {location:?}")
+                get_resource_file(ResourceType::Texture, identifier).with_context(|| {
+                    format!("Failed to read raw image texture data for {identifier:?}")
                 })?;
             let texture = image::load_from_memory_with_format(&texture_bytes, ImageFormat::Png)
-                .with_context(|| format!("Failed to parse image texture for {location:?}"))?
+                .with_context(|| format!("Failed to parse image texture for {identifier:?}"))?
                 .into_rgba8();
             let texture_info = self.stitch_in(&texture)?;
-            let animation_bytes = get_resource_file(&ResourceType::TextureMeta, location);
+            let animation_bytes = get_resource_file(ResourceType::TextureMeta, identifier);
             if let Ok(animation_bytes) = animation_bytes {
                 #[expect(unused)]
                 #[derive(Clone, serde::Deserialize)]
@@ -118,7 +147,7 @@ impl AtlasBuilder {
                 }
                 let _info =
                     serde_json::from_slice::<TextureMeta>(&animation_bytes).with_context(|| {
-                        format!("Failed to parse texture meta info for {location:?}")
+                        format!("Failed to parse texture meta info for {identifier:?}")
                     })?;
                 // TODO: Support texture animation
                 let old_dims = texture_info.space_dims;
@@ -139,38 +168,61 @@ impl AtlasBuilder {
                     }
                 };
                 self.stored_textures
-                    .insert(location.clone(), new_texture_info);
+                    .insert(identifier.clone(), new_texture_info);
                 Ok(new_texture_info)
             } else {
-                self.stored_textures.insert(location.clone(), texture_info);
+                self.stored_textures
+                    .insert(identifier.clone(), texture_info);
                 Ok(texture_info)
             }
         }
     }
 
-    /// Stitches a texture into the atlas, returning UV fractions `[1/U, 1/V]`
+    /// Stitches a new texture into the atlas.
+    /// Attempts to expand the atlas if a suitable space could not be found.
     fn stitch_in<O: GenericImageView<Pixel = <RgbaImage as GenericImageView>::Pixel>>(
         &mut self,
         texture: &O,
     ) -> Result<TextureInfo, StitchError> {
         let texture_width: u16 = texture.width().try_into().unwrap();
         let texture_height: u16 = texture.height().try_into().unwrap();
-        if texture.width() > self.texture.width()
-            || !texture_width.is_multiple_of(self.square_length)
-        {
-            return Err(StitchError::InvalidTextureSize);
-        }
-        if texture.height() > self.texture.height()
+        if !texture_width.is_multiple_of(self.square_length)
             || !texture_height.is_multiple_of(self.square_length)
         {
             return Err(StitchError::InvalidTextureSize);
         }
         let space_width = texture_width / self.square_length;
         let space_height = texture_height / self.square_length;
-        let (space_x, space_y) = self
-            .usage_bitmap
-            .reserve_space(space_width, space_height)
-            .ok_or(StitchError::OutOfSpace)?;
+        // Find a space, or repeatedly expand until we can find a space.
+        let (space_x, space_y) = loop {
+            if let Some((space_x, space_y)) = self
+                .usage_bitmap
+                .try_reserve_space(space_width, space_height)
+            {
+                break (space_x, space_y);
+            };
+            // Double size, height before width.
+            // We expand height first as a number of animated textures use vertically stacked
+            // textures.
+            let (old_width, old_height) = self.texture.dimensions();
+            let (new_width, new_height) = if old_width < old_height {
+                (old_width * 2, old_height)
+            } else {
+                (old_width, old_height * 2)
+            };
+            if new_width > Self::MAX_DIM || new_height > Self::MAX_DIM {
+                return Err(StitchError::OutOfSpace);
+            }
+            let mut new_texture = RgbaImage::new(new_width, new_height);
+            new_texture
+                .copy_from(&self.texture, 0, 0)
+                .map_err(StitchError::ExpandError)?;
+            self.texture = new_texture;
+            self.usage_bitmap.expand(
+                (new_width / self.square_length as u32).try_into().unwrap(),
+                (new_height / self.square_length as u32).try_into().unwrap(),
+            );
+        };
         let (start_x, start_y) = (space_x * self.square_length, space_y * self.square_length);
         let end_x = start_x + texture_width;
         let end_y = start_y + texture_height;
@@ -204,8 +256,14 @@ struct UsageBitmap2d {
 impl UsageBitmap2d {
     pub fn new(width: u16, height: u16) -> Self {
         // Currently only works with multiple of 8 dimensions
-        assert_eq!(width % 8, 0);
-        assert_eq!(height % 8, 0);
+        assert!(
+            width.is_multiple_of(8),
+            "usage bitmap create width {width} is not a multiple of 8"
+        );
+        assert!(
+            height.is_multiple_of(8),
+            "usage bitmap create height {height} is not a multiple of 8"
+        );
         Self {
             bytes: vec![0; (width as usize / 8) * height as usize],
             width,
@@ -213,10 +271,30 @@ impl UsageBitmap2d {
         }
     }
 
-    pub fn reserve_space(&mut self, width: u16, height: u16) -> Option<(u16, u16)> {
-        assert!(0 < width && width <= self.width);
-        assert!(0 < height && height <= self.height);
-        // Specialize strategy based on space dimensions
+    pub fn expand(&mut self, new_width: u16, new_height: u16) {
+        assert!(new_width.is_multiple_of(8));
+        assert!(new_height.is_multiple_of(8));
+        assert!(new_width >= self.width);
+        assert!(new_height >= self.height);
+        let mut new_self = Self::new(new_width, new_height);
+        // Copy usage info to new bitmap.
+        for y in 0..self.height {
+            for x in 0..self.width {
+                new_self.set(x, y, self.get(x, y));
+            }
+        }
+        *self = new_self;
+    }
+
+    pub fn try_reserve_space(&mut self, width: u16, height: u16) -> Option<(u16, u16)> {
+        assert!(0 < width);
+        assert!(0 < height);
+        // If we're trying to reserve a space larger than our dimensions, then it's definitely not
+        // going to fit until we've expanded.
+        if width > self.width || height > self.height {
+            return None;
+        }
+        // Specialize strategy based on space dimensions.
         match (width, height) {
             (0, 0) => unreachable!(),
             (1, 1) => {
@@ -264,12 +342,11 @@ impl UsageBitmap2d {
                 self.set(start_coords.0 + 1, start_coords.1, true);
                 Some(start_coords)
             }
-            (_, 1) => todo!(),
             (_, _) => {
-                // Loop through all possible rectangles
+                // Loop through all possible rectangles.
                 for start_x in 0..self.width - width {
                     'outer: for start_y in 0..self.height - height {
-                        // Check each space in rectangle
+                        // Check each space in rectangle.
                         for rect_x in start_x..start_x + width {
                             for rect_y in start_y..start_y + height {
                                 if self.get(rect_x, rect_y) {
@@ -277,7 +354,7 @@ impl UsageBitmap2d {
                                 }
                             }
                         }
-                        // Found suitable rectangle, reserve and return coordinates
+                        // If we find a suitable rectangle, reserve and return coordinates.
                         for rect_x in start_x..start_x + width {
                             for rect_y in start_y..start_y + height {
                                 self.set(rect_x, rect_y, true);
@@ -286,21 +363,21 @@ impl UsageBitmap2d {
                         return Some((start_x, start_y));
                     }
                 }
-                // TODO: Resize automatically.
-                panic!("Out of texture atlas builder space!")
+                // Report failure if we couldn't find a free rectangle.
+                None
             }
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get(&self, x: u16, y: u16) -> bool {
         let byte = self.bytes[((y * self.width) / 8 + (x / 8)) as usize];
         let bit_idx = x % 8;
         byte & (1 << bit_idx) != 0
     }
 
-    /// Panics if the coordinates are out of range
-    #[inline]
+    /// Panics if the coordinates are out of range.
+    #[inline(always)]
     fn set(&mut self, x: u16, y: u16, value: bool) {
         let byte = &mut self.bytes[((y * self.width) / 8 + (x / 8)) as usize];
         let bit_idx = x % 8;

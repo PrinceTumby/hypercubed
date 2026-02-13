@@ -107,8 +107,8 @@ pub async fn login(
         }
         .write_packet_into(&mut write_stream, None)?,
         None => LoginStart {
-            username: "Sleepman",
-            player_uuid: Uuid::new_v3(&OFFLINE_PLAYER_NAMESPACE, b"Sleepman"),
+            username: "Hypercubed Player",
+            player_uuid: Uuid::new_v3(&OFFLINE_PLAYER_NAMESPACE, b"Hypercubed Player"),
         }
         .write_packet_into(&mut write_stream, None)?,
     }
