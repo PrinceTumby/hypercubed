@@ -6,8 +6,6 @@ pub mod lightmap;
 // Backends
 #[cfg(feature = "graphics_backend_opengl")]
 pub mod backend_opengl;
-#[cfg(feature = "graphics_backend_software")]
-pub mod backend_software;
 #[cfg(feature = "graphics_backend_vulkan")]
 pub mod backend_vulkan;
 #[cfg(feature = "graphics_backend_wgpu")]
@@ -19,7 +17,6 @@ pub mod backend_wgpu;
         feature = "platform_winit",
         not(any(
             feature = "graphics_backend_opengl",
-            feature = "graphics_backend_software",
             feature = "graphics_backend_vulkan",
             feature = "graphics_backend_wgpu",
         )),
@@ -43,12 +40,6 @@ pub enum SelectedGraphicsBackend {
         value(name = "opengl")
     )]
     OpenGL,
-    #[cfg(feature = "graphics_backend_software")]
-    #[cfg_attr(
-        any(feature = "platform_winit", feature = "platform_linux_drm"),
-        value(name = "software")
-    )]
-    Software,
     #[cfg(feature = "graphics_backend_vulkan")]
     #[cfg_attr(
         any(feature = "platform_winit", feature = "platform_linux_drm"),
@@ -73,8 +64,6 @@ impl Default for SelectedGraphicsBackend {
                 Self::OpenGL
             } else if #[cfg(feature = "graphics_backend_wgpu")] {
                 Self::Wgpu
-            } else if #[cfg(feature = "graphics_backend_software")] {
-                Self::Software
             }
         }
     }
@@ -85,8 +74,6 @@ impl core::fmt::Display for SelectedGraphicsBackend {
         let name = match *self {
             #[cfg(feature = "graphics_backend_opengl")]
             Self::OpenGL => "OpenGL",
-            #[cfg(feature = "graphics_backend_software")]
-            Self::Software => "Software",
             #[cfg(feature = "graphics_backend_vulkan")]
             Self::Vulkan => "Vulkan",
             #[cfg(feature = "graphics_backend_wgpu")]

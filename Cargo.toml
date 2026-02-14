@@ -87,8 +87,6 @@ default = [
     "graphics_backend_opengl",
     "graphics_backend_vulkan",
     "graphics_backend_wgpu",
-    # "graphics_subbackend_software_lb_simd_avx512",
-    # "graphics_subbackend_software_lb_simd_generic",
     # "embed_vanilla_cache",
     # "tracy",
 ]
@@ -173,27 +171,6 @@ graphics_backend_opengl = [
     "dep:glutin",
 ]
 
-graphics_backend_software = [
-    # Other features
-    "platform_winit",
-    "mimalloc",
-    # Dependencies
-    "dep:pixels",
-    "dep:rayon",
-]
-# Larrabee-style rasterisation using `std::simd`.
-graphics_subbackend_software_lb_simd_generic = [
-    # Other features
-    "graphics_backend_software",
-    # Dependencies
-    "dep:multiversion",
-]
-# Larrabee-style rasterisation using AVX-512.
-graphics_subbackend_software_lb_simd_avx512 = [
-    # Other features
-    "graphics_backend_software",
-]
-
 # Alternative platforms
 
 platform_winit = [
@@ -266,13 +243,11 @@ libseat = { version = "0.2", default-features = false, optional = true }
 log.workspace = true
 mimalloc = { version = "0.1", optional = true }
 miniz_oxide.workspace = true
-multiversion = { version = "0.8", optional = true }
 nalgebra.workspace = true
 nom = { version = "8", default-features = false, features = ["alloc"] }
 nom_locate = { version = "5", default-features = false, features = ["alloc"] }
 once_cell.workspace = true
 ordered-float = { version = "4.5", default-features = false }
-pixels = { version = "0.15", optional = true }
 pollster = { version = "0.3", optional = true }
 postcard.workspace = true
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
