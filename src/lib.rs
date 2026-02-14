@@ -10,10 +10,6 @@
 )]
 #![deny(clippy::alloc_instead_of_core)]
 #![cfg_attr(not(feature = "mini_std"), no_std)]
-#![cfg_attr(
-    feature = "graphics_subbackend_software_lb_simd_generic",
-    feature(portable_simd)
-)]
 
 #[cfg(not(any(feature = "mini_std", test)))]
 #[macro_use]
@@ -250,14 +246,6 @@ impl ApplicationHandler for App {
                         #[cfg(feature = "graphics_backend_opengl")]
                         SelectedGraphicsBackend::OpenGL => {
                             graphics::backend_opengl::GraphicsState::new(
-                                window.clone(),
-                                resource_data,
-                            )
-                            .unwrap()
-                        }
-                        #[cfg(feature = "graphics_backend_software")]
-                        SelectedGraphicsBackend::Software => {
-                            graphics::backend_software::GraphicsState::new(
                                 window.clone(),
                                 resource_data,
                             )
