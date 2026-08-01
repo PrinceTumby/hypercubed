@@ -10,7 +10,7 @@ pub use std::borrow::Cow;
 pub use std::collections::{BTreeMap, HashMap, VecDeque};
 pub use std::sync::{Arc, Mutex, mpsc};
 
-// TODO: Consider switching to `foldhash`.
+// TODO: Switch to using `rapidhash`.
 pub use ahash::{AHashMap as FastHashMap, AHashSet as FastHashSet};
 pub use std::collections::hash_map::Entry as FastHashMapEntry;
 

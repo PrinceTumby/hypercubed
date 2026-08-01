@@ -111,8 +111,8 @@ pub mod shader_modules {
     use std::sync::{Arc, Mutex};
     use vulkan_prelude::*;
 
-    // We have to do a little hacking here to get the embedded SPIR-V module to be u32 aligned, for the
-    // bytemuck slice cast.
+    // We have to do a little hacking here to get the embedded SPIR-V module to be u32 aligned, for
+    // the bytemuck slice cast.
 
     struct SpvAlignedBytes<Bytes: ?Sized> {
         _align: [u32; 0],
@@ -157,10 +157,33 @@ pub mod shader_modules {
                     );
                 }};
             }
+            macro_rules! raw_module {
+                ($name:literal) => {{
+                    static MODULE_BYTES: &'static SpvAlignedBytes<[u8]> = &SpvAlignedBytes {
+                        _align: [],
+                        bytes: *include_bytes!(concat!(
+                            "../",
+                            $name,
+                            ".spv",
+                        )),
+                    };
+                    map.insert(
+                        $name,
+                        MODULE_BYTES,
+                    );
+                }};
+            }
             module!("chunk", "block_face", "vertex");
             module!("chunk", "block_face", "fragment");
             module!("chunk", "tinted_block_face", "vertex");
             module!("chunk", "tinted_block_face", "fragment");
+            // Slang shaders, see note in `chunk` module.
+            raw_module!("block_face_vertex_bda");
+            raw_module!("block_face_fragment_bda");
+            raw_module!("tinted_block_face_vertex_bda");
+            raw_module!("tinted_block_face_fragment_bda");
+            raw_module!("custom_block_vertex_bda");
+            raw_module!("custom_block_fragment_bda");
             module!("chunk", "custom_block", "vertex");
             module!("chunk", "custom_block", "fragment");
             module!("sky", "sun", "vertex");
@@ -190,14 +213,16 @@ pub mod shader_modules {
             static ref LOADED_MODULES: Mutex<AHashMap<&'static str, Arc<VulkanShaderModule>>> =
                 Mutex::new(AHashMap::new());
         }
-        let vk_entry_point = LOADED_MODULES
+        LOADED_MODULES
             .lock()
             .unwrap()
             .entry(entry_point)
             .or_insert_with(|| unsafe {
                 let raw_module = RAW_MODULES
                     .get(entry_point)
-                    .with_context(|| format!("Failed to find shader entry point \"{entry_point}\""))
+                    .with_context(|| {
+                        format!("Failed to find SPIR-V entry point module \"{entry_point}\"")
+                    })
                     .unwrap();
                 VulkanShaderModule::new(
                     device,
@@ -208,11 +233,11 @@ pub mod shader_modules {
                 )
                 .expect("Failed to load SPIR-V shader module")
             })
-            .entry_point(entry_point);
-        match vk_entry_point {
-            Some(vk_entry_point) => vk_entry_point,
-            None => panic!("Shader entry point {entry_point} wasn't found"),
-        }
+            .entry_point(entry_point)
+            .with_context(|| {
+                format!("Failed to find entry point \"{entry_point}\" in SPIR-V module")
+            })
+            .unwrap()
     }
 
     pub fn shader_stage_from_entry_point<'a>(

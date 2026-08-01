@@ -15,6 +15,8 @@
 #[macro_use]
 extern crate alloc;
 
+// TODO: Entity rendering!
+
 // #[cfg(not(feature = "mini_std"))]
 // extern crate portable_std as std;
 // TODO: Try this (^), to see if we can simplify imports in crates.

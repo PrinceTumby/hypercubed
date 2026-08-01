@@ -48,13 +48,12 @@ pub fn vertex(
         in_light_level_pairs_2_and_packed_fields.y,
         in_light_level_pairs_2_and_packed_fields.z,
     ];
-    // Position
+    // Position.
     let global_pos = in_vertex_pos + in_instance_pos + Vec3::splat(0.5);
-    *out_pos =
-        Vec4::new(1.0, -1.0, 1.0, 1.0) * (render_info.view_matrix * Vec4::from((global_pos, 1.0)));
-    // UVs
+    *out_pos = Vec4::new(1.0, -1.0, 1.0, 1.0) * (render_info.view_matrix * global_pos.extend(1.0));
+    // UVs.
     *out_uv = in_uv.as_vec2() * render_info.recip_block_item_atlas_size;
-    // Light RGB
+    // Light RGB.
     // Includes block lighting, as well as some basic per-face directional shading.
     {
         // Block lighting, based on surrounding light levels.
@@ -86,7 +85,7 @@ pub fn vertex(
         let sky_light_level = closest_light_pair & 0xF;
         let block_light_level = closest_light_pair >> 4;
         let lightmap_rgb = lightmap
-            .fetch((sky_light_level as u32 * 16) + block_light_level as u32)
+            .fetch((sky_light_level * 16) + block_light_level)
             .xyz();
         // Tint.
         #[cfg(target_arch = "spirv")]

@@ -3,6 +3,16 @@
 #[cfg(not(feature = "full_std"))]
 compile_error!("The Vulkan backend requires full use of `std`");
 
+// TODO: Switch to using `gl_DrawID` and per-draw-call chunk information buffers, so we can stop
+//       using vertex buffer managers and save some VRAM.
+// - Maybe, depending on how big chunk info is, we still have persistent buffers to store chunk
+//   info?
+//   - Can just be a simple slotted map, as each subchunk face group only has a single bit of draw
+//     info, meaning we don't need complicated area allocation.
+//   - Rendering just pushes a buffer of indices that's used as indirection for `gl_DrawID`.
+// - Other alternative (which we can also use in wgpu) is that we just vertex pull using
+//   `vertex_index / 4`, so we don't have to duplicate info 4 times.
+
 pub mod chunk;
 pub mod debug;
 pub mod egui_renderer;
@@ -16,14 +26,10 @@ use crate::graphics::lightmap::{RawLightmapTexture, generate_lightmap_texture};
 use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
 use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::{Context, anyhow};
-use chunk::{
-    block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
-    custom_block::CustomBlockInstanceBufferManager,
-    tinted_block_face::{TintedBlockFaceInstanceBufferManager, TintedBlockFaceVertexBufferManager},
-};
 use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
 use resources::GameResourceData;
 use resources::block::model::Tint;
+use shader_exports::chunk::types::SubchunkFaceGroupInfo;
 use shader_exports::{CommonDescriptorSetIdxs, RawRenderInfo};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -58,11 +64,6 @@ pub struct SubchunkDataStorage {
     //       coordinate. Consider changing to actually be the Y coordinate.
     pub subchunks: FastHashMap<[i32; 3], chunk::Subchunk>,
     pub loaded_chunks: FastHashSet<[i32; 2]>,
-    pub block_face_vertex: BlockFaceVertexBufferManager,
-    pub block_face_instance: BlockFaceInstanceBufferManager,
-    pub tinted_block_face_vertex: TintedBlockFaceVertexBufferManager,
-    pub tinted_block_face_instance: TintedBlockFaceInstanceBufferManager,
-    pub custom_block_instance: CustomBlockInstanceBufferManager,
 }
 
 impl SubchunkDataStorage {
@@ -72,16 +73,6 @@ impl SubchunkDataStorage {
             return;
         };
         subchunk_entry.remove();
-        // Free buffer areas.
-        self.block_face_vertex.free_subchunk_areas(subchunk_coords);
-        self.block_face_instance
-            .free_subchunk_areas(subchunk_coords);
-        self.tinted_block_face_vertex
-            .free_subchunk_areas(subchunk_coords);
-        self.tinted_block_face_instance
-            .free_subchunk_areas(subchunk_coords);
-        self.custom_block_instance
-            .free_subchunk_areas(subchunk_coords);
     }
 }
 
@@ -115,8 +106,8 @@ pub struct GraphicsState {
     pub lightmap_buffer: VulkanSubbuffer<RawLightmapTexture>,
     pub environment_state: EnvironmentGraphicsState,
     pub subchunk_data_storage: SubchunkDataStorage,
-    pub pending_subchunk_tx: Sender<Option<chunk::RawSubchunk>>,
-    pub pending_subchunk_rx: Receiver<Option<chunk::RawSubchunk>>,
+    pub pending_subchunk_tx: Sender<Option<([i32; 3], chunk::Subchunk)>>,
+    pub pending_subchunk_rx: Receiver<Option<([i32; 3], chunk::Subchunk)>>,
     pub current_dispatch_id_counter: u64,
     pub num_pending_subchunks: usize,
     pub sky_extrapolation_state: SkyExtrapolationState,
@@ -153,8 +144,10 @@ impl GraphicsBackend for GraphicsState {
             ..VulkanDeviceExtensions::empty()
         };
         let required_features = VulkanDeviceFeatures {
-            vulkan_memory_model: true,
+            buffer_device_address: true,
             multi_draw_indirect: true,
+            shader_draw_parameters: true,
+            vulkan_memory_model: true,
             ..VulkanDeviceFeatures::empty()
         };
         let (physical_device, render_queue_family_index, compute_queue_family_index) = instance
@@ -549,10 +542,16 @@ impl GraphicsBackend for GraphicsState {
             &device,
             &VulkanPipelineLayoutCreateInfo {
                 set_layouts: &[&common_descriptor_set_layout],
+                // Chunk rendering pipelines want a draw call info buffer address pushed in.
+                push_constant_ranges: &[VulkanPushConstantRange {
+                    stages: VulkanShaderStages::VERTEX,
+                    offset: 0,
+                    size: 8,
+                }],
                 ..Default::default()
             },
         )
-        .context("Error while creating block graphics pipeline layout")?;
+        .context("Error while creating generic pipeline layout")?;
         let block_graphics_pipeline = chunk::block_face::create_graphics_pipeline(
             &device,
             &generic_pipeline_layout,
@@ -608,20 +607,6 @@ impl GraphicsBackend for GraphicsState {
                 .map(|&[p1, p2, p3, p4]| [p1, p2, p4, p3].map(environment::sky::StarVertex)),
         )
         .context("Error while creating star quads buffer")?;
-        // Buffer managers.
-        let block_face_vertex_buffer_manager = BlockFaceVertexBufferManager::new(&device)
-            .context("Error while creating block face vertex buffer manager")?;
-        let block_face_instance_buffer_manager = BlockFaceInstanceBufferManager::new(&device)
-            .context("Error while creating block face instance buffer manager")?;
-        let tinted_block_face_vertex_buffer_manager =
-            TintedBlockFaceVertexBufferManager::new(&device)
-                .context("Error while creating tinted block face vertex buffer manager")?;
-        let tinted_block_face_instance_buffer_manager =
-            TintedBlockFaceInstanceBufferManager::new(&device)
-                .context("Error while creating tinted block face instance buffer manager")?;
-        let custom_block_instance_buffer_manager =
-            CustomBlockInstanceBufferManager::new(&device)
-                .context("Error while creating custom block instance buffer manager")?;
         // Debug pipelines.
         let debug_point_pipeline = debug::point::create_graphics_pipeline(
             &device,
@@ -682,11 +667,6 @@ impl GraphicsBackend for GraphicsState {
             subchunk_data_storage: SubchunkDataStorage {
                 subchunks: FastHashMap::new(),
                 loaded_chunks: FastHashSet::new(),
-                block_face_vertex: block_face_vertex_buffer_manager,
-                block_face_instance: block_face_instance_buffer_manager,
-                tinted_block_face_vertex: tinted_block_face_vertex_buffer_manager,
-                tinted_block_face_instance: tinted_block_face_instance_buffer_manager,
-                custom_block_instance: custom_block_instance_buffer_manager,
             },
             pending_subchunk_tx,
             pending_subchunk_rx,
@@ -784,15 +764,18 @@ impl GraphicsBackend for GraphicsState {
             let model_registry = self.resources.model_registry.clone();
             let raw_chunks = raw_chunks.clone();
             let pending_subchunk_tx = self.pending_subchunk_tx.clone();
+            let memory_allocator = self.resources.memory_allocator.clone();
             thread_pool.execute(move || {
                 chunk::process_subchunk(
                     &block_registry,
                     &model_registry,
                     &raw_chunks,
                     &pending_subchunk_tx,
+                    &(memory_allocator as Arc<_>),
                     subchunk_coords,
                     dispatch_id,
-                );
+                )
+                .expect("Error while processing subchunk");
             });
         }
     }
@@ -835,72 +818,36 @@ impl GraphicsBackend for GraphicsState {
         debug_triangles: &[DebugTriangle],
     ) -> anyhow::Result<Option<DebugOutput>> {
         let camera = &play_state.camera;
-        // Upload pending subchunks.
-        let mut subchunk_upload_semaphore: Option<VulkanSemaphore> = None;
-        let mut _subchunk_upload_command_buffer: Option<Arc<_>> = None;
+        // Add any subchunks that have now finished processing.
         if self.num_pending_subchunks > 0 {
-            let span = tracing::trace_span!("upload_pending_subchunks");
+            let span = tracing::trace_span!("add_pending_subchunks");
             let _enter = span.enter();
-            let mut command_buffer = VulkanAutoCommandBufferBuilder::primary(
-                self.resources.command_buffer_allocator.clone(),
-                self.resources.render_queue.queue_family_index(),
-                VulkanCommandBufferUsage::OneTimeSubmit,
-            )
-            .context("Error while creating subchunk upload command buffer builder")
-            .unwrap();
-            let mut subchunks_processed_this_frame: usize = 0;
-            for raw_subchunk in self
+            for maybe_subchunk in self
                 .pending_subchunk_rx
                 .try_iter()
                 .take(self.num_pending_subchunks)
             {
                 self.num_pending_subchunks -= 1;
-                let Some(raw_subchunk) = raw_subchunk else {
+                let Some((subchunk_coords, subchunk)) = maybe_subchunk else {
                     continue;
                 };
-                // Check that the raw subchunk is newer than the subchunk it's replacing, or that
-                // it's not replacing an old subchunk. If it's not, then skip it.
+                // Check that the subchunk is newer than the subchunk it's replacing, or that it's
+                // a brand new subchunk.
+                // If it's not, then skip it.
                 if self
                     .subchunk_data_storage
                     .subchunks
-                    .get(&raw_subchunk.subchunk_coords)
-                    .map(|subchunk| subchunk.dispatch_id > raw_subchunk.dispatch_id)
+                    .get(&subchunk_coords)
+                    .map(|old_subchunk| old_subchunk.dispatch_id > subchunk.dispatch_id)
                     .unwrap_or(false)
                 {
                     continue;
                 }
-                chunk::finalise_subchunk(
-                    &mut self.subchunk_data_storage,
-                    &mut command_buffer,
-                    raw_subchunk,
-                );
-                subchunks_processed_this_frame += 1;
-                if subchunks_processed_this_frame >= 16 {
-                    break;
-                }
+                // Remove old subchunk.
+                self.subchunk_data_storage.remove_subchunk(subchunk_coords);
+                // Add new subchunk.
+                self.subchunk_data_storage.subchunks.insert(subchunk_coords, subchunk);
             }
-            let built_command_buffer = command_buffer
-                .build()
-                .context("Error while building subchunk upload command buffer")?;
-            let semaphore = VulkanSemaphore::from_pool(&self.resources.device)
-                .context("Error while creating subchunk upload semaphore")?;
-            self.resources.render_queue.with(|mut queue_guard| unsafe {
-                queue_guard
-                    .submit(
-                        &[VulkanSubmitInfo {
-                            command_buffers: &[VulkanCommandBufferSubmitInfo::new(
-                                built_command_buffer.as_raw(),
-                            )],
-                            wait_semaphores: &[],
-                            signal_semaphores: &[VulkanSemaphoreSubmitInfo::new(&semaphore)],
-                            ..Default::default()
-                        }],
-                        None,
-                    )
-                    .unwrap();
-            });
-            subchunk_upload_semaphore = Some(semaphore);
-            _subchunk_upload_command_buffer = Some(built_command_buffer);
         }
         let subchunk_data_storage = &mut self.subchunk_data_storage;
         let pixels_per_point = egui_full_output.pixels_per_point;
@@ -1023,8 +970,11 @@ impl GraphicsBackend for GraphicsState {
             .unwrap();
         // Block rendering.
         let mut block_face_draw_commands_buffer = None;
+        let mut block_face_subchunk_face_groups_buffer = None;
         let mut tinted_block_face_draw_commands_buffer = None;
+        let mut tinted_block_face_subchunk_face_groups_buffer = None;
         let mut custom_block_draw_commands_buffer = None;
+        let mut custom_block_subchunk_instance_groups_buffer = None;
         let debug_output;
         {
             let camera_chunk_coords = {
@@ -1036,8 +986,11 @@ impl GraphicsBackend for GraphicsState {
                 [camera_x, camera_y, camera_z]
             };
             let mut block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
+            let mut block_face_subchunk_face_groups: Vec<SubchunkFaceGroupInfo> = Vec::new();
             let mut tinted_block_face_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
+            let mut tinted_block_face_subchunk_face_groups: Vec<SubchunkFaceGroupInfo> = Vec::new();
             let mut custom_block_draw_commands: Vec<VulkanDrawIndirectCommand> = Vec::new();
+            let mut custom_block_subchunk_instance_groups: Vec<u64> = Vec::new();
             debug_output = super::for_each_visible_subchunk(
                 camera,
                 &subchunk_data_storage.subchunks,
@@ -1058,36 +1011,72 @@ impl GraphicsBackend for GraphicsState {
                             continue;
                         }
                         // Base block faces.
-                        if subchunk.block_face_start_vertices[i] != u32::MAX {
+                        if subchunk.block_face_instance_groups[i].1 != 0 {
+                            let buffer = subchunk.block_face_instances_buffer.as_ref().unwrap();
+                            let buffer_offset = subchunk.block_face_instance_groups[i].0 as u64
+                                * core::mem::size_of::<chunk::block_face::Instance>() as u64;
                             block_face_draw_commands.push(VulkanDrawIndirectCommand {
                                 vertex_count: 4,
                                 instance_count: subchunk.block_face_instance_groups[i].1,
-                                first_vertex: subchunk.block_face_start_vertices[i],
-                                first_instance: subchunk.block_face_instance_groups[i].0,
+                                first_vertex: 0,
+                                first_instance: 0,
+                            });
+                            block_face_subchunk_face_groups.push(SubchunkFaceGroupInfo {
+                                buffer_address: buffer.address.get() + buffer_offset,
+                                subchunk_start_coords: subchunk.start_coords,
+                                face_matrix_index: i as u32,
                             });
                         }
                         // Tinted block faces.
-                        if subchunk.tinted_block_face_start_vertices[i] != u32::MAX {
+                        if subchunk.tinted_block_face_instance_groups[i].1 != 0 {
+                            let buffer = subchunk
+                                .tinted_block_face_instances_buffer
+                                .as_ref()
+                                .unwrap();
+                            let buffer_offset = subchunk.tinted_block_face_instance_groups[i].0
+                                as u64
+                                * core::mem::size_of::<chunk::tinted_block_face::Instance>() as u64;
                             tinted_block_face_draw_commands.push(VulkanDrawIndirectCommand {
                                 vertex_count: 4,
                                 instance_count: subchunk.tinted_block_face_instance_groups[i].1,
-                                first_vertex: subchunk.tinted_block_face_start_vertices[i],
-                                first_instance: subchunk.tinted_block_face_instance_groups[i].0,
+                                first_vertex: 0,
+                                first_instance: 0,
+                            });
+                            tinted_block_face_subchunk_face_groups.push(SubchunkFaceGroupInfo {
+                                buffer_address: buffer.address.get() + buffer_offset,
+                                subchunk_start_coords: subchunk.start_coords,
+                                face_matrix_index: i as u32,
                             });
                         }
                     }
                     // Custom blocks.
-                    for group in &subchunk.custom_block_groups {
-                        custom_block_draw_commands.push(VulkanDrawIndirectCommand {
-                            vertex_count: group.start_face_and_len[1] * 6,
-                            instance_count: group.start_instance_and_len[1],
-                            first_vertex: group.start_face_and_len[0] * 6,
-                            first_instance: group.start_instance_and_len[0],
-                        });
+                    if !subchunk.custom_block_groups.is_empty() {
+                        let buffer = subchunk
+                            .custom_block_instances_buffer
+                            .as_ref()
+                            .unwrap();
+                        for group in &subchunk.custom_block_groups {
+                            let buffer_offset = group.start_instance_and_len[0]
+                                as u64
+                                * core::mem::size_of::<chunk::custom_block::Instance>() as u64;
+                            custom_block_draw_commands.push(VulkanDrawIndirectCommand {
+                                vertex_count: group.start_face_and_len[1] * 6,
+                                instance_count: group.start_instance_and_len[1],
+                                first_vertex: group.start_face_and_len[0] * 6,
+                                first_instance: 0,
+                            });
+                            custom_block_subchunk_instance_groups.push(
+                                buffer.address.get() + buffer_offset
+                            );
+                        }
                     }
                 },
             );
             if !block_face_draw_commands.is_empty() {
+                assert_eq!(
+                    block_face_draw_commands.len(),
+                    block_face_subchunk_face_groups.len()
+                );
                 block_face_draw_commands_buffer = Some(
                     VulkanBuffer::from_iter(
                         &self.resources.memory_allocator,
@@ -1104,8 +1093,28 @@ impl GraphicsBackend for GraphicsState {
                     )
                     .context("Error while creating block face draw commands buffer")?,
                 );
+                block_face_subchunk_face_groups_buffer = Some(
+                    VulkanBuffer::from_iter(
+                        &self.resources.memory_allocator,
+                        &VulkanBufferCreateInfo {
+                            usage: VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                            ..Default::default()
+                        },
+                        &VulkanAllocationCreateInfo {
+                            memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                                | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                            ..Default::default()
+                        },
+                        block_face_subchunk_face_groups,
+                    )
+                    .context("Error while creating block face subchunk face groups buffer")?,
+                );
             }
             if !tinted_block_face_draw_commands.is_empty() {
+                assert_eq!(
+                    tinted_block_face_draw_commands.len(),
+                    tinted_block_face_subchunk_face_groups.len()
+                );
                 tinted_block_face_draw_commands_buffer = Some(
                     VulkanBuffer::from_iter(
                         &self.resources.memory_allocator,
@@ -1121,6 +1130,24 @@ impl GraphicsBackend for GraphicsState {
                         tinted_block_face_draw_commands,
                     )
                     .context("Error while creating tinted block face draw commands buffer")?,
+                );
+                tinted_block_face_subchunk_face_groups_buffer = Some(
+                    VulkanBuffer::from_iter(
+                        &self.resources.memory_allocator,
+                        &VulkanBufferCreateInfo {
+                            usage: VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                            ..Default::default()
+                        },
+                        &VulkanAllocationCreateInfo {
+                            memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                                | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                            ..Default::default()
+                        },
+                        tinted_block_face_subchunk_face_groups,
+                    )
+                    .context(
+                        "Error while creating tinted block face subchunk face groups buffer",
+                    )?,
                 );
             }
             if !custom_block_draw_commands.is_empty() {
@@ -1140,6 +1167,24 @@ impl GraphicsBackend for GraphicsState {
                     )
                     .context("Error while creating custom block draw commands buffer")?,
                 );
+                custom_block_subchunk_instance_groups_buffer = Some(
+                    VulkanBuffer::from_iter(
+                        &self.resources.memory_allocator,
+                        &VulkanBufferCreateInfo {
+                            usage: VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                            ..Default::default()
+                        },
+                        &VulkanAllocationCreateInfo {
+                            memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                                | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                            ..Default::default()
+                        },
+                        custom_block_subchunk_instance_groups,
+                    )
+                    .context(
+                        "Error while creating custom block subchunk instance groups buffer",
+                    )?,
+                );
             }
         }
         // Render subchunks.
@@ -1155,6 +1200,9 @@ impl GraphicsBackend for GraphicsState {
                 self.common_descriptor_set.clone(),
             )
             .unwrap()
+            // We need to set push constants even if nothing uses them, so just zero out.
+            .push_constants(self.generic_pipeline_layout.clone(), 0, 0u64)
+            .unwrap()
             .set_viewport(
                 0,
                 SmallVec::from(&[VulkanViewport {
@@ -1165,15 +1213,18 @@ impl GraphicsBackend for GraphicsState {
             .unwrap();
         // Draw basic block faces.
         if let Some(draw_commands_buffer) = block_face_draw_commands_buffer {
+            let subchunk_face_groups_buffer_device_address = block_face_subchunk_face_groups_buffer
+                .as_ref()
+                .unwrap()
+                .device_address()
+                .context("Error while getting basic face groups buffer device address")?;
             unsafe {
                 // Block graphics pipeline already bound, see above.
                 command_buffer
-                    .bind_vertex_buffers(
+                    .push_constants(
+                        self.generic_pipeline_layout.clone(),
                         0,
-                        (
-                            subchunk_data_storage.block_face_vertex.get_buffer(),
-                            subchunk_data_storage.block_face_instance.get_buffer(),
-                        ),
+                        subchunk_face_groups_buffer_device_address.get(),
                     )
                     .unwrap()
                     .draw_indirect(draw_commands_buffer)
@@ -1182,18 +1233,20 @@ impl GraphicsBackend for GraphicsState {
         }
         // Draw tinted block faces.
         if let Some(draw_commands_buffer) = tinted_block_face_draw_commands_buffer {
+            let subchunk_face_groups_buffer_device_address =
+                tinted_block_face_subchunk_face_groups_buffer
+                    .as_ref()
+                    .unwrap()
+                    .device_address()
+                    .context("Error while getting tinted face groups buffer device address")?;
             unsafe {
                 command_buffer
                     .bind_pipeline_graphics(self.tinted_block_graphics_pipeline.clone())
                     .unwrap()
-                    .bind_vertex_buffers(
+                    .push_constants(
+                        self.generic_pipeline_layout.clone(),
                         0,
-                        (
-                            subchunk_data_storage.tinted_block_face_vertex.get_buffer(),
-                            subchunk_data_storage
-                                .tinted_block_face_instance
-                                .get_buffer(),
-                        ),
+                        subchunk_face_groups_buffer_device_address.get(),
                     )
                     .unwrap()
                     .draw_indirect(draw_commands_buffer)
@@ -1202,13 +1255,20 @@ impl GraphicsBackend for GraphicsState {
         }
         // Draw custom blocks.
         if let Some(draw_commands_buffer) = custom_block_draw_commands_buffer {
+            let subchunk_instance_buffer_device_address =
+                custom_block_subchunk_instance_groups_buffer
+                    .as_ref()
+                    .unwrap()
+                    .device_address()
+                    .context("Error while getting tinted face groups buffer device address")?;
             unsafe {
                 command_buffer
                     .bind_pipeline_graphics(self.custom_block_graphics_pipeline.clone())
                     .unwrap()
-                    .bind_vertex_buffers(
+                    .push_constants(
+                        self.generic_pipeline_layout.clone(),
                         0,
-                        subchunk_data_storage.custom_block_instance.get_buffer(),
+                        subchunk_instance_buffer_device_address.get(),
                     )
                     .unwrap()
                     .draw_indirect(draw_commands_buffer)
@@ -1342,8 +1402,11 @@ impl GraphicsBackend for GraphicsState {
         }
         // Render egui UI.
         if let Some(egui_render_data) = egui_render_data {
-            self.egui_renderer
-                .render(&mut command_buffer, egui_render_data);
+            self.egui_renderer.render(
+                &mut command_buffer,
+                self.common_descriptor_set.clone(),
+                egui_render_data,
+            );
         }
         command_buffer
             .end_render_pass(VulkanSubpassEndInfo::default())
@@ -1378,18 +1441,13 @@ impl GraphicsBackend for GraphicsState {
                     .map(Arc::new)
                     .context("Error while creating render fence")
                     .unwrap();
-                let mut wait_semaphores = SmallVec::<[_; 2]>::new();
-                wait_semaphores.push(VulkanSemaphoreSubmitInfo::new(&swapchain_semaphore));
-                if let Some(upload_semaphore) = &subchunk_upload_semaphore {
-                    wait_semaphores.push(VulkanSemaphoreSubmitInfo::new(upload_semaphore));
-                };
                 queue_guard
                     .submit(
                         &[VulkanSubmitInfo {
                             command_buffers: &[VulkanCommandBufferSubmitInfo::new(
                                 built_command_buffer.as_raw(),
                             )],
-                            wait_semaphores: &wait_semaphores,
+                            wait_semaphores: &[VulkanSemaphoreSubmitInfo::new(&swapchain_semaphore)],
                             signal_semaphores: &[
                                 VulkanSemaphoreSubmitInfo::new(&render_semaphore),
                                 // VulkanSemaphoreSubmitInfo::new(render_semaphore_2.clone()),

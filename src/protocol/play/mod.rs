@@ -23,17 +23,7 @@ pub enum Clientbound {
         reason: TextComponent,
     } = 0x1D,
     BundleDelimiter = 0x00,
-    SpawnEntity {
-        id: EntityId,
-        uuid: Uuid,
-        entity_type: VarInt,
-        coords: [f64; 3],
-        pitch: Angle,
-        yaw: Angle,
-        head_yaw: Angle,
-        data: VarInt,
-        velocity: [i16; 3],
-    } = 0x01,
+    SpawnEntity(SpawnEntityInfo) = 0x01,
     SetEntityAnimation(SetEntityAnimation) = 0x03,
     SetBlockEntityData(SetBlockEntityData) = 0x07,
     BlockAction {
@@ -189,6 +179,19 @@ pub enum Clientbound {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
+pub struct SpawnEntityInfo {
+    pub id: EntityId,
+    pub uuid: Uuid,
+    pub entity_type: VarInt,
+    pub coords: [f64; 3],
+    pub pitch: Angle,
+    pub yaw: Angle,
+    pub head_yaw: Angle,
+    pub data: VarInt,
+    pub velocity: [i16; 3],
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
 pub struct SetEntityAnimation {
     pub entity_id: EntityId,
     pub animation: SetEntityAnimationType,
@@ -196,11 +199,11 @@ pub struct SetEntityAnimation {
 
 #[derive(Clone, Copy, Debug)]
 pub enum SetEntityAnimationType {
-    SwingPrimaryArm,
-    SwingSecondaryArm,
-    LeaveBed,
-    CriticalEffect,
-    MagicalCriticalEffect,
+    SwingPrimaryArm = 0,
+    SwingSecondaryArm = 2,
+    LeaveBed = 3,
+    CriticalEffect = 4,
+    MagicalCriticalEffect = 5,
 }
 
 impl Deserialize for SetEntityAnimationType {

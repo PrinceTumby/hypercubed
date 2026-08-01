@@ -57,7 +57,7 @@ fn main() {
     // strings).
     // Any big improvement would have to come from parsing the JSON data here into a
     // `Vec<Registration>`, and then saving that using something like postcard.
-    // Unforunately that would require moving the block registration types into yet another crate,
+    // Unfortunately that would require moving the block registration types into yet another crate,
     // which I don't think is worth the extra annoyance.
     let compressed_json = miniz_oxide::deflate::compress_to_vec_zlib(exported_json.as_bytes(), 9);
     std::fs::write(

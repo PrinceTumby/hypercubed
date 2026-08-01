@@ -18,6 +18,15 @@ impl GpuUv {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+pub struct SubchunkFaceGroupInfo {
+    pub buffer_address: u64,
+    pub subchunk_start_coords: [i32; 3],
+    pub face_matrix_index: u32,
+}
+
 // Block face
 
 #[repr(C)]
@@ -248,6 +257,7 @@ bitfield! {
     impl Debug;
 }
 
+// TODO: Delete these, once the rust-gpu shaders have switched over to BDA.
 #[cfg(feature = "vulkano")]
 pub mod vertex_input_state {
     use super::*;
@@ -256,18 +266,13 @@ pub mod vertex_input_state {
     pub fn block_face() -> VulkanVertexInputState {
         VulkanVertexInputState {
             bindings: vulkan_vertex_bindings![
-                0 => (BlockFaceVertex, Vertex),
-                1 => (BlockFaceInstance, Instance),
+                0 => (BlockFaceInstance, Instance),
             ],
-            attributes: vulkan_vertex_attributes!(2, [
-                // subchunk_start_coords
-                [0 <- 0] => R32G32B32_SFLOAT,
-                // face_matrix_index
-                [1 <- 0] => R32_UINT,
+            attributes: vulkan_vertex_attributes!(1, [
                 // uvs
-                [2 <- 1] => R16G16B16A16_UINT,
+                [0 <- 0] => R16G16B16A16_UINT,
                 // packed_fields
-                [3 <- 1] => R32_UINT,
+                [1 <- 0] => R32_UINT,
             ]),
             ..Default::default()
         }
@@ -276,20 +281,15 @@ pub mod vertex_input_state {
     pub fn tinted_block_face() -> VulkanVertexInputState {
         VulkanVertexInputState {
             bindings: vulkan_vertex_bindings![
-                0 => (TintedBlockFaceVertex, Vertex),
-                1 => (TintedBlockFaceInstance, Instance),
+                0 => (TintedBlockFaceInstance, Instance),
             ],
-            attributes: vulkan_vertex_attributes!(2, [
-                // subchunk_start_coords
-                [0 <- 0] => R32G32B32_SFLOAT,
-                // face_matrix_index
-                [1 <- 0] => R32_UINT,
+            attributes: vulkan_vertex_attributes!(1, [
                 // uvs
-                [2 <- 1] => R16G16B16A16_UINT,
+                [0 <- 0] => R16G16B16A16_UINT,
                 // tint_color
-                [3 <- 1] => R8G8B8A8_UNORM,
+                [1 <- 0] => R8G8B8A8_UNORM,
                 // packed_fields
-                [4 <- 1] => R32_UINT,
+                [2 <- 0] => R32_UINT,
             ]),
             ..Default::default()
         }
@@ -301,7 +301,7 @@ pub mod vertex_input_state {
                 // Vertex pulling is used from face data.
                 0 => (CustomBlockInstance, Instance),
             ],
-            attributes: vulkan_vertex_attributes!(2, [
+            attributes: vulkan_vertex_attributes!(1, [
                 // pos
                 [0 <- 0] => R32G32B32_SFLOAT,
                 // tint_color

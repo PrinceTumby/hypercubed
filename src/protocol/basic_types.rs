@@ -518,19 +518,19 @@ impl Deserialize for Identifier {
 
 impl Serialize for Identifier {
     fn serialize_to<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
-        let namespace_len = self.namespace.len() + 1;
-        let path_name_len = self.path_name.len();
+        let namespace_len = self.get_namespace().len() + 1;
+        let path_name_len = self.get_path_name().len();
         let path_prefixes_len = self
-            .path_prefix_segments
+            .get_path_prefix_segments()
             .iter()
             .fold(0, |acc, seg| acc + seg.len() + 1);
         let total_len = namespace_len + path_prefixes_len + path_name_len;
         VarInt(total_len.try_into().unwrap()).serialize_into(writer)?;
-        write!(writer, "{}:", &self.namespace)?;
-        for path_prefix_segment in &self.path_prefix_segments {
+        write!(writer, "{}:", self.get_namespace())?;
+        for path_prefix_segment in self.get_path_prefix_segments() {
             write!(writer, "{}/", path_prefix_segment)?;
         }
-        write!(writer, "{}", &self.path_name)?;
+        write!(writer, "{}", self.get_path_name())?;
         Ok(())
     }
 }
@@ -941,6 +941,12 @@ impl Deserialize for BitSet {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[repr(transparent)]
 pub struct Angle(u8);
+
+impl From<Angle> for f32 {
+    fn from(value: Angle) -> Self {
+        value.0 as f32 * (256.0 / 360.0)
+    }
+}
 
 // Direction on wiki.vg
 

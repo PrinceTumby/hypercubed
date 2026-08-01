@@ -1,16 +1,16 @@
-use super::SubchunkDataStorage;
-use super::shader_exports::chunk::types::{self as shader_chunk_types, vertex_input_state};
+use super::shader_exports::chunk::types as shader_chunk_types;
 use super::shader_exports::shader_stage_from_entry_point;
 use crate::graphics::chunk::{HasSubchunkData, SubchunkConnectivity, SubchunkData};
 use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use anyhow::Context;
+use core::num::NonZeroU64;
 use nalgebra::{Matrix3, Rotation3};
 use portable_std::FastHashMap;
 use resources::block::RightAngleRotation;
 use resources::block::blockstate::BlockOpacity;
 use resources::block::model::{ModelIndex, ModelType};
 use resources::block::model::{ModelRegistry, Tint};
-use std::marker::{PhantomData, Send, Sync};
+use std::marker::{Send, Sync};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use vulkan_prelude::*;
@@ -18,14 +18,13 @@ use vulkan_prelude::*;
 pub struct Subchunk {
     pub dispatch_id: u64,
     pub start_coords: [i32; 3],
-    /// Equal to `u32::MAX` if the direction group contains no instances.
-    pub block_face_start_vertices: [u32; 6],
+    pub block_face_instances_buffer: Option<AddressedBuffer<[block_face::Instance]>>,
     /// Equal to `(0, 0)` if the direction group contains no instances.
     pub block_face_instance_groups: [(u32, u32); 6],
-    /// Equal to `u32::MAX` if the direction group contains no instances.
-    pub tinted_block_face_start_vertices: [u32; 6],
+    pub tinted_block_face_instances_buffer: Option<AddressedBuffer<[tinted_block_face::Instance]>>,
     /// Equal to `(0, 0)` if the direction group contains no instances.
     pub tinted_block_face_instance_groups: [(u32, u32); 6],
+    pub custom_block_instances_buffer: Option<AddressedBuffer<[custom_block::Instance]>>,
     pub custom_block_groups: Vec<CustomBlockGroup>,
     pub connectivity: SubchunkConnectivity,
 }
@@ -43,6 +42,22 @@ impl HasSubchunkData for Subchunk {
             start_coords: self.start_coords,
             connectivity: self.connectivity,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddressedBuffer<T: ?Sized> {
+    pub buffer: VulkanSubbuffer<T>,
+    pub address: NonZeroU64,
+}
+
+impl<T: ?Sized> AddressedBuffer<T> {
+    /// Panics if retrieving the buffer device address fails.
+    pub fn from_buffer(buffer: VulkanSubbuffer<T>) -> Self {
+        let address = buffer
+            .device_address()
+            .expect("Error while getting buffer device address");
+        Self { buffer, address }
     }
 }
 
@@ -90,49 +105,6 @@ impl<T: bytemuck::Pod + Send + Sync> VertexListBuffer<T> {
 }
 
 #[derive(Debug)]
-pub struct IndexListBuffer<T: bytemuck::Pod + Sync + Send> {
-    buffer: VulkanSubbuffer<[T]>,
-    num_items: u32,
-}
-
-impl<T: bytemuck::Pod + Sync + Send> IndexListBuffer<T> {
-    /// Panics if `items.len() > u32::MAX`.
-    pub fn new(
-        memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
-        items: &[T],
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            buffer: VulkanBuffer::from_iter(
-                memory_allocator,
-                &VulkanBufferCreateInfo {
-                    usage: VulkanBufferUsage::INDEX_BUFFER,
-                    ..Default::default()
-                },
-                &VulkanAllocationCreateInfo {
-                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
-                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                items.iter().copied(),
-            )?,
-            num_items: items.len().try_into().unwrap(),
-        })
-    }
-
-    pub fn get_buffer(&self) -> VulkanSubbuffer<[T]> {
-        self.buffer.clone()
-    }
-
-    pub fn num_items(&self) -> u32 {
-        self.num_items
-    }
-
-    pub fn size(&self) -> VulkanDeviceSize {
-        self.buffer.size()
-    }
-}
-
-#[derive(Debug)]
 pub struct DrawArgsBuffer<T: bytemuck::Pod + Send + Sync> {
     buffer: VulkanSubbuffer<[T]>,
     num_items: u32,
@@ -175,244 +147,6 @@ impl<T: bytemuck::Pod + Send + Sync> DrawArgsBuffer<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BufferArea {
-    pub usage: BufferAreaUsage,
-    pub num_chunks: u64,
-}
-
-impl BufferArea {
-    pub fn belongs_to(&self, subchunk_coords: [i32; 3]) -> bool {
-        matches!(self.usage, BufferAreaUsage::Used(coords) if coords == subchunk_coords)
-    }
-
-    pub fn is_free(&self) -> bool {
-        matches!(self.usage, BufferAreaUsage::Free)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum BufferAreaUsage {
-    Free,
-    Used([i32; 3]),
-}
-
-// TODO:
-// - Convert `NUM_CHUNKS` to `INITIAL_NUM_CHUNKS`
-// - When the buffer fills up, allocate a new buffer increased by `INITIAL_NUM_CHUNKS` / 16
-// - Copy all old buffer contents over to new buffer
-// - Expand `usage_map` with the new free space
-// - Retry allocation
-#[derive(Debug)]
-pub struct BufferManager<
-    T: bytemuck::Pod + Send + Sync,
-    const ITEMS_PER_CHUNK: usize,
-    const NUM_CHUNKS: usize,
-> {
-    buffer: VulkanSubbuffer<[T]>,
-    usage_map: Vec<BufferArea>,
-    phantom: PhantomData<[[T; ITEMS_PER_CHUNK]; NUM_CHUNKS]>,
-}
-
-impl<T: bytemuck::Pod + Send + Sync, const ITEMS_PER_CHUNK: usize, const NUM_CHUNKS: usize>
-    BufferManager<T, ITEMS_PER_CHUNK, NUM_CHUNKS>
-{
-    pub fn new(device: &Arc<VulkanDevice>, usage: VulkanBufferUsage) -> anyhow::Result<Self> {
-        Ok(Self {
-            buffer: vulkan_new_buffer_slice_large(
-                device,
-                usage | VulkanBufferUsage::TRANSFER_DST,
-                VulkanSharing::Exclusive,
-                ITEMS_PER_CHUNK * NUM_CHUNKS,
-            )?,
-            usage_map: vec![BufferArea {
-                usage: BufferAreaUsage::Free,
-                num_chunks: NUM_CHUNKS as u64,
-            }],
-            phantom: PhantomData,
-        })
-    }
-
-    pub fn alloc_area(
-        &mut self,
-        command_buffer: &mut VulkanAutoCommandBufferBuilder<VulkanPrimaryAutoCommandBuffer>,
-        subchunk_coords: [i32; 3],
-        items: Box<[T]>,
-    ) -> u32 {
-        debug_assert!(!items.is_empty());
-        let num_chunks_needed = (items.len() as u64).div_ceil(ITEMS_PER_CHUNK as u64);
-        // Find free area large enough to hold items.
-        let mut current_start_chunk: u64 = 0;
-        for i in 0..self.usage_map.len() {
-            let area = &mut self.usage_map[i];
-            if area.is_free() {
-                use std::cmp::Ordering;
-                match area.num_chunks.cmp(&num_chunks_needed) {
-                    Ordering::Greater => {
-                        // Split area into used portion and leftover free protion.
-                        let new_free_area = BufferArea {
-                            usage: BufferAreaUsage::Free,
-                            num_chunks: area.num_chunks - num_chunks_needed,
-                        };
-                        area.num_chunks = num_chunks_needed;
-                        area.usage = BufferAreaUsage::Used(subchunk_coords);
-                        self.usage_map.insert(i + 1, new_free_area);
-                    }
-                    Ordering::Equal => {
-                        // Mark entire area as used.
-                        area.usage = BufferAreaUsage::Used(subchunk_coords);
-                    }
-                    Ordering::Less => {
-                        current_start_chunk += area.num_chunks;
-                        continue;
-                    }
-                }
-                // Write items to buffer.
-                let buffer_start_item = ITEMS_PER_CHUNK as u64 * current_start_chunk;
-                let buffer_end_item = buffer_start_item + items.len() as u64;
-                command_buffer
-                    .update_buffer(
-                        self.buffer
-                            .clone()
-                            .slice(buffer_start_item..buffer_end_item),
-                        items,
-                    )
-                    .unwrap();
-                return (ITEMS_PER_CHUNK as u64 * current_start_chunk)
-                    .try_into()
-                    .unwrap();
-            } else {
-                current_start_chunk += area.num_chunks;
-            }
-        }
-        unimplemented!("Buffer pool growing");
-    }
-
-    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
-        // Mark all subchunk owned areas as free.
-        for area in &mut self.usage_map {
-            if area.belongs_to(subchunk_coords) {
-                area.usage = BufferAreaUsage::Free;
-            }
-        }
-        // Merge free areas.
-        let mut current_area_i: usize = 1;
-        while current_area_i < self.usage_map.len() {
-            if self.usage_map[current_area_i - 1].is_free()
-                && self.usage_map[current_area_i].is_free()
-            {
-                self.usage_map[current_area_i - 1].num_chunks +=
-                    self.usage_map[current_area_i].num_chunks;
-                self.usage_map.remove(current_area_i);
-            } else {
-                current_area_i += 1;
-            }
-        }
-    }
-
-    pub fn get_buffer(&self) -> VulkanSubbuffer<[T]> {
-        self.buffer.clone()
-    }
-
-    pub fn size(&self) -> VulkanDeviceSize {
-        self.buffer.size()
-    }
-
-    pub fn usage_fraction(&self) -> f64 {
-        let mut total_chunks: u64 = 0;
-        let mut used_chunks: u64 = 0;
-        for area in &self.usage_map {
-            total_chunks += area.num_chunks;
-            if !area.is_free() {
-                used_chunks += area.num_chunks;
-            }
-        }
-        used_chunks as f64 / total_chunks as f64
-    }
-}
-
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct VertexBufferManager<V: bytemuck::Pod + Send + Sync, const NUM_CHUNKS: usize>(
-    BufferManager<V, 4, NUM_CHUNKS>,
-);
-
-impl<V: bytemuck::Pod + Send + Sync, const NUM_CHUNKS: usize> VertexBufferManager<V, NUM_CHUNKS> {
-    pub fn new(device: &Arc<VulkanDevice>) -> anyhow::Result<Self> {
-        BufferManager::new(device, VulkanBufferUsage::VERTEX_BUFFER).map(Self)
-    }
-
-    /// Returns the `first_vertex` indirect draw argument.
-    pub fn alloc_area(
-        &mut self,
-        command_buffer: &mut VulkanAutoCommandBufferBuilder<VulkanPrimaryAutoCommandBuffer>,
-        subchunk_coords: [i32; 3],
-        base_quad: [V; 4],
-    ) -> u32 {
-        self.0
-            .alloc_area(command_buffer, subchunk_coords, Box::new(base_quad))
-    }
-
-    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
-        self.0.free_subchunk_areas(subchunk_coords)
-    }
-
-    pub fn get_buffer(&self) -> VulkanSubbuffer<[V]> {
-        self.0.get_buffer()
-    }
-
-    pub fn size(&self) -> VulkanDeviceSize {
-        self.0.size()
-    }
-
-    pub fn usage_fraction(&self) -> f64 {
-        self.0.usage_fraction()
-    }
-}
-
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct InstanceBufferManager<
-    I: bytemuck::Pod + Send + Sync,
-    const ITEMS_PER_CHUNK: usize,
-    const NUM_CHUNKS: usize,
->(BufferManager<I, ITEMS_PER_CHUNK, NUM_CHUNKS>);
-
-impl<I: bytemuck::Pod + Send + Sync, const ITEMS_PER_CHUNK: usize, const NUM_CHUNKS: usize>
-    InstanceBufferManager<I, ITEMS_PER_CHUNK, NUM_CHUNKS>
-{
-    pub fn new(device: &Arc<VulkanDevice>) -> anyhow::Result<Self> {
-        BufferManager::new(device, VulkanBufferUsage::VERTEX_BUFFER).map(Self)
-    }
-
-    /// Returns the `first_instance` indirect draw argument.
-    pub fn alloc_area(
-        &mut self,
-        command_buffer: &mut VulkanAutoCommandBufferBuilder<VulkanPrimaryAutoCommandBuffer>,
-        subchunk_coords: [i32; 3],
-        instances: Box<[I]>,
-    ) -> u32 {
-        self.0
-            .alloc_area(command_buffer, subchunk_coords, instances)
-    }
-
-    pub fn free_subchunk_areas(&mut self, subchunk_coords: [i32; 3]) {
-        self.0.free_subchunk_areas(subchunk_coords)
-    }
-
-    pub fn get_buffer(&self) -> VulkanSubbuffer<[I]> {
-        self.0.get_buffer()
-    }
-
-    pub fn size(&self) -> VulkanDeviceSize {
-        self.0.size()
-    }
-
-    pub fn usage_fraction(&self) -> f64 {
-        self.0.usage_fraction()
-    }
-}
-
 pub mod block_face {
     use super::*;
 
@@ -427,18 +161,20 @@ pub mod block_face {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(
-                        &mut None,
-                        device,
-                        "shader::chunk::block_face::vertex",
-                    ),
-                    shader_stage_from_entry_point(
-                        &mut None,
-                        device,
-                        "shader::chunk::block_face::fragment",
-                    ),
+                    // shader_stage_from_entry_point(
+                    //     &mut None,
+                    //     device,
+                    //     "shader::chunk::block_face::vertex",
+                    // ),
+                    // shader_stage_from_entry_point(
+                    //     &mut None,
+                    //     device,
+                    //     "shader::chunk::block_face::fragment",
+                    // ),
+                    shader_stage_from_entry_point(&mut None, device, "block_face_vertex_bda"),
+                    shader_stage_from_entry_point(&mut None, device, "block_face_fragment_bda"),
                 ],
-                vertex_input_state: Some(&vertex_input_state::block_face()),
+                vertex_input_state: Some(&VulkanVertexInputState::default()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {
                     topology: VulkanPrimitiveTopology::TriangleStrip,
                     primitive_restart_enable: false,
@@ -530,9 +266,6 @@ pub mod block_face {
     pub use shader_chunk_types::BlockFaceVertex as Vertex;
 
     pub use shader_chunk_types::BlockFaceInstance as Instance;
-
-    pub type BlockFaceVertexBufferManager = VertexBufferManager<Vertex, { 1 << 20 }>;
-    pub type BlockFaceInstanceBufferManager = InstanceBufferManager<Instance, 4, { 1 << 18 }>;
 }
 
 pub mod tinted_block_face {
@@ -549,18 +282,28 @@ pub mod tinted_block_face {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
+                    // shader_stage_from_entry_point(
+                    //     &mut None,
+                    //     device,
+                    //     "shader::chunk::tinted_block_face::vertex",
+                    // ),
+                    // shader_stage_from_entry_point(
+                    //     &mut None,
+                    //     device,
+                    //     "shader::chunk::tinted_block_face::fragment",
+                    // ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "shader::chunk::tinted_block_face::vertex",
+                        "tinted_block_face_vertex_bda",
                     ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "shader::chunk::tinted_block_face::fragment",
+                        "tinted_block_face_fragment_bda",
                     ),
                 ],
-                vertex_input_state: Some(&vertex_input_state::tinted_block_face()),
+                vertex_input_state: Some(&VulkanVertexInputState::default()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {
                     topology: VulkanPrimitiveTopology::TriangleStrip,
                     primitive_restart_enable: false,
@@ -601,9 +344,6 @@ pub mod tinted_block_face {
     pub use super::block_face::Vertex;
 
     pub use shader_chunk_types::TintedBlockFaceInstance as Instance;
-
-    pub type TintedBlockFaceVertexBufferManager = VertexBufferManager<Vertex, { 1 << 20 }>;
-    pub type TintedBlockFaceInstanceBufferManager = InstanceBufferManager<Instance, 4, { 1 << 18 }>;
 }
 
 pub mod custom_block {
@@ -620,18 +360,28 @@ pub mod custom_block {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
+                    // shader_stage_from_entry_point(
+                    //     &mut None,
+                    //     device,
+                    //     "shader::chunk::custom_block::vertex",
+                    // ),
+                    // shader_stage_from_entry_point(
+                    //     &mut None,
+                    //     device,
+                    //     "shader::chunk::custom_block::fragment",
+                    // ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "shader::chunk::custom_block::vertex",
+                        "custom_block_vertex_bda",
                     ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "shader::chunk::custom_block::fragment",
+                        "custom_block_fragment_bda",
                     ),
                 ],
-                vertex_input_state: Some(&vertex_input_state::custom_block()),
+                vertex_input_state: Some(&VulkanVertexInputState::default()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {
                     topology: VulkanPrimitiveTopology::TriangleList,
                     primitive_restart_enable: false,
@@ -674,28 +424,6 @@ pub mod custom_block {
     pub use shader_chunk_types::CustomBlockInstance as Instance;
 
     pub type VertexList = VertexListBuffer<Vertex>;
-    pub type IndexList = IndexListBuffer<u32>;
-    pub type CustomBlockInstanceBufferManager =
-        super::super::chunk::InstanceBufferManager<Instance, 4, { 1 << 20 }>;
-}
-
-#[derive(Debug)]
-pub struct RawSubchunk {
-    pub dispatch_id: u64,
-    pub subchunk_coords: [i32; 3],
-    pub start_coords: [i32; 3],
-    pub block_face_quads: [Option<[block_face::Vertex; 4]>; 6],
-    pub block_face_instance_groups: [Vec<block_face::Instance>; 6],
-    pub tinted_block_face_quads: [Option<[tinted_block_face::Vertex; 4]>; 6],
-    pub tinted_block_face_instance_groups: [Vec<tinted_block_face::Instance>; 6],
-    pub custom_block_groups: Vec<RawCustomBlockGroup>,
-    pub connectivity: SubchunkConnectivity,
-}
-
-#[derive(Debug)]
-pub struct RawCustomBlockGroup {
-    pub start_face_and_len: [u32; 2],
-    pub instances: Vec<custom_block::Instance>,
 }
 
 #[tracing::instrument(skip_all)]
@@ -703,10 +431,11 @@ pub fn process_subchunk(
     block_registry: &resources::block::Registry,
     model_registry: &ModelRegistry,
     raw_chunks: &FastHashMap<[i32; 2], Arc<crate::RawChunk>>,
-    pending_subchunk_tx: &Sender<Option<RawSubchunk>>,
+    pending_subchunk_tx: &Sender<Option<([i32; 3], Subchunk)>>,
+    memory_allocator: &Arc<dyn VulkanMemoryAllocator>,
     subchunk_coords: [i32; 3],
     dispatch_id: u64,
-) {
+) -> anyhow::Result<()> {
     let [subchunk_x, subchunk_y, subchunk_z] = subchunk_coords;
     let mut block_faces: [Vec<_>; 6] = Default::default();
     let mut tinted_block_faces: [Vec<_>; 6] = Default::default();
@@ -747,7 +476,7 @@ pub fn process_subchunk(
         },
     ) else {
         // Skip subchunk if `process_subchunk_models` returns that it's invisible.
-        return;
+        return Ok(());
     };
     let start_coords = [
         SUBCHUNK_AXIS_LEN_I32 * subchunk_x,
@@ -755,145 +484,116 @@ pub fn process_subchunk(
         SUBCHUNK_AXIS_LEN_I32 * subchunk_z,
     ];
     // Block faces
-    let mut block_face_quads: [Option<_>; 6] = [None; 6];
-    let block_face_instance_groups: [Vec<_>; 6] = block_faces;
-    for i in 0..6 {
-        if block_face_instance_groups[i].is_empty() {
-            continue;
-        }
-        let base_quad = block_face::Vertex::generate_base_quad(start_coords, i);
-        block_face_quads[i] = Some(base_quad);
-    }
-    // Tinted block faces
-    let mut tinted_block_face_quads: [Option<_>; 6] = [None; 6];
-    let tinted_block_face_instance_groups: [Vec<_>; 6] = tinted_block_faces;
-    for i in 0..6 {
-        if tinted_block_face_instance_groups[i].is_empty() {
-            continue;
-        }
-        let base_quad = tinted_block_face::Vertex::generate_base_quad(start_coords, i);
-        tinted_block_face_quads[i] = Some(base_quad);
-    }
-    // Custom blocks
-    let custom_block_groups = custom_block_instance_groups
-        .into_iter()
-        .map(|(info, instances)| RawCustomBlockGroup {
-            start_face_and_len: info.start_face_and_len,
-            instances,
-        })
-        .collect();
-    pending_subchunk_tx
-        .send(Some(RawSubchunk {
-            dispatch_id,
-            subchunk_coords,
-            start_coords,
-            block_face_quads,
-            block_face_instance_groups,
-            tinted_block_face_quads,
-            tinted_block_face_instance_groups,
-            custom_block_groups,
-            connectivity,
-        }))
-        .unwrap();
-}
-
-#[tracing::instrument(skip_all)]
-pub fn finalise_subchunk(
-    subchunk_data_storage: &mut SubchunkDataStorage,
-    command_buffer: &mut VulkanAutoCommandBufferBuilder<VulkanPrimaryAutoCommandBuffer>,
-    raw_subchunk: RawSubchunk,
-) {
-    let subchunk_coords = raw_subchunk.subchunk_coords;
-    // Remove old subchunk.
-    {
-        let span = tracing::trace_span!("remove_old_subchunk", ?subchunk_coords);
-        let _enter = span.enter();
-        subchunk_data_storage.remove_subchunk(subchunk_coords);
-    }
-    macro_rules! alloc_area {
-        (
-            $buffer_manager:ident,
-            $subchunk_coords:expr,
-            $data:expr $(,)?
-        ) => {
-            subchunk_data_storage.$buffer_manager.alloc_area(
-                command_buffer,
-                $subchunk_coords,
-                $data,
-            )
-        };
-    }
-    // Base block faces
-    let mut block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-    let mut block_face_instance_groups: [(u32, u32); 6] = Default::default();
-    for (i, instance_group) in raw_subchunk
-        .block_face_instance_groups
+    let mut block_face_instances = Vec::new();
+    let mut block_face_instance_groups: [(u32, u32); 6] = [(0, 0); 6];
+    for (i, instance_group) in block_faces
         .into_iter()
         .enumerate()
+        .filter(|(_i, group)| !group.is_empty())
     {
-        let Some(base_quad) = raw_subchunk.block_face_quads[i] else {
-            continue;
-        };
-        let quad_start_vertex = alloc_area!(block_face_vertex, subchunk_coords, base_quad);
         let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-        let instance_group_start = alloc_area!(
-            block_face_instance,
-            subchunk_coords,
-            instance_group.into_boxed_slice(),
-        );
-        block_face_start_vertices[i] = quad_start_vertex;
+        let instance_group_start: u32 = block_face_instances.len().try_into().unwrap();
+        block_face_instances.extend(instance_group);
         block_face_instance_groups[i] = (instance_group_start, instance_group_len);
     }
+    let block_face_instances_buffer = (!block_face_instances.is_empty())
+        .then(|| {
+            VulkanBuffer::from_iter(
+                memory_allocator,
+                &VulkanBufferCreateInfo {
+                    usage: VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                    ..Default::default()
+                },
+                &VulkanAllocationCreateInfo {
+                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                block_face_instances,
+            )
+            .context("Error while creating subchunk block face instances buffer")
+            .map(AddressedBuffer::from_buffer)
+        })
+        .transpose()?;
     // Tinted block faces
-    let mut tinted_block_face_start_vertices: [u32; 6] = [u32::MAX; 6];
-    let mut tinted_block_face_instance_groups: [(u32, u32); 6] = Default::default();
-    for (i, instance_group) in raw_subchunk
-        .tinted_block_face_instance_groups
+    let mut tinted_block_face_instances = Vec::new();
+    let mut tinted_block_face_instance_groups: [(u32, u32); 6] = [(0, 0); 6];
+    for (i, instance_group) in tinted_block_faces
         .into_iter()
         .enumerate()
+        .filter(|(_i, group)| !group.is_empty())
     {
-        let Some(base_quad) = raw_subchunk.tinted_block_face_quads[i] else {
-            continue;
-        };
-        let quad_start_vertex = alloc_area!(tinted_block_face_vertex, subchunk_coords, base_quad);
         let instance_group_len: u32 = instance_group.len().try_into().unwrap();
-        let instance_group_start = alloc_area!(
-            tinted_block_face_instance,
-            subchunk_coords,
-            instance_group.into_boxed_slice(),
-        );
-        tinted_block_face_start_vertices[i] = quad_start_vertex;
+        let instance_group_start: u32 = tinted_block_face_instances.len().try_into().unwrap();
+        tinted_block_face_instances.extend(instance_group);
         tinted_block_face_instance_groups[i] = (instance_group_start, instance_group_len);
     }
-    let custom_block_groups = raw_subchunk
-        .custom_block_groups
+    let tinted_block_face_instances_buffer = (!tinted_block_face_instances.is_empty())
+        .then(|| {
+            VulkanBuffer::from_iter(
+                memory_allocator,
+                &VulkanBufferCreateInfo {
+                    usage: VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                    ..Default::default()
+                },
+                &VulkanAllocationCreateInfo {
+                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                tinted_block_face_instances,
+            )
+            .context("Error while creating subchunk tinted block face instances buffer")
+            .map(AddressedBuffer::from_buffer)
+        })
+        .transpose()?;
+    // Custom blocks
+    let mut custom_block_instances = Vec::new();
+    let custom_block_groups = custom_block_instance_groups
         .into_iter()
-        .map(|group| {
-            let num_instances: u32 = group.instances.len().try_into().unwrap();
-            let start_instance = alloc_area!(
-                custom_block_instance,
-                subchunk_coords,
-                group.instances.into_boxed_slice(),
-            );
+        .map(|(info, instances)| {
+            let instance_group_len: u32 = instances.len().try_into().unwrap();
+            let instance_group_start: u32 = custom_block_instances.len().try_into().unwrap();
+            custom_block_instances.extend(instances);
             CustomBlockGroup {
-                start_face_and_len: group.start_face_and_len,
-                start_instance_and_len: [start_instance, num_instances],
+                start_face_and_len: info.start_face_and_len,
+                start_instance_and_len: [instance_group_start, instance_group_len],
             }
         })
         .collect();
-    subchunk_data_storage.subchunks.insert(
-        subchunk_coords,
-        Subchunk {
-            dispatch_id: raw_subchunk.dispatch_id,
-            start_coords: raw_subchunk.start_coords,
-            block_face_start_vertices,
+    let custom_block_instances_buffer = (!custom_block_instances.is_empty())
+        .then(|| {
+            VulkanBuffer::from_iter(
+                memory_allocator,
+                &VulkanBufferCreateInfo {
+                    usage: VulkanBufferUsage::SHADER_DEVICE_ADDRESS,
+                    ..Default::default()
+                },
+                &VulkanAllocationCreateInfo {
+                    memory_type_filter: VulkanMemoryTypeFilter::PREFER_DEVICE
+                        | VulkanMemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                custom_block_instances,
+            )
+            .context("Error while creating subchunk custom block instances buffer")
+            .map(AddressedBuffer::from_buffer)
+        })
+        .transpose()?;
+    pending_subchunk_tx
+        .send(Some((subchunk_coords, Subchunk {
+            dispatch_id,
+            start_coords,
+            block_face_instances_buffer,
             block_face_instance_groups,
-            tinted_block_face_start_vertices,
+            tinted_block_face_instances_buffer,
             tinted_block_face_instance_groups,
+            custom_block_instances_buffer,
             custom_block_groups,
-            connectivity: raw_subchunk.connectivity,
-        },
-    );
+            connectivity,
+        })))
+        .unwrap();
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

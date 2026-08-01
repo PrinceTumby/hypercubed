@@ -63,8 +63,7 @@ pub fn vertex(
     let local_pos = face_matrix * base_pos;
     let block_centre_pos = in_subchunk_start_coords + xyz_offset;
     let global_pos = local_pos + block_centre_pos + Vec3::splat(0.5);
-    *out_pos =
-        Vec4::new(1.0, -1.0, 1.0, 1.0) * (render_info.view_matrix * Vec4::from((global_pos, 1.0)));
+    *out_pos = Vec4::new(1.0, -1.0, 1.0, 1.0) * (render_info.view_matrix * global_pos.extend(1.0));
     // UVs
     let start_uvs = in_uvs.xy().as_vec2() * render_info.recip_block_item_atlas_size;
     let end_uvs = in_uvs.zw().as_vec2() * render_info.recip_block_item_atlas_size;

@@ -7,14 +7,15 @@ use thiserror::Error;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Identifier {
-    pub namespace: Atom,
-    pub path_prefix_segments: SmallVec<[Atom; 2]>,
-    pub path_name: Atom,
+    namespace: Atom,
+    path_prefix_segments: SmallVec<[Atom; 2]>,
+    path_name: Atom,
 }
 
+/// Convenience macro for creating an [`Identifier`] from a string literal.
 #[macro_export]
 macro_rules! identifier {
-    ($string:expr) => {
+    ($string:literal) => {
         ($crate::identifier::Identifier::parse($string).unwrap())
     };
 }
@@ -108,6 +109,18 @@ impl Identifier {
                 })
             }
         }
+    }
+
+    pub fn get_namespace(&self) -> &Atom {
+        &self.namespace
+    }
+
+    pub fn get_path_prefix_segments(&self) -> &[Atom] {
+        &self.path_prefix_segments
+    }
+
+    pub fn get_path_name(&self) -> &Atom {
+        &self.path_name
     }
 
     const fn is_valid_namespace(namespace: &str) -> bool {

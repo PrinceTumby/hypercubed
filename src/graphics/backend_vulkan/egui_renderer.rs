@@ -426,10 +426,18 @@ impl Renderer {
     pub fn render(
         &mut self,
         command_buffer: &mut VulkanAutoCommandBufferBuilder<VulkanPrimaryAutoCommandBuffer>,
+        common_descriptor_set: Arc<VulkanDescriptorSet>,
         render_data: RenderData,
     ) {
         command_buffer
             .bind_pipeline_graphics(self.pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(
+                VulkanPipelineBindPoint::Graphics,
+                self.pipeline_layout.clone(),
+                0,
+                common_descriptor_set,
+            )
             .unwrap()
             .bind_vertex_buffers(0, [render_data.vertex_buffer])
             .unwrap()

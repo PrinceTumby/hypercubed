@@ -23,11 +23,15 @@ graphics backend.*
 
 - Vulkan - Requires Vulkan 1.2 with support for multi-draw indirect.
 - [`wgpu`](https://wgpu.rs) - Not functional on WebGL2, but support is planned.
-- OpenGL - Requires OpenGL 1.3 + `GL_ARB_vertex_buffer_object` + `GL_ARB_vertex_program`.
-- Software - Based around Larrabee-style rasterisation, works best with wide SIMD instruction sets.
+- OpenGL - Requires OpenGL 1.3 + `GL_ARB_vertex_buffer_object` + `GL_ARB_vertex_program` +
+`GL_EXT_multi_draw_arrays`.
 
 Variants of these backends with lower requirements are planned, as are variants which make use of
 newer hardware features.
+
+A software renderer using Larrabee-style rasterisation and AVX-512 intrinsics was also previously
+functional, but has been temporarily removed while new features are being worked on.\
+An old version of hypercubed with it can be found in the `graphics_backend_software` branch.
 
 ## Platforms
 
