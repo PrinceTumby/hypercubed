@@ -36,7 +36,6 @@ ahash.workspace = true
 anyhow.workspace = true
 bimap.workspace = true
 bitfield.workspace = true
-cfg-if.workspace = true
 image = { workspace = true, features = ["png"], optional = true }
 indexmap = { workspace = true, features = ["serde"] }
 lazy_static.workspace = true
@@ -45,10 +44,10 @@ miniz_oxide.workspace = true
 nalgebra.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_repr = "0"
+serde_repr.workspace = true
 smallstr.workspace = true
 smallvec.workspace = true
-thiserror = { version = "2", default-features = false }
+thiserror.workspace = true
 zip = { workspace = true, optional = true }
 
 [dependencies.portable_std]

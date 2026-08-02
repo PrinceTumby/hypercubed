@@ -31,8 +31,8 @@ use gl::texture::{
     Texture2dFormat, Texture2dTarget, TextureDataType, TextureInternalFormat,
 };
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "platform_winit")] {
+cfg_select! {
+    feature = "platform_winit" => {
         use glutin::prelude::*;
         use core::num::NonZeroU32;
         use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -113,8 +113,8 @@ impl GraphicsBackend for GraphicsState {
     fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         let size = window.inner_size();
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "platform_winit")] {
+        cfg_select! {
+            feature = "platform_winit" => {
                 // Initialise various components of `glutin` to get an OpenGL environment.
                 // Display
                 let display_handle = window
@@ -184,12 +184,14 @@ impl GraphicsBackend for GraphicsState {
                         glutin_display.get_proc_address(&c_string_name) as *const ()
                     })
                 }
-            } else if #[cfg(feature = "platform_linux_drm")] {
+            }
+            feature = "platform_linux_drm" => {
                 // On the Linux DRM backend, `Window::new` is responsible for loading all of the
                 // OpenGL function pointers, so everything's loaded by the time we get here.
                 // It's also responsible for making the OpenGL context current before we get here.
                 // This means we don't actually have to do anything at this point.
-            } else {
+            }
+            _ => {
                 compile_error!(concat!(
                     "Support for the OpenGL graphics backend is currently unimplemented for the ",
                     "selected platform.",
@@ -370,8 +372,8 @@ impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip(self))]
     fn apply_new_graphics_options(&mut self, new_options: GraphicsOptions) {
         let old_options = core::mem::replace(&mut self.graphics_options, new_options);
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "platform_winit")] {
+        cfg_select! {
+            feature = "platform_winit" => {
                 let glutin_context = &self.resources.glutin_resources.context;
                 let glutin_surface = &self.resources.glutin_resources.surface;
                 if new_options.vsync != old_options.vsync {
@@ -386,7 +388,8 @@ impl GraphicsBackend for GraphicsState {
                         )
                         .expect("Failed to change glutin surface swap interval for VSync change");
                 }
-            } else if #[cfg(feature = "platform_linux_drm")] {
+            }
+            feature = "platform_linux_drm" => {
                 _ = old_options;
             }
         }
@@ -476,14 +479,15 @@ impl GraphicsBackend for GraphicsState {
             use gl::framebuffer::ClearBufferBits;
             use gl::matrix::MatrixMode;
             use gl::program_arb::ProgramType;
-            cfg_if::cfg_if! {
-                if #[cfg(feature = "platform_winit")] {
+            cfg_select! {
+                feature = "platform_winit" => {
                     let glutin_context = &self.resources.glutin_resources.context;
                     let glutin_surface = &self.resources.glutin_resources.surface;
                     glutin_context
                         .make_current(glutin_surface)
                         .context("Error while making glutin context current")?;
-                } else if #[cfg(feature = "platform_linux_drm")] {
+                }
+                feature = "platform_linux_drm" => {
                     let window_context = self.resources.window.get_context_blocking();
                 }
             }
@@ -915,12 +919,13 @@ impl GraphicsBackend for GraphicsState {
                 egui_primitives,
                 pixels_per_point,
             );
-            cfg_if::cfg_if! {
-                if #[cfg(feature = "platform_winit")] {
+            cfg_select! {
+                feature = "platform_winit" => {
                     glutin_surface
                         .swap_buffers(glutin_context)
                         .context("Error while swapping glutin surface buffers")?;
-                } else if #[cfg(feature = "platform_linux_drm")] {
+                }
+                feature = "platform_linux_drm" => {
                     window_context.flip_page(self.graphics_options.vsync);
                 }
             }

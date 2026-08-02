@@ -740,7 +740,7 @@ impl Deserialize for ProtocolRawBytes {
     fn deserialize(input: InputSpan) -> IResult<Self> {
         Ok((
             input.take_from(input.len()),
-            Self(input.as_ref().to_owned()),
+            Self(input.to_vec()),
         ))
     }
 }

@@ -1,20 +1,23 @@
-cfg_if::cfg_if! {
-    if #[cfg(feature = "platform_winit")] {
+cfg_select! {
+    feature = "platform_winit" => {
         pub mod winit;
         pub use winit::exports::*;
-    } else if #[cfg(feature = "platform_linux_drm")] {
+    }
+    feature = "platform_linux_drm" => {
         pub mod linux_drm;
         pub use linux_drm::exports::*;
-    } else {
+    }
+    _ => {
         compile_error!("A platform feature must be enabled.");
     }
 }
 
 pub fn load_resource_data() -> anyhow::Result<resources::GameResourceData> {
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "use_embedded_cache")] {
+    cfg_select! {
+        feature = "use_embedded_cache" => {
             Ok(extract_embedded_resource_data_cache())
-        } else {
+        }
+        _ => {
             resources::GameResourceData::load_vanilla_data()
         }
     }
@@ -30,27 +33,29 @@ fn extract_embedded_resource_data_cache() -> resources::GameResourceData {
     postcard::from_bytes(&bytes).unwrap()
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "full_std")] {
+cfg_select! {
+    feature = "full_std" => {
         #[allow(unused)]
         pub(crate) use std::{dbg, eprintln, print, println};
         pub use std::net;
     }
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "mini_std")] {
+cfg_select! {
+    feature = "mini_std" => {
         pub type StrongRng = rand::rngs::ThreadRng;
-    } else {
+    }
+    _ => {
         pub type StrongRng = rand::rngs::StdRng;
     }
 }
 
 pub fn new_strong_rng() -> StrongRng {
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "full_std")] {
+    cfg_select! {
+        feature = "full_std" => {
             rand::rng()
-        } else {{
+        }
+        _ => {{
             // TODO: We really need to make this more secure! Sample some timers or something to
             // mix in some random data.
             let mut per_hasher_seed = 0;

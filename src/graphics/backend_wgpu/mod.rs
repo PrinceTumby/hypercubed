@@ -3,13 +3,9 @@ pub mod debug;
 pub mod egui_renderer;
 pub mod environment;
 
-use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
-use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
-use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState};
-use crate::graphics::lightmap::{RawLightmapTexture, generate_lightmap_texture};
-use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
-use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use anyhow::anyhow;
+use std::sync::mpsc::{Receiver, Sender};
+
+use anyhow::{Context, bail};
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
@@ -18,10 +14,17 @@ use chunk::{
 use portable_std::{Arc, FastHashMap, FastHashMapEntry, FastHashSet};
 use resources::GameResourceData;
 use resources::block::model::Tint;
-use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
 use wgpu::util::DeviceExt as _;
 use winit::window::Window;
+use wgpu::rwh::HasDisplayHandle;
+
+use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
+use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
+use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState};
+use crate::graphics::lightmap::{RawLightmapTexture, generate_lightmap_texture};
+use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 
 mod wesl_include {
     /// Makes a [`wgpu::ShaderModuleDescriptor`] from the given WESL module name.
@@ -164,17 +167,19 @@ impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
     fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::from_env_or_default(),
+            display: Some(Box::new(window.display_handle().context("Failed to get display handle")?)),
         });
         let surface = instance.create_surface(window)?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .unwrap();
         log::debug!("WGPU Adapter Info - {:?}", adapter.get_info());
@@ -203,6 +208,7 @@ impl GraphicsBackend for GraphicsState {
             desired_maximum_frame_latency: 2,
             alpha_mode: wgpu::CompositeAlphaMode::Opaque,
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
         let depth_texture = Texture::create_depth_texture(&device, &config, "Depth Texture");
@@ -376,7 +382,7 @@ impl GraphicsBackend for GraphicsState {
         let common_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Common Pipeline Layout"),
-                bind_group_layouts: &[&common_bind_group_layout],
+                bind_group_layouts: &[Some(&common_bind_group_layout)],
                 immediate_size: 0,
             });
         let block_render_pipeline =
@@ -420,7 +426,7 @@ impl GraphicsBackend for GraphicsState {
         let debug_graphics_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Debug Graphics Render Pipeline Layout"),
-                bind_group_layouts: &[&common_bind_group_layout],
+                bind_group_layouts: &[Some(&common_bind_group_layout)],
                 immediate_size: 0,
             });
         let debug_point_render_pipeline =
@@ -756,15 +762,18 @@ impl GraphicsBackend for GraphicsState {
             egui_primitives,
             pixels_per_point,
         );
-        let output = match self.resources.surface.get_current_texture() {
-            Ok(output) => output,
-            Err(wgpu::SurfaceError::Timeout) => return Ok(None),
-            // Reconfigure the surface if lost.
-            Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
+        let (output, surface_suboptimal) = match self.resources.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(output) => (output, false),
+            wgpu::CurrentSurfaceTexture::Suboptimal(output) => (output, true),
+            wgpu::CurrentSurfaceTexture::Occluded => return Ok(None),
+            wgpu::CurrentSurfaceTexture::Validation => {
+                bail!("Validation error while getting surface texture")
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => return Ok(None),
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 self.resize(self.size);
                 return Ok(None);
             }
-            Err(err) => return Err(anyhow!("Error while getting surface texture - {err}")),
         };
         let view = output
             .texture
@@ -1020,6 +1029,9 @@ impl GraphicsBackend for GraphicsState {
             .queue
             .submit(core::iter::once(encoder.finish()));
         output.present();
+        if surface_suboptimal {
+            self.resize(self.size);
+        }
         self.egui_renderer
             .free_textures(&egui_full_output.textures_delta.free);
         Ok(Some(debug_output))

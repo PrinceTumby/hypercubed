@@ -15,11 +15,10 @@ std = [
 
 [dependencies]
 ahash.workspace = true
-cfg-if.workspace = true
 embedded-io.workspace = true
 foldhash.workspace = true
 hashbrown.workspace = true
 nalgebra.workspace = true
 smallstr.workspace = true
 spin.workspace = true
-string_cache = { version = "0", optional = true }
+string_cache = { workspace = true, optional = true }

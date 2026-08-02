@@ -18,38 +18,40 @@ exclude = [
 ]
 
 [workspace.dependencies]
-ahash = { version = "0", default-features = false }
+ahash = { version = "0.8", default-features = false }
 anyhow = { version = "1", default-features = false }
 bimap = { version = "0.6", default-features = false, features = ["serde"] }
-bitfield = "0"
+bitfield = "0.19"
 bitflags = "2"
 bytemuck = { version = "1", features = ["derive"] }
-cfg-if = "1"
-embedded-io = { version = "0.6", features = ["alloc"] }
-embedded-io-async = { version = "0.6", features = ["alloc"] }
-foldhash = { version = "0", default-features = false }
-hashbrown = { version = "0", features = ["serde"] }
+embedded-io = { version = "0.7", features = ["alloc"] }
+embedded-io-async = { version = "0.7", features = ["alloc"] }
+foldhash = { version = "0.2", default-features = false }
+hashbrown = { version = "0.17", features = ["serde"] }
 indexmap = { version = "2", default-features = false }
 lazy_static = "1"
-log = "0"
-miniz_oxide = "0"
+log = "0.4"
+miniz_oxide = "0.9"
 once_cell = { version = "1", default-features = false, features = ["alloc"] }
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "432955a" }
 vulkan_prelude = { path = "crates/vulkan_prelude" }
-smallstr = { version = "0", features = ["serde"] }
-wesl = "0.3"
-zip = { version = "4", default-features = false, features = ["deflate"] }
+serde_repr = "0.1"
+smallstr = { version = "0.3", features = ["serde"] }
+string_cache = "0.10"
+thiserror = { version = "2", default-features = false }
+wesl = "0.4"
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [workspace.dependencies.image]
-version = "0"
+version = "0.25"
 default-features = false
 features = ["jpeg", "png"]
 
 [workspace.dependencies.nalgebra]
-version = "0.34"
+version = "0.35"
 default-features = false
 features = ["libm", "macros", "serde", "serde-serialize-no-std"]
 
@@ -58,7 +60,7 @@ version = "1"
 features = ["bincode", "const_generics", "const_new", "serde", "union"]
 
 [workspace.dependencies.spin]
-version = "0.9"
+version = "0.12"
 default-features = false
 features = ["mutex", "spin_mutex", "portable_atomic"]
 
@@ -211,8 +213,8 @@ path = "crates/hypercubed_resources"
 features = ["std"]
 
 [dependencies]
-aes = "0.8"
-ahash = { workspace = true }
+aes = "0.9"
+ahash.workspace = true
 anyhow = { version = "1", default-features = false }
 bimap.workspace = true
 bitfield.workspace = true
@@ -220,13 +222,12 @@ bitflags.workspace = true
 bytebuffer = { version = "2", optional = true }
 bytemuck.workspace = true
 bytes = { version = "1", default-features = false }
-cfb8 = { version = "0.8" }
-cfg-if.workspace = true
-clap = { version = "4.5", features = ["derive"], optional = true }
+cfb8 = { version = "0.9" }
+clap = { version = "4.6", features = ["derive"], optional = true }
 crab_nbt = { version = "0.2", default-features = false }
-drm = { version = "0.14", optional = true }
+drm = { version = "0.15", optional = true }
 egli = { git = "https://github.com/Nercury/egli-rs", rev = "723ee34", optional = true }
-env_logger = { version = "0.10", optional = true }
+env_logger = { version = "0.11", optional = true }
 fixedbitset = "0.5"
 foldhash.workspace = true
 futures = { version = "0.3", default-features = false, features = ["async-await"] }
@@ -234,7 +235,7 @@ gbm = { version = "0.18", default-features = false, features = ["drm-support"], 
 glutin = { version = "0.32", default-features = false, optional = true }
 image = { workspace = true, optional = true }
 indexmap.workspace = true
-input = { version = "0.9", optional = true }
+input = { version = "0.10", optional = true }
 libseat = { version = "0.2", default-features = false, optional = true }
 log.workspace = true
 mimalloc = { version = "0.1", optional = true }
@@ -243,21 +244,21 @@ nalgebra.workspace = true
 nom = { version = "8", default-features = false, features = ["alloc"] }
 nom_locate = { version = "5", default-features = false, features = ["alloc"] }
 once_cell.workspace = true
-ordered-float = { version = "4.5", default-features = false }
-pollster = { version = "0.3", optional = true }
+ordered-float = { version = "5.3", default-features = false }
+pollster = { version = "1.0", optional = true }
 postcard.workspace = true
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
-rand = { version = "=0.10.0-rc.5", default-features = false, features = ["std_rng"] }
-rand_core = "=0.10.0-rc-2"
+rand = { version = "0.10", default-features = false, features = ["std_rng"] }
+rand_core = "0.10"
 raw-window-handle = { version = "0.6", optional = true }
-rayon = { version = "1.11", optional = true }
+rayon = { version = "1.12", optional = true }
 reqwest = { version = "0.13", features = ["blocking", "json"], optional = true }
 rustix = { version = "1.1", features = ["event"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
-sha1 = { version = "0.10", default-features = false }
+sha1 = { version = "0.11", default-features = false }
 smallvec.workspace = true
-thiserror = { version = "2", default-features = false }
+thiserror.workspace = true
 threadpool = { version = "1.8", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["alloc"] }
 tracing-tracy = { version = "0.11", optional = true }
@@ -266,22 +267,22 @@ uuid = { version = "1", default-features = false, features = ["serde", "v3"] }
 vulkan_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
 wesl = { workspace = true, optional = true }
-wgpu = { version = "28", optional = true }
+wgpu = { version = "30", optional = true }
 winit = { version = "0.30", optional = true }
 
 [dependencies.egui]
-version = "0.33"
+version = "0.35"
 default-features = false
 features = ["bytemuck", "default_fonts"]
 optional = true
 
 [dependencies.egui_plot]
-version = "0.34"
+version = "0.36"
 default-features = false
 optional = true
 
 [dependencies.rsa]
-version = "0.10.0-rc.10"
+version = "0.10.0-rc.18"
 default-features = false
 features = ["encoding"]
 

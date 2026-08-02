@@ -58,7 +58,7 @@ pub const OFFLINE_PLAYER_NAMESPACE: Uuid = uuid!("071e6668-28ee-39de-8f51-f257ec
 
 use crate::platform::net::TcpStream;
 use crate::portable_prelude::{eprintln, *};
-use cfb8::cipher::{BlockDecryptMut, BlockEncryptMut};
+use cfb8::cipher::{BlockModeDecrypt, BlockModeEncrypt};
 use miniz_oxide::deflate::{CompressionLevel, compress_to_vec_zlib};
 use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 #[cfg(feature = "protocol_verbose")]
@@ -183,7 +183,7 @@ pub trait PacketRead: Deserialize + core::fmt::Debug {
                         ByteView(InputSpan::new(&raw_packet))
                     ))
                 })?;
-            assert_eq!(data_left.as_ref(), &[] as &[u8]);
+            assert_eq!(*data_left, &[] as &[u8]);
             Ok(packet)
         }
         #[cfg(feature = "protocol_verbose")]
@@ -232,7 +232,7 @@ pub trait PacketRead: Deserialize + core::fmt::Debug {
                     ))
                 })?;
             assert_eq!(
-                data_left.as_ref(),
+                *data_left,
                 &[] as &[u8],
                 "data left after packet - packet: {packet:?}, data_left: {data_left:?}",
             );
@@ -468,7 +468,7 @@ impl<'a> io::Read for EncryptedTcpStreamReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let bytes_read = self.tcp_stream.read(buf)?;
         for i in 0..bytes_read {
-            self.decryptor.decrypt_block_mut((&mut buf[i..=i]).into());
+            self.decryptor.decrypt_block(buf[i..=i].as_mut_array().unwrap().into());
         }
         Ok(bytes_read)
     }
@@ -485,7 +485,7 @@ impl<'a> io::Write for EncryptedTcpStreamWriter<'a> {
         self.encryption_buffer.extend_from_slice(buf);
         for i in 0..self.encryption_buffer.len() {
             self.encryptor
-                .encrypt_block_mut((&mut self.encryption_buffer[i..=i]).into());
+                .encrypt_block(self.encryption_buffer[i..=i].as_mut_array().unwrap().into());
         }
         let write_result = self.tcp_stream.write_all(self.encryption_buffer.as_slice());
         self.encryption_buffer.clear();

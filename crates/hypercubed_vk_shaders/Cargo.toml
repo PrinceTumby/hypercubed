@@ -7,7 +7,6 @@ edition = "2024"
 anyhow.workspace = true
 
 [dependencies]
-cfg-if.workspace = true
 bitfield.workspace = true
 vulkano.workspace = true
 vulkan_prelude.workspace = true

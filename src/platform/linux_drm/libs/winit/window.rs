@@ -11,8 +11,8 @@ use gbm::AsRaw;
 use glutin::api::egl;
 use std::sync::{Arc, Mutex, mpsc};
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "graphics_backend_opengl")] {
+cfg_select! {
+    feature = "graphics_backend_opengl" => {
         use crate::graphics::backend_opengl::gl;
     }
 }

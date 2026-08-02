@@ -25,12 +25,13 @@ extern crate alloc;
 pub mod portable_prelude {
     pub use portable_std::prelude::*;
 
-    cfg_if::cfg_if! {
-        if #[cfg(not(feature = "full_std"))] {
+    cfg_select! {
+        not(feature = "full_std") => {
             #[allow(unused)]
             pub(crate) use crate::platform::{dbg, println, eprintln};
             pub use nalgebra::{ComplexField, RealField};
-        } else {
+        }
+        _ => {
             pub use std::{dbg, println, eprintln};
         }
     }
@@ -70,11 +71,12 @@ use winit::event::{DeviceEvent, RawKeyEvent, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Fullscreen, Window, WindowId};
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "full_std")] {
+cfg_select! {
+    feature = "full_std" => {
         use std::time::Instant;
         use threadpool::ThreadPool;
-    } else {
+    }
+    _ => {
         use crate::platform::time::Instant;
     }
 }
@@ -241,8 +243,8 @@ impl ApplicationHandler for App {
         // Load resources, and setup a graphics backend.
         let resource_data =
             platform::load_resource_data().expect("Error while loading resource data");
-        cfg_if::cfg_if! {
-            if #[cfg(any(feature = "platform_winit", feature = "platform_linux_drm"))] {
+        cfg_select! {
+            any(feature = "platform_winit", feature = "platform_linux_drm") => {
                 let graphics_backend: Box<dyn GraphicsBackend> =
                     match self.selected_graphics_backend {
                         #[cfg(feature = "graphics_backend_opengl")]
@@ -270,7 +272,8 @@ impl ApplicationHandler for App {
                             .unwrap()
                         }
                     };
-            } else {
+            }
+            _ => {
                 let graphics_backend =
                     platform::create_graphics_backend(window.clone()).unwrap();
             }

@@ -57,12 +57,14 @@ pub enum SelectedGraphicsBackend {
 #[allow(clippy::derivable_impls)]
 impl Default for SelectedGraphicsBackend {
     fn default() -> Self {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "graphics_backend_vulkan")] {
+        cfg_select! {
+            feature = "graphics_backend_vulkan" => {
                 Self::Vulkan
-            } else if #[cfg(feature = "graphics_backend_opengl")] {
+            }
+            feature = "graphics_backend_opengl" => {
                 Self::OpenGL
-            } else if #[cfg(feature = "graphics_backend_wgpu")] {
+            }
+            feature = "graphics_backend_wgpu" => {
                 Self::Wgpu
             }
         }
