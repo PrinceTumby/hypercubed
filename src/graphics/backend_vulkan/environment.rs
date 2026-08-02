@@ -17,8 +17,8 @@ pub mod sky {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(&mut None, device, "shader::sky::sun::vertex"),
-                    shader_stage_from_entry_point(&mut None, device, "shader::sky::sun::fragment"),
+                    shader_stage_from_entry_point(&mut None, device, "sky::sun", "vertex"),
+                    shader_stage_from_entry_point(&mut None, device, "sky::sun", "fragment"),
                 ],
                 // The shader generates its own vertex information, so nothing here.
                 vertex_input_state: Some(&VulkanVertexInputState::new()),
@@ -80,8 +80,8 @@ pub mod sky {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(&mut None, device, "shader::sky::moon::vertex"),
-                    shader_stage_from_entry_point(&mut None, device, "shader::sky::moon::fragment"),
+                    shader_stage_from_entry_point(&mut None, device, "sky::moon", "vertex"),
+                    shader_stage_from_entry_point(&mut None, device, "sky::moon", "fragment"),
                 ],
                 // The shader generates its own vertex information, so nothing here.
                 vertex_input_state: Some(&VulkanVertexInputState::new()),
@@ -143,8 +143,8 @@ pub mod sky {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(&mut None, device, "shader::sky::star::vertex"),
-                    shader_stage_from_entry_point(&mut None, device, "shader::sky::star::fragment"),
+                    shader_stage_from_entry_point(&mut None, device, "sky::star", "vertex"),
+                    shader_stage_from_entry_point(&mut None, device, "sky::star", "fragment"),
                 ],
                 vertex_input_state: Some(&VulkanVertexInputState {
                     bindings: vulkan_vertex_bindings![

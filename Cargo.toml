@@ -4,10 +4,9 @@ members = [
     "crates/vulkan_prelude",
     "crates/hypercubed_resources",
     "crates/hypercubed_portable_std",
+    "crates/hypercubed_vk_shaders",
 ]
 exclude = [
-    "crates/hypercubed_vk_shaders",
-    "crates/hypercubed_vk_shaders/builder",
     "crates/bimap-rs",
     "crates/cesu8-rs",
     "crates/CrabNBT",
@@ -38,12 +37,9 @@ once_cell = { version = "1", default-features = false, features = ["alloc"] }
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-# If updating, also update in "crates/hypercubed_vk_shaders/Cargo.toml"
 vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "432955a" }
 vulkan_prelude = { path = "crates/vulkan_prelude" }
 smallstr = { version = "0", features = ["serde"] }
-spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
 wesl = "0.3"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
@@ -291,7 +287,6 @@ features = ["encoding"]
 
 [dependencies.hypercubed_vk_shaders]
 path = "crates/hypercubed_vk_shaders"
-features = ["vulkano"]
 optional = true
 
 [dependencies.portable_std]

@@ -1,38 +1,18 @@
-[workspace]
-members = ["builder", "builder/crate_redirect"]
-
-[workspace.dependencies]
-cfg-if = "1"
-bitfield = "0"
-spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git", rev = "6a9ea3b" }
-vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "432955a" }
-
 [package]
 name = "hypercubed_vk_shaders"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = ["vulkano"]
-shader_code = []
-vulkano = ["dep:vulkano"]
+[build-dependencies]
+anyhow.workspace = true
 
 [dependencies]
 cfg-if.workspace = true
-spirv-std.workspace = true
 bitfield.workspace = true
-vulkano = { workspace = true, optional = true }
-vulkan_prelude = { path = "../vulkan_prelude" }
-ahash = { version = "0", features = ["serde"] }
-anyhow = "1"
-bytemuck = { version = "1", features = ["derive"] }
-foldhash = "0"
-lazy_static = "1"
-
-[profile.dev.build-override]
-opt-level = 3
-
-[profile.release.build-override]
-opt-level = 3
-codegen-units = 16
+vulkano.workspace = true
+vulkan_prelude.workspace = true
+ahash.workspace = true
+anyhow.workspace = true
+bytemuck.workspace = true
+foldhash.workspace = true
+lazy_static.workspace = true

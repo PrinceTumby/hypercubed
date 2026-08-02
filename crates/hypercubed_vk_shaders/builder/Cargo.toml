@@ -1,7 +1,0 @@
-[package]
-name = "hypercubed_vk_shaders_builder"
-version = "0.1.0"
-edition = "2024"
-
-[build-dependencies]
-spirv-builder = { workspace = true }

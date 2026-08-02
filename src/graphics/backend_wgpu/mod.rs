@@ -177,7 +177,7 @@ impl GraphicsBackend for GraphicsState {
             force_fallback_adapter: false,
         }))
         .unwrap();
-        dbg!(adapter.get_info());
+        log::debug!("WGPU Adapter Info - {:?}", adapter.get_info());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: None,
             required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE,

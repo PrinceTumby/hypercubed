@@ -1,4 +1,4 @@
-use super::shader_exports::chunk::types as shader_chunk_types;
+use super::shader_exports::chunk as shader_chunk_types;
 use super::shader_exports::shader_stage_from_entry_point;
 use crate::graphics::chunk::{HasSubchunkData, SubchunkConnectivity, SubchunkData};
 use crate::{MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
@@ -171,8 +171,13 @@ pub mod block_face {
                     //     device,
                     //     "shader::chunk::block_face::fragment",
                     // ),
-                    shader_stage_from_entry_point(&mut None, device, "block_face_vertex_bda"),
-                    shader_stage_from_entry_point(&mut None, device, "block_face_fragment_bda"),
+                    shader_stage_from_entry_point(&mut None, device, "chunk::block_face", "vertex"),
+                    shader_stage_from_entry_point(
+                        &mut None,
+                        device,
+                        "chunk::block_face",
+                        "fragment",
+                    ),
                 ],
                 vertex_input_state: Some(&VulkanVertexInputState::default()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {
@@ -282,25 +287,17 @@ pub mod tinted_block_face {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    // shader_stage_from_entry_point(
-                    //     &mut None,
-                    //     device,
-                    //     "shader::chunk::tinted_block_face::vertex",
-                    // ),
-                    // shader_stage_from_entry_point(
-                    //     &mut None,
-                    //     device,
-                    //     "shader::chunk::tinted_block_face::fragment",
-                    // ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "tinted_block_face_vertex_bda",
+                        "chunk::tinted_block_face",
+                        "vertex",
                     ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "tinted_block_face_fragment_bda",
+                        "chunk::tinted_block_face",
+                        "fragment",
                     ),
                 ],
                 vertex_input_state: Some(&VulkanVertexInputState::default()),
@@ -360,25 +357,17 @@ pub mod custom_block {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    // shader_stage_from_entry_point(
-                    //     &mut None,
-                    //     device,
-                    //     "shader::chunk::custom_block::vertex",
-                    // ),
-                    // shader_stage_from_entry_point(
-                    //     &mut None,
-                    //     device,
-                    //     "shader::chunk::custom_block::fragment",
-                    // ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "custom_block_vertex_bda",
+                        "chunk::custom_block",
+                        "vertex",
                     ),
                     shader_stage_from_entry_point(
                         &mut None,
                         device,
-                        "custom_block_fragment_bda",
+                        "chunk::custom_block",
+                        "fragment",
                     ),
                 ],
                 vertex_input_state: Some(&VulkanVertexInputState::default()),
@@ -581,17 +570,20 @@ pub fn process_subchunk(
         })
         .transpose()?;
     pending_subchunk_tx
-        .send(Some((subchunk_coords, Subchunk {
-            dispatch_id,
-            start_coords,
-            block_face_instances_buffer,
-            block_face_instance_groups,
-            tinted_block_face_instances_buffer,
-            tinted_block_face_instance_groups,
-            custom_block_instances_buffer,
-            custom_block_groups,
-            connectivity,
-        })))
+        .send(Some((
+            subchunk_coords,
+            Subchunk {
+                dispatch_id,
+                start_coords,
+                block_face_instances_buffer,
+                block_face_instance_groups,
+                tinted_block_face_instances_buffer,
+                tinted_block_face_instance_groups,
+                custom_block_instances_buffer,
+                custom_block_groups,
+                connectivity,
+            },
+        )))
         .unwrap();
     Ok(())
 }

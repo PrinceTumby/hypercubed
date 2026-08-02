@@ -4,8 +4,7 @@ bitfield! {
     // 0: Ignore depth?
     // 1-31: Unused
     #[repr(transparent)]
-    #[derive(Clone, Copy, Default)]
-    #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+    #[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct PackedFlags(u32);
     impl Debug;
     ignore_depth_raw, set_ignore_depth_raw: 0;
@@ -27,8 +26,7 @@ impl PackedFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PointVertex {
     pub pos: [f32; 3],
     pub size: f32,
@@ -37,8 +35,7 @@ pub struct PointVertex {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LineInstance {
     pub p1: [f32; 3],
     pub p2: [f32; 3],
@@ -48,8 +45,7 @@ pub struct LineInstance {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TriangleInstance {
     pub p1: [f32; 3],
     pub p2: [f32; 3],
@@ -58,7 +54,6 @@ pub struct TriangleInstance {
     pub flags: PackedFlags,
 }
 
-#[cfg(feature = "vulkano")]
 pub mod vertex_input_state {
     use super::*;
     use vulkan_prelude::*;

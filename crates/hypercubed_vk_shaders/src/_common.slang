@@ -276,3 +276,9 @@ public Sampler2D block_item_atlas;
 
 [[vk::binding(3)]]
 public StructuredBuffer<CustomBlockVertex[4], Std430DataLayout> custom_block_faces;
+
+[[vk::binding(4)]]
+public Sampler2D sun_image;
+
+[[vk::binding(5)]]
+public Sampler2D moon_phases_image;

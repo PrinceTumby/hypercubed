@@ -1,4 +1,4 @@
-use super::shader_exports::debug::types::{self as shader_debug_types, vertex_input_state};
+use super::shader_exports::debug::{self as shader_debug_types, vertex_input_state};
 use super::shader_exports::shader_stage_from_entry_point;
 use anyhow::Context;
 use std::sync::Arc;
@@ -18,16 +18,8 @@ pub mod point {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(
-                        &mut None,
-                        device,
-                        "shader::debug::point::vertex",
-                    ),
-                    shader_stage_from_entry_point(
-                        &mut None,
-                        device,
-                        "shader::debug::point::fragment",
-                    ),
+                    shader_stage_from_entry_point(&mut None, device, "debug::point", "vertex"),
+                    shader_stage_from_entry_point(&mut None, device, "debug::point", "fragment"),
                 ],
                 vertex_input_state: Some(&vertex_input_state::point()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {
@@ -96,12 +88,8 @@ pub mod line {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(&mut None, device, "shader::debug::line::vertex"),
-                    shader_stage_from_entry_point(
-                        &mut None,
-                        device,
-                        "shader::debug::line::fragment",
-                    ),
+                    shader_stage_from_entry_point(&mut None, device, "debug::line", "vertex"),
+                    shader_stage_from_entry_point(&mut None, device, "debug::line", "fragment"),
                 ],
                 vertex_input_state: Some(&vertex_input_state::line()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {
@@ -172,16 +160,8 @@ pub mod triangle {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(
-                        &mut None,
-                        device,
-                        "shader::debug::triangle::vertex",
-                    ),
-                    shader_stage_from_entry_point(
-                        &mut None,
-                        device,
-                        "shader::debug::triangle::fragment",
-                    ),
+                    shader_stage_from_entry_point(&mut None, device, "debug::triangle", "vertex"),
+                    shader_stage_from_entry_point(&mut None, device, "debug::triangle", "fragment"),
                 ],
                 vertex_input_state: Some(&vertex_input_state::triangle()),
                 input_assembly_state: Some(&VulkanInputAssemblyState {

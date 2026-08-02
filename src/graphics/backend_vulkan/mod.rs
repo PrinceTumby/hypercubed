@@ -29,7 +29,7 @@ use anyhow::{Context, anyhow};
 use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
 use resources::GameResourceData;
 use resources::block::model::Tint;
-use shader_exports::chunk::types::SubchunkFaceGroupInfo;
+use shader_exports::chunk::SubchunkFaceGroupInfo;
 use shader_exports::{CommonDescriptorSetIdxs, RawRenderInfo};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -41,9 +41,9 @@ use winit::window::Window;
 pub struct GraphicsResources {
     pub block_registry: Arc<resources::block::Registry>,
     pub model_registry: Arc<resources::block::model::ModelRegistry>,
-    pub device: Arc<vulkano::device::Device>,
-    pub render_queue: Arc<vulkano::device::Queue>,
-    pub compute_queue: Arc<vulkano::device::Queue>,
+    pub device: Arc<VulkanDevice>,
+    pub render_queue: Arc<VulkanQueue>,
+    pub compute_queue: Arc<VulkanQueue>,
     pub memory_allocator: Arc<VulkanStandardMemoryAllocator>,
     pub command_buffer_allocator: Arc<VulkanStandardCommandBufferAllocator>,
     pub descriptor_set_allocator: Arc<VulkanStandardDescriptorSetAllocator>,
@@ -88,7 +88,7 @@ pub struct EnvironmentGraphicsState {
 pub struct GraphicsState {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub resources: GraphicsResources,
-    pub swapchain: Arc<vulkano::swapchain::Swapchain>,
+    pub swapchain: Arc<VulkanSwapchain>,
     pub swapchain_images: Vec<Arc<VulkanImage>>,
     pub depth_image: Arc<VulkanImage>,
     pub egui_renderer: egui_renderer::Renderer,
@@ -846,7 +846,9 @@ impl GraphicsBackend for GraphicsState {
                 // Remove old subchunk.
                 self.subchunk_data_storage.remove_subchunk(subchunk_coords);
                 // Add new subchunk.
-                self.subchunk_data_storage.subchunks.insert(subchunk_coords, subchunk);
+                self.subchunk_data_storage
+                    .subchunks
+                    .insert(subchunk_coords, subchunk);
             }
         }
         let subchunk_data_storage = &mut self.subchunk_data_storage;
@@ -1051,13 +1053,9 @@ impl GraphicsBackend for GraphicsState {
                     }
                     // Custom blocks.
                     if !subchunk.custom_block_groups.is_empty() {
-                        let buffer = subchunk
-                            .custom_block_instances_buffer
-                            .as_ref()
-                            .unwrap();
+                        let buffer = subchunk.custom_block_instances_buffer.as_ref().unwrap();
                         for group in &subchunk.custom_block_groups {
-                            let buffer_offset = group.start_instance_and_len[0]
-                                as u64
+                            let buffer_offset = group.start_instance_and_len[0] as u64
                                 * core::mem::size_of::<chunk::custom_block::Instance>() as u64;
                             custom_block_draw_commands.push(VulkanDrawIndirectCommand {
                                 vertex_count: group.start_face_and_len[1] * 6,
@@ -1065,9 +1063,8 @@ impl GraphicsBackend for GraphicsState {
                                 first_vertex: group.start_face_and_len[0] * 6,
                                 first_instance: 0,
                             });
-                            custom_block_subchunk_instance_groups.push(
-                                buffer.address.get() + buffer_offset
-                            );
+                            custom_block_subchunk_instance_groups
+                                .push(buffer.address.get() + buffer_offset);
                         }
                     }
                 },
@@ -1181,9 +1178,7 @@ impl GraphicsBackend for GraphicsState {
                         },
                         custom_block_subchunk_instance_groups,
                     )
-                    .context(
-                        "Error while creating custom block subchunk instance groups buffer",
-                    )?,
+                    .context("Error while creating custom block subchunk instance groups buffer")?,
                 );
             }
         }
@@ -1447,7 +1442,9 @@ impl GraphicsBackend for GraphicsState {
                             command_buffers: &[VulkanCommandBufferSubmitInfo::new(
                                 built_command_buffer.as_raw(),
                             )],
-                            wait_semaphores: &[VulkanSemaphoreSubmitInfo::new(&swapchain_semaphore)],
+                            wait_semaphores: &[VulkanSemaphoreSubmitInfo::new(
+                                &swapchain_semaphore,
+                            )],
                             signal_semaphores: &[
                                 VulkanSemaphoreSubmitInfo::new(&render_semaphore),
                                 // VulkanSemaphoreSubmitInfo::new(render_semaphore_2.clone()),

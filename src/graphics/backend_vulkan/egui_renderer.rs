@@ -84,8 +84,8 @@ impl Renderer {
             &VulkanGraphicsPipelineCreateInfo {
                 flags: VulkanPipelineCreateFlags::default(),
                 stages: &[
-                    shader_stage_from_entry_point(&mut None, device, "shader::egui::vertex"),
-                    shader_stage_from_entry_point(&mut None, device, "shader::egui::fragment"),
+                    shader_stage_from_entry_point(&mut None, device, "egui", "vertex"),
+                    shader_stage_from_entry_point(&mut None, device, "egui", "fragment"),
                 ],
                 vertex_input_state: Some(&VulkanVertexInputState {
                     bindings: vulkan_vertex_bindings![
@@ -361,7 +361,7 @@ impl Renderer {
                 uvs: [v.uv.x, v.uv.y],
                 color: v.color.to_array(),
             }));
-            indices.extend(mesh.indices.into_iter());
+            indices.extend(mesh.indices);
             let indices_end = indices.len() as u32;
             meshes.push(RenderMeshInfo {
                 scissor_rect: VulkanScissor {
@@ -443,15 +443,20 @@ impl Renderer {
             .unwrap()
             .bind_index_buffer(render_data.index_buffer)
             .unwrap();
+        let mut last_texture_id: Option<egui::TextureId> = None;
         for mesh in &render_data.meshes {
+            if last_texture_id != Some(mesh.texture_id) {
+                last_texture_id = Some(mesh.texture_id);
+                command_buffer
+                    .bind_descriptor_sets(
+                        VulkanPipelineBindPoint::Graphics,
+                        self.pipeline_layout.clone(),
+                        1,
+                        vec![self.images[&mesh.texture_id].descriptor_set.clone()],
+                    )
+                    .unwrap();
+            }
             command_buffer
-                .bind_descriptor_sets(
-                    VulkanPipelineBindPoint::Graphics,
-                    self.pipeline_layout.clone(),
-                    1,
-                    vec![self.images[&mesh.texture_id].descriptor_set.clone()],
-                )
-                .unwrap()
                 .set_scissor(0, SmallVec::from(&[mesh.scissor_rect] as &[_]))
                 .unwrap();
             unsafe {

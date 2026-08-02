@@ -20,51 +20,9 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
 @_default:
     just --list
 
-@build-vk-shaders:
-    echo - Compiling Rust Vulkan shaders...
-    cd crates/hypercubed_vk_shaders/builder && cargo build
-    echo - Compiling Slang Vulkan shaders...
-    cd crates/hypercubed_vk_shaders && slangc \
-        src/chunk/block_face.slang \
-        -profile spirv_1_5 \
-        -fvk-use-entrypoint-name \
-        -o block_face_vertex_bda.spv \
-        -entry block_face_vertex_bda
-    cd crates/hypercubed_vk_shaders && slangc \
-        src/chunk/block_face.slang \
-        -profile spirv_1_5 \
-        -fvk-use-entrypoint-name \
-        -o block_face_fragment_bda.spv \
-        -entry block_face_fragment_bda
-    cd crates/hypercubed_vk_shaders && slangc \
-        src/chunk/tinted_block_face.slang \
-        -profile spirv_1_5 \
-        -fvk-use-entrypoint-name \
-        -o tinted_block_face_vertex_bda.spv \
-        -entry tinted_block_face_vertex_bda
-    cd crates/hypercubed_vk_shaders && slangc \
-        src/chunk/tinted_block_face.slang \
-        -profile spirv_1_5 \
-        -fvk-use-entrypoint-name \
-        -o tinted_block_face_fragment_bda.spv \
-        -entry tinted_block_face_fragment_bda
-    cd crates/hypercubed_vk_shaders && slangc \
-        src/chunk/custom_block.slang \
-        -profile spirv_1_5 \
-        -fvk-use-entrypoint-name \
-        -o custom_block_vertex_bda.spv \
-        -entry custom_block_vertex_bda
-    cd crates/hypercubed_vk_shaders && slangc \
-        src/chunk/custom_block.slang \
-        -profile spirv_1_5 \
-        -fvk-use-entrypoint-name \
-        -o custom_block_fragment_bda.spv \
-        -entry custom_block_fragment_bda
-    echo - Done!
-
 # Winit (default)
 
-@run-winit-vulkan *BUILD_FLAGS: build-vk-shaders
+@run-winit-vulkan *BUILD_FLAGS:
     echo - Compiling and running hypercubed...
     cargo run \
         --bin hypercubed \
@@ -72,7 +30,7 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
         --features=platform_winit,graphics_backend_vulkan \
         {{BUILD_FLAGS}}
 
-@build-winit-vulkan *BUILD_FLAGS: build-vk-shaders
+@build-winit-vulkan *BUILD_FLAGS:
     echo - Compiling hypercubed...
     cargo build \
         --bin hypercubed \

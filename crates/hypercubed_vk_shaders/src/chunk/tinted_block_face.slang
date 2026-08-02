@@ -1,22 +1,22 @@
 #language slang 2026
 
-module block_face;
+module tinted_block_face;
 
-import common;
+import "../_common";
 
 typedef SubchunkFaceGroupInfo<TintedBlockFaceInstance> SubchunkTintedFaceGroupInfo;
 
 [[vk::push_constant]]
-ConstantBuffer<SubchunkTintedFaceGroupInfo*> face_groups;
+internal ConstantBuffer<SubchunkTintedFaceGroupInfo*> face_groups;
 
-struct VertexOutput {
+internal struct VertexOutput {
     float4 pos : SV_Position;
     float2 uvs;
     float3 light_rgb;
 }
 
 [shader("vertex")]
-VertexOutput tinted_block_face_vertex_bda(
+VertexOutput vertex(
     uint draw_index : SV_DrawIndex,
     uint vertex_index : SV_VulkanVertexID,
     uint instance_index : SV_VulkanInstanceID,
@@ -57,7 +57,7 @@ VertexOutput tinted_block_face_vertex_bda(
 }
 
 [shader("fragment")]
-float4 tinted_block_face_fragment_bda(VertexOutput in) {
+float4 fragment(VertexOutput in) {
     let tex_sample = block_item_atlas.Sample(in.uvs);
     if (tex_sample.w < 1.0) {
         discard;

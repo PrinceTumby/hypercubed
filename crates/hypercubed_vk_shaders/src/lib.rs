@@ -1,10 +1,5 @@
-#![allow(unexpected_cfgs)]
-#![allow(clippy::too_many_arguments)]
-
 pub mod chunk;
 pub mod debug;
-pub mod egui;
-pub mod sky;
 
 /// Chunk descriptor set binding indices.
 /// Must be manually kept in sync with shader function definitions.
@@ -20,8 +15,7 @@ pub enum CommonDescriptorSetIdxs {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RawRenderInfo {
     pub view_matrix: [[f32; 4]; 4],
     pub sky_matrix: [[f32; 4]; 4],
@@ -35,75 +29,6 @@ pub struct RawRenderInfo {
     pub star_brightness: f32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct RenderInfo {
-    pub view_matrix: spirv_std::glam::Mat4,
-    pub sky_matrix: spirv_std::glam::Mat4,
-    pub recip_screen_size: spirv_std::glam::Vec2,
-    pub recip_block_item_atlas_size: spirv_std::glam::Vec2,
-    pub face_matrices: [spirv_std::glam::Mat3A; 6],
-    pub time_of_day: f32,
-    pub star_brightness: f32,
-}
-
-pub type RawAtlasImage = spirv_std::image::Image!(
-    2D,
-    format = rgba8,
-    // type=f32,
-    depth = false,
-    sampled = false,
-);
-
-pub type LightmapImage = spirv_std::image::Image!(
-    buffer,
-    type = f32,
-    depth = false,
-    sampled = true,
-);
-
-cfg_if::cfg_if! {
-    if #[cfg(not(target_arch = "spirv"))] {
-        #[macro_export]
-        #[allow(unused)]
-        macro_rules! cpu_dbg {
-            ($($exprs:expr),* $(,)?) => {
-                dbg!($($exprs),*)
-            };
-        }
-    } else {
-        #[macro_export]
-        #[allow(unused)]
-        macro_rules! cpu_dbg {
-            ($expr:expr $(,)?) => {
-                $expr
-            };
-            ($($exprs:expr),* $(,)?) => {
-                ($($exprs,)*)
-            };
-        }
-    }
-}
-
-#[cfg(not(target_arch = "spirv"))]
-pub fn cpu_dummy_ray_query() -> spirv_std::ray_tracing::RayQuery {
-    unsafe { core::mem::transmute(0u32) }
-}
-
-#[macro_export]
-macro_rules! make_ray_query_or_cpu_dummy {
-    (let mut $name:ident) => {
-        ::cfg_if::cfg_if! {
-            if #[cfg(target_arch = "spirv")] {
-                ::spirv_std::ray_query!(let mut $name);
-            } else {
-                let mut $name = &mut $crate::cpu_dummy_ray_query();
-            }
-        }
-    };
-}
-
-#[cfg(feature = "vulkano")]
 pub mod shader_modules {
     use ahash::AHashMap;
     use anyhow::Context;
@@ -122,20 +47,20 @@ pub mod shader_modules {
     lazy_static! {
         static ref RAW_MODULES: AHashMap<&'static str, &'static SpvAlignedBytes<[u8]>> = {
             let mut map = AHashMap::new();
-            macro_rules! generate_entry_point_name {
+            macro_rules! generate_module_name {
                 ($x:literal) => {
                     $x
                 };
                 ($x:literal, $($xs:literal),+) => {
-                    concat!($x, "::", generate_entry_point_name!($($xs),+))
+                    concat!($x, "::", generate_module_name!($($xs),+))
                 };
             }
-            macro_rules! generate_file_name {
+            macro_rules! generate_file_stem {
                 ($x:literal) => {
                     $x
                 };
                 ($x:literal, $($xs:literal),+) => {
-                    concat!($x, "-", generate_file_name!($($xs),+))
+                    concat!($x, "-", generate_file_stem!($($xs),+))
                 };
             }
             macro_rules! module {
@@ -143,63 +68,32 @@ pub mod shader_modules {
                     static MODULE_BYTES: &'static SpvAlignedBytes<[u8]> = &SpvAlignedBytes {
                         _align: [],
                         bytes: *include_bytes!(concat!(
-                            "../shader-",
-                            generate_file_name!($($name_segments),+),
+                            env!("OUT_DIR"),
+                            "/",
+                            generate_file_stem!($($name_segments),+),
                             ".spv",
                         )),
                     };
                     map.insert(
-                        concat!(
-                            "shader::",
-                            generate_entry_point_name!($($name_segments),+),
-                        ),
+                        generate_module_name!($($name_segments),+),
                         MODULE_BYTES,
                     );
                 }};
             }
-            macro_rules! raw_module {
-                ($name:literal) => {{
-                    static MODULE_BYTES: &'static SpvAlignedBytes<[u8]> = &SpvAlignedBytes {
-                        _align: [],
-                        bytes: *include_bytes!(concat!(
-                            "../",
-                            $name,
-                            ".spv",
-                        )),
-                    };
-                    map.insert(
-                        $name,
-                        MODULE_BYTES,
-                    );
-                }};
-            }
-            module!("chunk", "block_face", "vertex");
-            module!("chunk", "block_face", "fragment");
-            module!("chunk", "tinted_block_face", "vertex");
-            module!("chunk", "tinted_block_face", "fragment");
-            // Slang shaders, see note in `chunk` module.
-            raw_module!("block_face_vertex_bda");
-            raw_module!("block_face_fragment_bda");
-            raw_module!("tinted_block_face_vertex_bda");
-            raw_module!("tinted_block_face_fragment_bda");
-            raw_module!("custom_block_vertex_bda");
-            raw_module!("custom_block_fragment_bda");
-            module!("chunk", "custom_block", "vertex");
-            module!("chunk", "custom_block", "fragment");
-            module!("sky", "sun", "vertex");
-            module!("sky", "sun", "fragment");
-            module!("sky", "moon", "vertex");
-            module!("sky", "moon", "fragment");
-            module!("sky", "star", "vertex");
-            module!("sky", "star", "fragment");
-            module!("egui", "vertex");
-            module!("egui", "fragment");
-            module!("debug", "point", "vertex");
-            module!("debug", "point", "fragment");
-            module!("debug", "line", "vertex");
-            module!("debug", "line", "fragment");
-            module!("debug", "triangle", "vertex");
-            module!("debug", "triangle", "fragment");
+            // Chunk.
+            module!("chunk", "block_face");
+            module!("chunk", "tinted_block_face");
+            module!("chunk", "custom_block");
+            // Sky.
+            module!("sky", "sun");
+            module!("sky", "moon");
+            module!("sky", "star");
+            // `egui`.
+            module!("egui");
+            // Debug graphics.
+            module!("debug", "point");
+            module!("debug", "line");
+            module!("debug", "triangle");
             map.shrink_to_fit();
             map
         };
@@ -207,6 +101,7 @@ pub mod shader_modules {
 
     pub fn get_entry_point(
         device: &Arc<VulkanDevice>,
+        module: &'static str,
         entry_point: &'static str,
     ) -> VulkanEntryPoint {
         lazy_static! {
@@ -216,12 +111,17 @@ pub mod shader_modules {
         LOADED_MODULES
             .lock()
             .unwrap()
-            .entry(entry_point)
+            .entry(module)
             .or_insert_with(|| unsafe {
                 let raw_module = RAW_MODULES
-                    .get(entry_point)
+                    .get(module)
                     .with_context(|| {
-                        format!("Failed to find SPIR-V entry point module \"{entry_point}\"")
+                        let available_module_names: Vec<&&str> = RAW_MODULES.keys().collect();
+                        format!(
+                            "Failed to find SPIR-V module \"{}\", available modules - {:?}",
+                            module,
+                            available_module_names,
+                        )
                     })
                     .unwrap();
                 VulkanShaderModule::new(
@@ -235,7 +135,10 @@ pub mod shader_modules {
             })
             .entry_point(entry_point)
             .with_context(|| {
-                format!("Failed to find entry point \"{entry_point}\" in SPIR-V module")
+                format!(
+                    "Failed to find entry point \"{}\" in SPIR-V module \"{}\"",
+                    entry_point, module,
+                )
             })
             .unwrap()
     }
@@ -243,9 +146,10 @@ pub mod shader_modules {
     pub fn shader_stage_from_entry_point<'a>(
         temp_entry_point_store: &'a mut Option<VulkanEntryPoint>,
         device: &Arc<VulkanDevice>,
+        module: &'static str,
         entry_point: &'static str,
     ) -> VulkanPipelineShaderStageCreateInfo<'a> {
-        *temp_entry_point_store = Some(get_entry_point(device, entry_point));
+        *temp_entry_point_store = Some(get_entry_point(device, module, entry_point));
         VulkanPipelineShaderStageCreateInfo {
             flags: VulkanPipelineShaderStageCreateFlags::default(),
             entry_point: temp_entry_point_store.as_ref().unwrap(),

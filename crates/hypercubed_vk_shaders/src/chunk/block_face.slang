@@ -2,21 +2,21 @@
 
 module block_face;
 
-import common;
+import "../_common";
 
-typedef SubchunkFaceGroupInfo<BlockFaceInstance> SubchunkBasicFaceGroupInfo;
+internal typedef SubchunkFaceGroupInfo<BlockFaceInstance> SubchunkBasicFaceGroupInfo;
 
 [[vk::push_constant]]
-ConstantBuffer<SubchunkBasicFaceGroupInfo*> face_groups;
+internal ConstantBuffer<SubchunkBasicFaceGroupInfo*> face_groups;
 
-struct VertexOutput {
+internal struct VertexOutput {
     float4 pos : SV_Position;
     float2 uvs;
     float3 light_rgb;
 }
 
 [shader("vertex")]
-VertexOutput block_face_vertex_bda(
+VertexOutput vertex(
     uint draw_index : SV_DrawIndex,
     uint vertex_index : SV_VulkanVertexID,
     uint instance_index : SV_VulkanInstanceID,
@@ -56,7 +56,7 @@ VertexOutput block_face_vertex_bda(
 }
 
 [shader("fragment")]
-float4 block_face_fragment_bda(VertexOutput in) {
+float4 fragment(VertexOutput in) {
     let tex_sample = block_item_atlas.Sample(in.uvs);
     return float4(tex_sample.rgb * in.light_rgb, 1.0);
 }

@@ -3,12 +3,10 @@ use bitfield::bitfield;
 /// Stores a set of [`[u16; 2]`] UVs as a single [`u32`].
 /// Avoids needing SPIR-V "Int16" capability.
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuUv(u32);
 
 impl GpuUv {
-    #[cfg(not(target_arch = "spirv"))]
     pub fn new(uvs: [u16; 2]) -> Self {
         Self(uvs[0] as u32 | ((uvs[1] as u32) << 16))
     }
@@ -19,8 +17,7 @@ impl GpuUv {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SubchunkFaceGroupInfo {
     pub buffer_address: u64,
     pub subchunk_start_coords: [i32; 3],
@@ -30,8 +27,7 @@ pub struct SubchunkFaceGroupInfo {
 // Block face
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BlockFaceVertex {
     pub subchunk_start_coords: [f32; 3],
     pub face_matrix_index: u32,
@@ -52,14 +48,12 @@ impl BlockFaceVertex {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BlockFaceInstance {
     pub uvs: [u16; 4],
     pub packed_fields: BlockFaceInstanceFields,
 }
 
-#[cfg(not(target_arch = "spirv"))]
 impl BlockFaceInstance {
     /// `packed_uv_rotation` is valid within 0..=3, specifies a rotation in increments of 90
     /// degrees.
@@ -96,8 +90,7 @@ bitfield! {
     // 24-27: Block light level
     // 28-31: Unused
     #[repr(transparent)]
-    #[derive(Clone, Copy)]
-    #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct BlockFaceInstanceFields(u32);
     impl Debug;
     pub x_offset, set_x_offset: 3, 0;
@@ -113,15 +106,13 @@ bitfield! {
 pub use BlockFaceVertex as TintedBlockFaceVertex;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TintedBlockFaceInstance {
     pub uvs: [u16; 4],
     pub tint_color: [u8; 4],
     pub packed_fields: BlockFaceInstanceFields,
 }
 
-#[cfg(not(target_arch = "spirv"))]
 impl TintedBlockFaceInstance {
     /// `packed_uv_rotation` is valid within 0..=3, specifies a rotation in increments of 90
     /// degrees.
@@ -154,19 +145,14 @@ impl TintedBlockFaceInstance {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CustomBlockVertex {
     pub pos: [f32; 3],
     pub uv: GpuUv,
     pub normal: [f32; 3],
-    #[cfg(not(target_arch = "spirv"))]
     pub packed_fields: CustomBlockVertexFields,
-    #[cfg(target_arch = "spirv")]
-    pub packed_fields: CustomBlockVertexFieldsGpu,
 }
 
-#[cfg(not(target_arch = "spirv"))]
 impl CustomBlockVertex {
     pub fn new(pos: [f32; 3], uv: [u16; 2], normal: [f32; 3], is_tinted: bool) -> Self {
         let uv = GpuUv::new(uv);
@@ -185,26 +171,14 @@ bitfield! {
     // 0: Tinted?
     // 1-31: Unused
     #[repr(transparent)]
-    #[derive(Clone, Copy)]
-    #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct CustomBlockVertexFields(u32);
     impl Debug;
     pub is_tinted, set_is_tinted: 0;
 }
 
-bitfield! {
-    // 0: Tinted?
-    // 1-31: Unused
-    #[repr(transparent)]
-    #[derive(Clone, Copy)]
-    pub struct CustomBlockVertexFieldsGpu(u32);
-    impl Debug;
-    pub tinted_bit, _: 0, 0;
-}
-
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CustomBlockInstance {
     pub pos: [f32; 3],
     pub tint_color: [u8; 4],
@@ -220,7 +194,6 @@ pub struct CustomBlockInstance {
     pub packed_fields: CustomBlockInstanceFields,
 }
 
-#[cfg(not(target_arch = "spirv"))]
 impl CustomBlockInstance {
     pub fn new(
         pos: [f32; 3],
@@ -251,14 +224,11 @@ impl CustomBlockInstance {
 bitfield! {
     // 0-7: Unused
     #[repr(transparent)]
-    #[derive(Clone, Copy)]
-    #[cfg_attr(not(target_arch = "spirv"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct CustomBlockInstanceFields(u8);
     impl Debug;
 }
 
-// TODO: Delete these, once the rust-gpu shaders have switched over to BDA.
-#[cfg(feature = "vulkano")]
 pub mod vertex_input_state {
     use super::*;
     use vulkan_prelude::*;
