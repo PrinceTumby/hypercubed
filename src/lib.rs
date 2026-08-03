@@ -240,6 +240,7 @@ impl ApplicationHandler for App {
                 .create_window(Window::default_attributes().with_title("Hypercubed"))
                 .unwrap(),
         );
+        let display = event_loop.owned_display_handle();
         // Load resources, and setup a graphics backend.
         let resource_data =
             platform::load_resource_data().expect("Error while loading resource data");
@@ -251,6 +252,7 @@ impl ApplicationHandler for App {
                         SelectedGraphicsBackend::OpenGL => {
                             graphics::backend_opengl::GraphicsState::new(
                                 window.clone(),
+                                display,
                                 resource_data,
                             )
                             .unwrap()
@@ -259,6 +261,7 @@ impl ApplicationHandler for App {
                         SelectedGraphicsBackend::Vulkan => {
                             graphics::backend_vulkan::GraphicsState::new(
                                 window.clone(),
+                                display,
                                 resource_data,
                             )
                             .unwrap()
@@ -267,6 +270,7 @@ impl ApplicationHandler for App {
                         SelectedGraphicsBackend::Wgpu => {
                             graphics::backend_wgpu::GraphicsState::new(
                                 window.clone(),
+                                display,
                                 resource_data,
                             )
                             .unwrap()

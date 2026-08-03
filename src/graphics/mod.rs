@@ -85,14 +85,16 @@ impl core::fmt::Display for SelectedGraphicsBackend {
     }
 }
 
-use crate::basic_types::AxisDirection;
-use crate::platform::libs::winit;
-use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 use chunk::{HasSubchunkData, SubchunkData};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 use threadpool::ThreadPool;
+use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
+
+use crate::basic_types::AxisDirection;
+use crate::platform::libs::winit;
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsOptions {
@@ -112,6 +114,7 @@ impl Default for GraphicsOptions {
 pub trait GraphicsBackend {
     fn new(
         window: Arc<Window>,
+        display: OwnedDisplayHandle,
         game_data: resources::GameResourceData,
     ) -> anyhow::Result<Box<Self>>
     where

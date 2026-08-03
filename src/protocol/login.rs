@@ -132,7 +132,11 @@ pub async fn login(
                 let mut rng = crate::platform::new_strong_rng();
                 let pub_key = rsa::RsaPublicKey::from_public_key_der(&request_info.public_key)
                     .map_err(|err| io::Error::other(format!("{err}")))?;
-                let shared_secret: [u8; 16] = rng.random();
+                let shared_secret: [u8; 16] = {
+                    let mut out = [0u8; 16];
+                    rng.fill_bytes(&mut out);
+                    out
+                };
                 // Send session information to session server
                 if request_info.should_authenticate {
                     let (access_token, player_uuid) = session_information

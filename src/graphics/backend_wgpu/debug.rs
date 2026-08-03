@@ -17,7 +17,7 @@ pub mod point {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[DebugPoint::wgpu_desc()],
+                buffers: &[Some(DebugPoint::wgpu_desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -52,8 +52,8 @@ pub mod point {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: Texture::DEPTH_FORMAT,
                 // We're just presorting these to get the order right, doesn't matter too much.
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -107,7 +107,7 @@ pub mod line {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[DebugLine::wgpu_desc()],
+                buffers: &[Some(DebugLine::wgpu_desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -144,8 +144,8 @@ pub mod line {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: Texture::DEPTH_FORMAT,
                 // We're just presorting these to get the order right, doesn't matter too much.
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -199,7 +199,7 @@ pub mod triangle {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[DebugTriangle::wgpu_desc()],
+                buffers: &[Some(DebugTriangle::wgpu_desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -234,8 +234,8 @@ pub mod triangle {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: Texture::DEPTH_FORMAT,
                 // We're just presorting these to get the order right, doesn't matter too much.
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

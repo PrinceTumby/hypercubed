@@ -19,23 +19,26 @@ pub mod egui_renderer;
 pub mod environment;
 pub mod shader_exports;
 
-use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
-use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
-use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState};
-use crate::graphics::lightmap::{RawLightmapTexture, generate_lightmap_texture};
-use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
-use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+
 use anyhow::{Context, anyhow};
 use portable_std::{FastHashMap, FastHashMapEntry, FastHashSet};
 use resources::GameResourceData;
 use resources::block::model::Tint;
 use shader_exports::chunk::SubchunkFaceGroupInfo;
 use shader_exports::{CommonDescriptorSetIdxs, RawRenderInfo};
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
 use vulkan_prelude::*;
+use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
+
+use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
+use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
+use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState};
+use crate::graphics::lightmap::{RawLightmapTexture, generate_lightmap_texture};
+use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions};
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
 
 #[derive(Clone)]
 pub struct GraphicsResources {
@@ -119,7 +122,11 @@ pub struct GraphicsState {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
+    fn new(
+        window: Arc<Window>,
+        _display: OwnedDisplayHandle,
+        game_data: GameResourceData,
+    ) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         // Initialise Vulkan state.
         let library = VulkanLibrary::new().context("Failed to load Vulkan library")?;

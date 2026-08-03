@@ -119,8 +119,7 @@ pub mod shader_modules {
                         let available_module_names: Vec<&&str> = RAW_MODULES.keys().collect();
                         format!(
                             "Failed to find SPIR-V module \"{}\", available modules - {:?}",
-                            module,
-                            available_module_names,
+                            module, available_module_names,
                         )
                     })
                     .unwrap();

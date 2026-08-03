@@ -62,12 +62,12 @@ pub fn render_debug_ui(
     let mut debug_lines: Vec<DebugLine> = Vec::new();
     #[allow(unused_mut)]
     let mut debug_triangles: Vec<DebugTriangle> = Vec::new();
-    let egui_output = egui_ctx.run(raw_input, |ctx| {
+    let egui_output = egui_ctx.run_ui(raw_input, |ui| {
         use egui::*;
         let width_f32 = graphics_size.width as f32 / scale_factor as f32;
         let height_f32 = graphics_size.height as f32 / scale_factor as f32;
-        let painter = Painter::new(ctx.clone(), LayerId::background(), Rect::EVERYTHING);
-        Window::new("Debug Info").resizable(false).show(ctx, |ui| {
+        let painter = ui.painter();
+        Window::new("Debug Info").resizable(false).show(ui.ctx(), |ui| {
             ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
             // Quit button.
             // Useful for fullscreen mode and embedded platforms.

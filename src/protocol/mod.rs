@@ -468,7 +468,8 @@ impl<'a> io::Read for EncryptedTcpStreamReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let bytes_read = self.tcp_stream.read(buf)?;
         for i in 0..bytes_read {
-            self.decryptor.decrypt_block(buf[i..=i].as_mut_array().unwrap().into());
+            self.decryptor
+                .decrypt_block(buf[i..=i].as_mut_array().unwrap().into());
         }
         Ok(bytes_read)
     }

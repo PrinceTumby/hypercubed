@@ -7,6 +7,16 @@ pub mod chunk;
 pub mod egui_renderer;
 pub mod gl;
 
+use std::sync::mpsc::{Receiver, Sender};
+
+use anyhow::Context;
+use nalgebra::{Isometry3, Vector3};
+use portable_std::{Arc, FastHashMap, FastHashSet};
+use resources::GameResourceData;
+use threadpool::ThreadPool;
+use winit::event_loop::OwnedDisplayHandle;
+use winit::window::Window;
+
 use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
 use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
 use crate::graphics::environment::sky::{STAR_QUADS, SkyExtrapolationState, get_star_brightness};
@@ -15,14 +25,6 @@ use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions}
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
 use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use anyhow::Context;
-use nalgebra::{Isometry3, Vector3};
-use portable_std::{Arc, FastHashMap, FastHashSet};
-use resources::GameResourceData;
-use std::sync::mpsc::{Receiver, Sender};
-use threadpool::ThreadPool;
-use winit::window::Window;
-
 use gl::array::{AttributeNormalisation, AttributeType, ColorType, TextureCoordType, VertexType};
 use gl::buffer::BufferType;
 use gl::client_state::ClientArrayType;
@@ -110,16 +112,19 @@ pub struct GraphicsState {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
+    fn new(
+        window: Arc<Window>,
+        display: OwnedDisplayHandle,
+        game_data: GameResourceData,
+    ) -> anyhow::Result<Box<Self>> {
         let graphics_options = GraphicsOptions::default();
         let size = window.inner_size();
         cfg_select! {
             feature = "platform_winit" => {
                 // Initialise various components of `glutin` to get an OpenGL environment.
-                // Display
-                let display_handle = window
+                let display_handle = display
                     .display_handle()
-                    .context("Error while getting display handle from window")?;
+                    .context("Error while getting display handle")?;
                 let window_handle = window
                     .window_handle()
                     .context("Error while getting window handle")?;

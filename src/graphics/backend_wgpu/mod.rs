@@ -5,7 +5,7 @@ pub mod environment;
 
 use std::sync::mpsc::{Receiver, Sender};
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use chunk::{
     block_face::{BlockFaceInstanceBufferManager, BlockFaceVertexBufferManager},
     custom_block::CustomBlockInstanceBufferManager,
@@ -16,8 +16,8 @@ use resources::GameResourceData;
 use resources::block::model::Tint;
 use threadpool::ThreadPool;
 use wgpu::util::DeviceExt as _;
+use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
-use wgpu::rwh::HasDisplayHandle;
 
 use crate::graphics::chunk::{HasSubchunkData, SubchunkData};
 use crate::graphics::debug::{Line as DebugLine, Point as DebugPoint, Triangle as DebugTriangle};
@@ -165,14 +165,18 @@ pub struct RenderInfo {
 
 impl GraphicsBackend for GraphicsState {
     #[tracing::instrument(skip_all)]
-    fn new(window: Arc<Window>, game_data: GameResourceData) -> anyhow::Result<Box<Self>> {
+    fn new(
+        window: Arc<Window>,
+        display: OwnedDisplayHandle,
+        game_data: GameResourceData,
+    ) -> anyhow::Result<Box<Self>> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::from_env_or_default(),
-            display: Some(Box::new(window.display_handle().context("Failed to get display handle")?)),
+            display: Some(Box::new(display)),
         });
         let surface = instance.create_surface(window)?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -1028,7 +1032,7 @@ impl GraphicsBackend for GraphicsState {
         self.resources
             .queue
             .submit(core::iter::once(encoder.finish()));
-        output.present();
+        self.resources.queue.present(output);
         if surface_suboptimal {
             self.resize(self.size);
         }

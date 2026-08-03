@@ -415,7 +415,7 @@ pub mod block_face {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Vertex::desc(), Instance::desc()],
+                buffers: &[Some(Vertex::desc()), Some(Instance::desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -438,8 +438,8 @@ pub mod block_face {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -632,7 +632,7 @@ pub mod tinted_block_face {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Vertex::desc(), Instance::desc()],
+                buffers: &[Some(Vertex::desc()), Some(Instance::desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -655,8 +655,8 @@ pub mod tinted_block_face {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -769,7 +769,7 @@ pub mod custom_block {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Instance::desc()],
+                buffers: &[Some(Instance::desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -792,8 +792,8 @@ pub mod custom_block {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

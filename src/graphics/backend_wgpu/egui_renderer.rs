@@ -103,7 +103,7 @@ impl Renderer {
         let shader = device.create_shader_module(include_wesl_module!("egui"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("`egui` Pipeline Layout"),
-            bind_group_layouts: &[common_bind_group_layout, &texture_bind_group_layout],
+            bind_group_layouts: &[Some(common_bind_group_layout), Some(&texture_bind_group_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -113,7 +113,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: None,
                 compilation_options: Default::default(),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -147,8 +147,8 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -381,6 +381,7 @@ impl Renderer {
             wgpu::IndexFormat::Uint32,
         );
         for mesh in &render_data.meshes {
+            // FIXME: Only switch bind groups when needed.
             render_pass.set_bind_group(1, &self.textures[&mesh.texture_id].bind_group, &[]);
             render_pass.set_scissor_rect(
                 mesh.scissor_rect.x,
