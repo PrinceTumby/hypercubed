@@ -67,7 +67,7 @@ use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 
 use crate::platform::libs::{egui, winit};
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, RawKeyEvent, StartCause, WindowEvent};
+use winit::event::{DeviceEvent, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Fullscreen, Window, WindowId};
 
@@ -313,11 +313,62 @@ impl ApplicationHandler for App {
                     .set_aspect((graphics_size.width as f32) / (graphics_size.height as f32));
             }
             // TODO: Implement egui keyboard support
-            // WindowEvent::KeyboardInput {
-            //     device_id: _,
-            //     event,
-            //     is_synthetic: _,
-            // } if !input_state.mouse_locked => {}
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event,
+                is_synthetic: _,
+            } => {
+                let old_mouse_locked = self.input_state.mouse_locked;
+                let old_fullscreen = self.input_state.fullscreen;
+                self.input_state.update_from_input(
+                    event.physical_key,
+                    event.state,
+                    // Toggle sprint if these conditions, else just enable sprint on press.
+                    self.play_state.player.game_mode == GameMode::Spectator
+                        || self.debug_state.free_cam,
+                );
+                if self.input_state.mouse_locked != old_mouse_locked {
+                    use winit::window::CursorGrabMode;
+                    if self.input_state.mouse_locked {
+                        // No issue if locking the cursor doesn't work, we hide it and
+                        // keep setting the position to the centre anyway.
+                        _ = window
+                            .set_cursor_grab(CursorGrabMode::Locked)
+                            .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Confined));
+                        window.set_cursor_visible(false);
+                        // Report to egui that we've released all mouse buttons
+                        let mouse_buttons = [
+                            egui::PointerButton::Primary,
+                            egui::PointerButton::Secondary,
+                            egui::PointerButton::Middle,
+                            egui::PointerButton::Extra1,
+                            egui::PointerButton::Extra2,
+                        ];
+                        for mouse_button in mouse_buttons {
+                            self.pending_egui_events.push(egui::Event::PointerButton {
+                                pos: self.last_mouse_pos,
+                                button: mouse_button,
+                                pressed: false,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                        }
+                        self.pending_egui_events.push(egui::Event::PointerGone);
+                    } else {
+                        // Releasing the cursor shouldn't ever fail.
+                        _ = window.set_cursor_grab(CursorGrabMode::None);
+                        window.set_cursor_visible(true);
+                        self.pending_egui_events
+                            .push(egui::Event::PointerMoved(self.last_mouse_pos));
+                    }
+                }
+                if self.input_state.fullscreen != old_fullscreen {
+                    if self.input_state.fullscreen {
+                        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    } else {
+                        window.set_fullscreen(None);
+                    }
+                }
+            }
             WindowEvent::CursorMoved {
                 device_id: _,
                 position,
@@ -453,7 +504,6 @@ impl ApplicationHandler for App {
         _device_id: winit::event::DeviceId,
         event: DeviceEvent,
     ) {
-        let window = self.window.as_ref().unwrap();
         match event {
             DeviceEvent::MouseMotion { delta } if self.input_state.mouse_locked => {
                 const MOUSE_SENSITIVITY: f32 = 0.1;
@@ -466,61 +516,6 @@ impl ApplicationHandler for App {
                 }
                 while camera.yaw > 360.0 {
                     camera.yaw -= 360.0;
-                }
-            }
-            DeviceEvent::Key(RawKeyEvent {
-                physical_key,
-                state,
-            }) => {
-                let old_mouse_locked = self.input_state.mouse_locked;
-                let old_fullscreen = self.input_state.fullscreen;
-                self.input_state.update_from_input(
-                    physical_key,
-                    state,
-                    // Toggle sprint if these conditions, else just enable sprint on press.
-                    self.play_state.player.game_mode == GameMode::Spectator
-                        || self.debug_state.free_cam,
-                );
-                if self.input_state.mouse_locked != old_mouse_locked {
-                    use winit::window::CursorGrabMode;
-                    if self.input_state.mouse_locked {
-                        // No issue if locking the cursor doesn't work, we hide it and
-                        // keep setting the position to the centre anyway.
-                        _ = window
-                            .set_cursor_grab(CursorGrabMode::Locked)
-                            .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Confined));
-                        window.set_cursor_visible(false);
-                        // Report to egui that we've released all mouse buttons
-                        let mouse_buttons = [
-                            egui::PointerButton::Primary,
-                            egui::PointerButton::Secondary,
-                            egui::PointerButton::Middle,
-                            egui::PointerButton::Extra1,
-                            egui::PointerButton::Extra2,
-                        ];
-                        for mouse_button in mouse_buttons {
-                            self.pending_egui_events.push(egui::Event::PointerButton {
-                                pos: self.last_mouse_pos,
-                                button: mouse_button,
-                                pressed: false,
-                                modifiers: egui::Modifiers::NONE,
-                            });
-                        }
-                        self.pending_egui_events.push(egui::Event::PointerGone);
-                    } else {
-                        // Releasing the cursor shouldn't ever fail.
-                        _ = window.set_cursor_grab(CursorGrabMode::None);
-                        window.set_cursor_visible(true);
-                        self.pending_egui_events
-                            .push(egui::Event::PointerMoved(self.last_mouse_pos));
-                    }
-                }
-                if self.input_state.fullscreen != old_fullscreen {
-                    if self.input_state.fullscreen {
-                        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-                    } else {
-                        window.set_fullscreen(None);
-                    }
                 }
             }
             _ => {}

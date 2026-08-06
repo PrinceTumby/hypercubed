@@ -157,7 +157,12 @@ impl GraphicsBackend for GraphicsState {
             vulkan_memory_model: true,
             ..VulkanDeviceFeatures::empty()
         };
-        let (physical_device, render_queue_family_index, compute_queue_family_index) = instance
+        let (
+            physical_device,
+            render_queue_family_num_queues,
+            render_queue_family_index,
+            compute_queue_family_index,
+        ) = instance
             .enumerate_physical_devices()
             .context("Failed to enumerate Vulkan devices")?
             .filter(|device| {
@@ -165,15 +170,16 @@ impl GraphicsBackend for GraphicsState {
                     && device.supported_features().contains(&required_features)
             })
             .filter_map(|device| {
-                let render_queue_family_usize = device
+                let (render_queue_family_usize, render_queue_family_num_queues) = device
                     .queue_family_properties()
                     .iter()
                     .enumerate()
-                    .position(|(i, queue_family)| {
-                        queue_family
+                    .find_map(|(i, queue_family)| {
+                        let is_suitable_queue_family = queue_family
                             .queue_flags
                             .contains(VulkanQueueFlags::GRAPHICS | VulkanQueueFlags::COMPUTE)
-                            && device.surface_support(i as u32, &surface).unwrap_or(false)
+                            && device.surface_support(i as u32, &surface).unwrap_or(false);
+                        is_suitable_queue_family.then_some((i, queue_family.queue_count))
                     })?;
                 let render_queue_family = render_queue_family_usize as u32;
                 let compute_queue_family = device
@@ -186,9 +192,14 @@ impl GraphicsBackend for GraphicsState {
                     })
                     .map(|idx| idx as u32)
                     .unwrap_or(render_queue_family);
-                Some((device, render_queue_family, compute_queue_family))
+                Some((
+                    device,
+                    render_queue_family_num_queues,
+                    render_queue_family,
+                    compute_queue_family,
+                ))
             })
-            .min_by_key(|(device, _, _)| match device.properties().device_type {
+            .min_by_key(|(device, _, _, _)| match device.properties().device_type {
                 VulkanPhysicalDeviceType::DiscreteGpu => 0,
                 VulkanPhysicalDeviceType::IntegratedGpu => 1,
                 VulkanPhysicalDeviceType::VirtualGpu => 2,
@@ -196,8 +207,8 @@ impl GraphicsBackend for GraphicsState {
                 _ => 4,
             })
             .context("Error while finding any suitable Vulkan devices")?;
-        log::debug!("Vulkan render queue family index: {render_queue_family_index}");
-        log::debug!("Vulkan compute queue family index: {compute_queue_family_index}");
+        log::debug!("Vulkan render queue family index - {render_queue_family_index}");
+        log::debug!("Vulkan compute queue family index - {compute_queue_family_index}");
         let surface_capabilities = physical_device
             .surface_capabilities(&surface, &Default::default())
             .context("Error while getting Vulkan surface capabilities")?;
@@ -215,11 +226,19 @@ impl GraphicsBackend for GraphicsState {
             &physical_device,
             &VulkanDeviceCreateInfo {
                 queue_create_infos: &if render_queue_family_index == compute_queue_family_index {
-                    vec![VulkanQueueCreateInfo {
-                        queue_family_index: render_queue_family_index,
-                        queues: &[1.0, 0.0],
-                        ..Default::default()
-                    }]
+                    if render_queue_family_num_queues == 1 {
+                        vec![VulkanQueueCreateInfo {
+                            queue_family_index: render_queue_family_index,
+                            queues: &[0.5],
+                            ..Default::default()
+                        }]
+                    } else {
+                        vec![VulkanQueueCreateInfo {
+                            queue_family_index: render_queue_family_index,
+                            queues: &[1.0, 0.0],
+                            ..Default::default()
+                        }]
+                    }
                 } else {
                     vec![
                         VulkanQueueCreateInfo {
@@ -241,7 +260,7 @@ impl GraphicsBackend for GraphicsState {
         )
         .context("Error while creating Vulkan device")?;
         let render_queue = queue_iter.next().unwrap();
-        let compute_queue = queue_iter.next().unwrap();
+        let compute_queue = queue_iter.next().unwrap_or_else(|| render_queue.clone());
         let (swapchain, swapchain_images) = VulkanSwapchain::new(
             &device,
             &surface,
@@ -924,34 +943,18 @@ impl GraphicsBackend for GraphicsState {
             )
             .context("Error while preparing egui renderer")?;
         // Main render subpass.
-        let (swapchain_image_i, is_swapchain_suboptimal, swapchain_semaphore) = unsafe {
-            let semaphore = VulkanSemaphore::from_pool(&self.resources.device)
-                .map(Arc::new)
-                .context("Error while creating swapchain semaphore")?;
-            let acquired_image = match self
-                .swapchain
-                .acquire_next_image(&VulkanAcquireNextImageInfo {
-                    timeout: Some(std::time::Duration::from_millis(20)),
-                    semaphore: Some(&semaphore),
-                    ..Default::default()
-                })
+        let (swapchain_image_i, is_swapchain_suboptimal, swapchain_acquire_future) =
+            match vulkano::swapchain::acquire_next_image(self.swapchain.clone(), None)
                 .map_err(VulkanValidated::unwrap)
             {
-                Ok(image) => image,
+                Ok(parts) => parts,
                 // Reconfigure the swapchain if it's out of date.
                 Err(VulkanError::OutOfDate) => {
                     self.resize(self.size);
                     return Ok(None);
                 }
-                Err(VulkanError::Timeout) => return Ok(None),
                 Err(err) => return Err(anyhow!("Error while acquiring swapchain image - {err}")),
             };
-            (
-                acquired_image.image_index,
-                acquired_image.is_suboptimal,
-                semaphore,
-            )
-        };
         let swapchain_image_view =
             VulkanImageView::new_default(&self.swapchain_images[swapchain_image_i as usize])
                 .context("Error while creating swapchain image view")?;
@@ -1415,68 +1418,28 @@ impl GraphicsBackend for GraphicsState {
             .unwrap();
         // Submit command buffer to GPU.
         let built_command_buffer = command_buffer.build().unwrap();
-        // vulkano::sync::now(self.resources.device.clone())
-        //     .join(swapchain_image_future)
-        //     .then_execute(self.resources.queues[0].clone(), built_command_buffer)
-        //     .unwrap()
-        //     .then_swapchain_present(
-        //         self.resources.queues[0].clone(),
-        //         VulkanSwapchainPresentInfo::swapchain_image_index(
-        //             self.swapchain.clone(),
-        //             swapchain_image_i,
-        //         ),
-        //     )
-        //     .then_signal_fence_and_flush()
-        //     .unwrap()
-        //     .wait(None)
-        //     .unwrap();
-        {
-            let span = tracing::trace_span!("submit_render_command_buffer_and_present");
-            let _enter = span.enter();
-            self.resources.render_queue.with(|mut queue_guard| unsafe {
-                queue_guard.wait_idle().unwrap();
-                let render_semaphore = VulkanSemaphore::from_pool(&self.resources.device)
-                    .map(Arc::new)
-                    .context("Error while creating render semaphore")
-                    .unwrap();
-                let finish_fence = VulkanFence::from_pool(&self.resources.device)
-                    .map(Arc::new)
-                    .context("Error while creating render fence")
-                    .unwrap();
-                queue_guard
-                    .submit(
-                        &[VulkanSubmitInfo {
-                            command_buffers: &[VulkanCommandBufferSubmitInfo::new(
-                                built_command_buffer.as_raw(),
-                            )],
-                            wait_semaphores: &[VulkanSemaphoreSubmitInfo::new(
-                                &swapchain_semaphore,
-                            )],
-                            signal_semaphores: &[
-                                VulkanSemaphoreSubmitInfo::new(&render_semaphore),
-                                // VulkanSemaphoreSubmitInfo::new(render_semaphore_2.clone()),
-                            ],
-                            ..Default::default()
-                        }],
-                        // None,
-                        Some(&finish_fence),
-                    )
-                    .unwrap();
-                queue_guard
-                    .present(&VulkanPresentInfo {
-                        wait_semaphores: vec![VulkanSemaphorePresentInfo::new(render_semaphore)],
-                        swapchain_infos: vec![VulkanSwapchainPresentInfo::new(
-                            self.swapchain.clone(),
-                            swapchain_image_i,
-                        )],
-                        ..Default::default()
-                    })
-                    .unwrap()
-                    .for_each(|result| _ = result.unwrap());
-                tracing::trace_span!("wait_for_render_fence").in_scope(|| {
-                    finish_fence.wait(None).unwrap();
-                });
-            })
+        let present_future_result = vulkano::sync::now(self.resources.device.clone())
+            .join(swapchain_acquire_future)
+            .then_execute(self.resources.render_queue.clone(), built_command_buffer)
+            .unwrap()
+            .then_swapchain_present(
+                self.resources.render_queue.clone(),
+                VulkanSwapchainPresentInfo::new(self.swapchain.clone(), swapchain_image_i),
+            )
+            .then_signal_fence_and_flush()
+            .map_err(VulkanValidated::unwrap);
+        match present_future_result {
+            Ok(present_future) => {
+                present_future.wait(None).unwrap();
+            }
+            // Reconfigure the swapchain if it's out of date.
+            Err(VulkanError::OutOfDate) => {
+                self.resize(self.size);
+                return Ok(None);
+            }
+            Err(err) => {
+                return Err(anyhow!("Error while presenting swapchain image - {err}"));
+            }
         }
         self.egui_renderer
             .free_textures(&egui_full_output.textures_delta.free);

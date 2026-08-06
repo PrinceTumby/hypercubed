@@ -106,9 +106,10 @@ pub async fn login(
             player_uuid: session.player_uuid,
         }
         .write_packet_into(&mut write_stream, None)?,
+        // FIXME: Doesn't seem to work at all, just creates a malformed packet.
         None => LoginStart {
-            username: "Hypercubed Player",
-            player_uuid: Uuid::new_v3(&OFFLINE_PLAYER_NAMESPACE, b"Hypercubed Player"),
+            username: "hypercubed_player",
+            player_uuid: Uuid::new_v3(&OFFLINE_PLAYER_NAMESPACE, b"hypercubed_player"),
         }
         .write_packet_into(&mut write_stream, None)?,
     }

@@ -2,3 +2,6 @@
 /target
 /.cargo
 /session.json
+/minecraft.jar
+/blocks_rust.json
+/entries.json

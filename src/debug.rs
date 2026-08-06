@@ -67,184 +67,191 @@ pub fn render_debug_ui(
         let width_f32 = graphics_size.width as f32 / scale_factor as f32;
         let height_f32 = graphics_size.height as f32 / scale_factor as f32;
         let painter = ui.painter();
-        Window::new("Debug Info").resizable(false).show(ui.ctx(), |ui| {
-            ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
-            // Quit button.
-            // Useful for fullscreen mode and embedded platforms.
-            if ui.button("Quit").clicked() {
-                event_loop.exit();
-            }
-            // Graphics options
-            {
-                let old_graphics_options = graphics_backend.get_graphics_options();
-                let mut new_graphics_options = old_graphics_options;
-                // VSync
-                ui.checkbox(&mut new_graphics_options.vsync, "VSync");
-                // Lightmap gamma ("brightness")
-                ui.add(
-                    egui::Slider::new(&mut new_graphics_options.lightmap_gamma_setting, 0.0..=1.0)
+        Window::new("Debug Info")
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
+                // Quit button.
+                // Useful for fullscreen mode and embedded platforms.
+                if ui.button("Quit").clicked() {
+                    event_loop.exit();
+                }
+                // Graphics options
+                {
+                    let old_graphics_options = graphics_backend.get_graphics_options();
+                    let mut new_graphics_options = old_graphics_options;
+                    // VSync
+                    ui.checkbox(&mut new_graphics_options.vsync, "VSync");
+                    // Lightmap gamma ("brightness")
+                    ui.add(
+                        egui::Slider::new(
+                            &mut new_graphics_options.lightmap_gamma_setting,
+                            0.0..=1.0,
+                        )
                         .text("Brightness gamma"),
-                );
-                if new_graphics_options != old_graphics_options {
-                    graphics_backend.apply_new_graphics_options(new_graphics_options);
-                }
-            }
-            ui.label(format!("Position: {:.2?}", play_state.camera.pos));
-            ui.label(format!(
-                "Subchunks Culled: {}",
-                debug_output.subchunks_culled
-            ));
-            ui.add(Slider::new(&mut debug_state.cull_planes_active, 0..=6).text("Planes active"));
-            ui.add(
-                Slider::new(&mut debug_state.max_render_chunks, 0..=3000)
-                    .drag_value_speed(1.0)
-                    .clamping(SliderClamping::Never)
-                    .text("Max render chunks"),
-            );
-            ui.checkbox(
-                &mut debug_state.rendering_view_frustum,
-                "Render view frustum",
-            );
-            // Free cam
-            {
-                let old_free_cam = debug_state.free_cam;
-                ui.checkbox(&mut debug_state.free_cam, "Free cam");
-                // Change head rotation back to player's head rotation if we've just
-                // turned off free cam.
-                // Position is fixed later, so no need to change here.
-                if old_free_cam && !debug_state.free_cam {
-                    let player = &play_state.player;
-                    let camera = &mut play_state.camera;
-                    camera.yaw = player.yaw;
-                    camera.pitch = player.pitch;
-                }
-            }
-            // Debug graphics draw method
-            ComboBox::from_id_salt("Debug visualisation draw method")
-                .selected_text(debug_state.visualisation_draw_method.label_text())
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut debug_state.visualisation_draw_method,
-                        graphics::DebugVisualisationDrawMethod::Egui,
-                        graphics::DebugVisualisationDrawMethod::Egui.label_text(),
                     );
-                    ui.selectable_value(
-                        &mut debug_state.visualisation_draw_method,
-                        graphics::DebugVisualisationDrawMethod::Gpu,
-                        graphics::DebugVisualisationDrawMethod::Gpu.label_text(),
-                    );
-                });
-            ui.collapsing("Game Mode", |ui| {
-                let player = &play_state.player;
-                let mut game_mode = player.game_mode;
-                ui.radio_value(&mut game_mode, GameMode::Survival, "Survival");
-                ui.radio_value(&mut game_mode, GameMode::Creative, "Creative");
-                ui.radio_value(&mut game_mode, GameMode::Adventure, "Adventure");
-                ui.radio_value(&mut game_mode, GameMode::Spectator, "Spectator");
-                if game_mode != player.game_mode {
-                    server_connection
-                        .send_packet(crate::protocol::play::serverbound::ChatCommand(format!(
-                            "gamemode {} @s",
-                            match game_mode {
-                                GameMode::Survival => "survival",
-                                GameMode::Creative => "creative",
-                                GameMode::Adventure => "adventure",
-                                GameMode::Spectator => "spectator",
-                            }
-                        )))
-                        .unwrap();
-                    server_connection.flush().unwrap();
+                    if new_graphics_options != old_graphics_options {
+                        graphics_backend.apply_new_graphics_options(new_graphics_options);
+                    }
                 }
-            });
-            ui.collapsing("Cave Culling", |ui| {
-                ui.checkbox(&mut debug_state.cave_cull_check_unflipped, "Flip check");
-                ui.checkbox(
-                    &mut debug_state.cave_cull_check_not_backwards,
-                    "Backwards check",
-                );
-                ui.checkbox(&mut debug_state.cave_cull_check_frustum, "Frustum check");
-                ui.checkbox(
-                    &mut debug_state.cave_cull_check_connectivity,
-                    "Connectivity check",
-                );
-                ui.checkbox(
-                    &mut debug_state.cave_cull_render_connectivity,
-                    "Render subchunk connectivity lines",
-                );
-                ui.checkbox(
-                    &mut debug_state.cave_cull_render_traversal_graph,
-                    "Render subchunk traversal graph",
+                ui.label(format!("Position: {:.2?}", play_state.camera.pos));
+                ui.label(format!(
+                    "Subchunks Culled: {}",
+                    debug_output.subchunks_culled
+                ));
+                ui.add(
+                    Slider::new(&mut debug_state.cull_planes_active, 0..=6).text("Planes active"),
                 );
                 ui.add(
-                    Slider::new(&mut debug_state.cave_cull_debug_render_dist, 0.0..=64.0)
+                    Slider::new(&mut debug_state.max_render_chunks, 0..=3000)
+                        .drag_value_speed(1.0)
                         .clamping(SliderClamping::Never)
-                        .text("Render distance"),
+                        .text("Max render chunks"),
                 );
-            });
-            ui.collapsing("Block Info", |ui| {
-                let block_registry = graphics_backend.get_block_registry();
-                let raw_chunks = &play_state.raw_chunks;
-                let pos = play_state.camera.pos.coords;
-                let chunk_x = (pos.x.floor() as i32).div_euclid(16);
-                let chunk_z = (pos.z.floor() as i32).div_euclid(16);
-                let section_i = ((pos.y.floor() + 64.0).div_euclid(16.0)) as usize;
-                let x = (pos.x.floor() as i32).rem_euclid(16) as usize;
-                let y = (pos.y.floor() as i32).rem_euclid(16) as usize;
-                let z = (pos.z.floor() as i32).rem_euclid(16) as usize;
-                if let Some(chunk) = raw_chunks.get(&[chunk_x, chunk_z]) {
-                    if pos.y < 0.0 || section_i >= chunk.sections.len() {
-                        ui.label("Global Palette ID: N/A");
-                        ui.label("Identifier: N/A");
-                        ui.label("Blockstate data: N/A");
-                    } else {
-                        let chunk_section = &chunk.sections[section_i];
-                        let global_palette_index = chunk_section.block_states.get(x, y, z);
-                        let blockstate = &block_registry[global_palette_index];
-                        let identifier = block_registry
-                            .get_identifier_from_index(blockstate.block_index)
-                            .unwrap();
-                        ui.label(format!(
-                            "Global Palette ID: {}",
-                            global_palette_index.as_raw()
-                        ));
-                        ui.label(format!("Identifier: {identifier:?}"));
-                        ui.label(format!("Blockstate data: {blockstate:?}"));
+                ui.checkbox(
+                    &mut debug_state.rendering_view_frustum,
+                    "Render view frustum",
+                );
+                // Free cam
+                {
+                    let old_free_cam = debug_state.free_cam;
+                    ui.checkbox(&mut debug_state.free_cam, "Free cam");
+                    // Change head rotation back to player's head rotation if we've just
+                    // turned off free cam.
+                    // Position is fixed later, so no need to change here.
+                    if old_free_cam && !debug_state.free_cam {
+                        let player = &play_state.player;
+                        let camera = &mut play_state.camera;
+                        camera.yaw = player.yaw;
+                        camera.pitch = player.pitch;
                     }
-                } else {
-                    ui.label("Global Palette ID: N/A");
-                    ui.label("Blockstate data: N/A");
+                }
+                // Debug graphics draw method
+                ComboBox::from_id_salt("Debug visualisation draw method")
+                    .selected_text(debug_state.visualisation_draw_method.label_text())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut debug_state.visualisation_draw_method,
+                            graphics::DebugVisualisationDrawMethod::Egui,
+                            graphics::DebugVisualisationDrawMethod::Egui.label_text(),
+                        );
+                        ui.selectable_value(
+                            &mut debug_state.visualisation_draw_method,
+                            graphics::DebugVisualisationDrawMethod::Gpu,
+                            graphics::DebugVisualisationDrawMethod::Gpu.label_text(),
+                        );
+                    });
+                ui.collapsing("Game Mode", |ui| {
+                    let player = &play_state.player;
+                    let mut game_mode = player.game_mode;
+                    ui.radio_value(&mut game_mode, GameMode::Survival, "Survival");
+                    ui.radio_value(&mut game_mode, GameMode::Creative, "Creative");
+                    ui.radio_value(&mut game_mode, GameMode::Adventure, "Adventure");
+                    ui.radio_value(&mut game_mode, GameMode::Spectator, "Spectator");
+                    if game_mode != player.game_mode {
+                        server_connection
+                            .send_packet(crate::protocol::play::serverbound::ChatCommand(format!(
+                                "gamemode {} @s",
+                                match game_mode {
+                                    GameMode::Survival => "survival",
+                                    GameMode::Creative => "creative",
+                                    GameMode::Adventure => "adventure",
+                                    GameMode::Spectator => "spectator",
+                                }
+                            )))
+                            .unwrap();
+                        server_connection.flush().unwrap();
+                    }
+                });
+                ui.collapsing("Cave Culling", |ui| {
+                    ui.checkbox(&mut debug_state.cave_cull_check_unflipped, "Flip check");
+                    ui.checkbox(
+                        &mut debug_state.cave_cull_check_not_backwards,
+                        "Backwards check",
+                    );
+                    ui.checkbox(&mut debug_state.cave_cull_check_frustum, "Frustum check");
+                    ui.checkbox(
+                        &mut debug_state.cave_cull_check_connectivity,
+                        "Connectivity check",
+                    );
+                    ui.checkbox(
+                        &mut debug_state.cave_cull_render_connectivity,
+                        "Render subchunk connectivity lines",
+                    );
+                    ui.checkbox(
+                        &mut debug_state.cave_cull_render_traversal_graph,
+                        "Render subchunk traversal graph",
+                    );
+                    ui.add(
+                        Slider::new(&mut debug_state.cave_cull_debug_render_dist, 0.0..=64.0)
+                            .clamping(SliderClamping::Never)
+                            .text("Render distance"),
+                    );
+                });
+                ui.collapsing("Block Info", |ui| {
+                    let block_registry = graphics_backend.get_block_registry();
+                    let raw_chunks = &play_state.raw_chunks;
+                    let pos = play_state.camera.pos.coords;
+                    let chunk_x = (pos.x.floor() as i32).div_euclid(16);
+                    let chunk_z = (pos.z.floor() as i32).div_euclid(16);
+                    let section_i = ((pos.y.floor() + 64.0).div_euclid(16.0)) as usize;
+                    let x = (pos.x.floor() as i32).rem_euclid(16) as usize;
+                    let y = (pos.y.floor() as i32).rem_euclid(16) as usize;
+                    let z = (pos.z.floor() as i32).rem_euclid(16) as usize;
+                    if let Some(chunk) = raw_chunks.get(&[chunk_x, chunk_z]) {
+                        if pos.y < 0.0 || section_i >= chunk.sections.len() {
+                            ui.label("Global Palette ID: N/A");
+                            ui.label("Identifier: N/A");
+                            ui.label("Blockstate data: N/A");
+                        } else {
+                            let chunk_section = &chunk.sections[section_i];
+                            let global_palette_index = chunk_section.block_states.get(x, y, z);
+                            let blockstate = &block_registry[global_palette_index];
+                            let identifier = block_registry
+                                .get_identifier_from_index(blockstate.block_index)
+                                .unwrap();
+                            ui.label(format!(
+                                "Global Palette ID: {}",
+                                global_palette_index.as_raw()
+                            ));
+                            ui.label(format!("Identifier: {identifier:?}"));
+                            ui.label(format!("Blockstate data: {blockstate:?}"));
+                        }
+                    } else {
+                        ui.label("Global Palette ID: N/A");
+                        ui.label("Blockstate data: N/A");
+                    }
+                });
+                ui.collapsing("Frametimes", |ui| {
+                    use egui_plot::{Line, Plot, PlotPoints};
+                    Plot::new("frame_time_plot")
+                        .allow_zoom(false)
+                        .allow_drag(false)
+                        .allow_scroll(false)
+                        .set_margin_fraction(egui::Vec2 { x: 0.0, y: 0.0 })
+                        .view_aspect(2.5)
+                        .include_y(0.0)
+                        .include_y(50.0)
+                        .show(ui, |plot_ui| {
+                            let points: PlotPoints = previous_frame_times
+                                .iter()
+                                .enumerate()
+                                .map(|(i, frame_time_s)| {
+                                    let x = i as f64;
+                                    let frame_time_ms = frame_time_s * 1000.0;
+                                    [x, frame_time_ms]
+                                })
+                                .collect();
+                            let line = Line::new("", points);
+                            plot_ui.line(line);
+                        });
+                });
+                if graphics_backend.wants_egui_debug_section() {
+                    ui.collapsing("Graphics Backend", |ui| {
+                        graphics_backend.render_egui_debug_section(ui);
+                    });
                 }
             });
-            ui.collapsing("Frametimes", |ui| {
-                use egui_plot::{Line, Plot, PlotPoints};
-                Plot::new("frame_time_plot")
-                    .allow_zoom(false)
-                    .allow_drag(false)
-                    .allow_scroll(false)
-                    .set_margin_fraction(egui::Vec2 { x: 0.0, y: 0.0 })
-                    .view_aspect(2.5)
-                    .include_y(0.0)
-                    .include_y(50.0)
-                    .show(ui, |plot_ui| {
-                        let points: PlotPoints = previous_frame_times
-                            .iter()
-                            .enumerate()
-                            .map(|(i, frame_time_s)| {
-                                let x = i as f64;
-                                let frame_time_ms = frame_time_s * 1000.0;
-                                [x, frame_time_ms]
-                            })
-                            .collect();
-                        let line = Line::new("", points);
-                        plot_ui.line(line);
-                    });
-            });
-            if graphics_backend.wants_egui_debug_section() {
-                ui.collapsing("Graphics Backend", |ui| {
-                    graphics_backend.render_egui_debug_section(ui);
-                });
-            }
-        });
         if debug_state.rendering_view_frustum {
             use nalgebra::Point3;
             let camera = &play_state.camera;
