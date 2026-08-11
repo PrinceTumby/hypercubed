@@ -6,16 +6,6 @@ members = [
     "crates/hypercubed_portable_std",
     "crates/hypercubed_vk_shaders",
 ]
-exclude = [
-    "crates/bimap-rs",
-    "crates/cesu8-rs",
-    "crates/CrabNBT",
-    "crates/egui",
-    "crates/egui_plot",
-    "crates/foldhash",
-    "crates/hashbrown",
-    "crates/portable-atomic",
-]
 
 [workspace.dependencies]
 ahash = { version = "0.8", default-features = false }
@@ -169,7 +159,7 @@ graphics_backend_opengl = [
     "dep:glutin",
 ]
 
-# Alternative platforms
+# Platforms
 
 platform_winit = [
     # Other features
@@ -180,6 +170,17 @@ platform_winit = [
     "dep:winit",
     # Dependency features
     "glutin/default",
+    "winit/rwh_06",
+]
+platform_winit_wayland = [
+    "platform_winit",
+    "winit/wayland",
+    "winit/wayland-csd-adwaita",
+    "winit/wayland-dlopen",
+]
+platform_winit_x11 = [
+    "platform_winit",
+    "winit/x11",
 ]
 
 platform_linux_drm = [
@@ -268,7 +269,7 @@ vulkan_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
 wesl = { workspace = true, optional = true }
 wgpu = { version = "30", optional = true }
-winit = { version = "0.30", optional = true }
+winit = { version = "0.30", default-features = false, optional = true }
 
 [dependencies.egui]
 version = "0.35"
