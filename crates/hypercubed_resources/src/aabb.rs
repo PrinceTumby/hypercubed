@@ -9,6 +9,15 @@ pub struct AABB {
     pub corner_2: Point3<f32>,
 }
 
+impl From<([f32; 3], [f32; 3])> for AABB {
+    fn from((corner_1, corner_2): ([f32; 3], [f32; 3])) -> Self {
+        Self {
+            corner_1: corner_1.into(),
+            corner_2: corner_2.into(),
+        }
+    }
+}
+
 impl AABB {
     pub const fn empty_at_origin() -> Self {
         Self {

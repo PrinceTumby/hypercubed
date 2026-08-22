@@ -1,5 +1,6 @@
 pub mod blockstate;
 pub mod model;
+pub mod vanilla_blocks;
 
 use crate::{Identifier, RegistryData, RegistryIndex, texture};
 use anyhow::{Context, anyhow};
@@ -17,8 +18,6 @@ mod std_imports {
     pub use super::blockstate::{BlockstateInfoModifier, CustomPropertyType};
     pub use super::model::ModelRegistryBuilder;
 }
-
-// TODO: Create a `GameResourceData` struct, load in sky textures.
 
 #[derive(Serialize, Deserialize)]
 pub struct ResourceData {
@@ -555,6 +554,20 @@ struct StandardRegistration<'a> {
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
+impl<'a> StandardRegistration<'a> {
+    pub fn new(identifier: &'a str) -> Self {
+        Self {
+            identifier,
+            custom_variants: None,
+            replacement_variants: None,
+            default_override: None,
+            properties: Properties::default(),
+            default_extra_info: BlockstateInfo::default(),
+            extra_info_modifiers: Vec::new(),
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -571,6 +584,20 @@ struct FullCustomRegistration<'a> {
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
+impl<'a> FullCustomRegistration<'a> {
+    pub fn new(identifier: &'a str) -> Self {
+        Self {
+            identifier,
+            custom_variants: Vec::new(),
+            skip_properties: Vec::new(),
+            default_override: None,
+            properties: Properties::default(),
+            default_extra_info: BlockstateInfo::default(),
+            extra_info_modifiers: Vec::new(),
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -579,6 +606,17 @@ struct LiquidRegistration<'a> {
     pub properties: Properties,
     pub default_extra_info: BlockstateInfo,
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
+}
+
+impl<'a> LiquidRegistration<'a> {
+    pub fn new(identifier: &'a str) -> Self {
+        Self {
+            identifier,
+            properties: Properties::default(),
+            default_extra_info: BlockstateInfo::default(),
+            extra_info_modifiers: Vec::new(),
+        }
+    }
 }
 
 #[cfg(feature = "std")]
@@ -597,6 +635,21 @@ struct PropertyValueAtoms {
     pub value: Atom,
 }
 
+impl From<(&str, &str)> for PropertyValueAtoms {
+    fn from((key, value): (&str, &str)) -> Self {
+        Self::from_strs(key, value)
+    }
+}
+
+impl PropertyValueAtoms {
+    pub fn from_strs(key: &str, value: &str) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -604,6 +657,32 @@ struct CustomProperty<'a> {
     pub name: &'a str,
     #[serde(borrow)]
     pub prop_type: JsonCustomPropertyType<'a>,
+}
+
+impl<'a> CustomProperty<'a> {
+    pub const fn boolean(name: &'a str) -> Self {
+        Self {
+            name,
+            prop_type: JsonCustomPropertyType::Boolean,
+        }
+    }
+
+    pub const fn int(name: &'a str, range: core::ops::RangeInclusive<u32>) -> Self {
+        Self {
+            name,
+            prop_type: JsonCustomPropertyType::Int {
+                start: *range.start(),
+                end: *range.end(),
+            },
+        }
+    }
+
+    pub const fn enum_variants(name: &'a str, variants: Vec<&'a str>) -> Self {
+        Self {
+            name,
+            prop_type: JsonCustomPropertyType::Enum(variants),
+        }
+    }
 }
 
 #[cfg(feature = "std")]
@@ -625,6 +704,18 @@ enum JsonCustomPropertyType<'a> {
 struct PropertyValue<'a> {
     pub key: &'a str,
     pub value: &'a str,
+}
+
+impl<'a> From<(&'a str, &'a str)> for PropertyValue<'a> {
+    fn from((key, value): (&'a str, &'a str)) -> Self {
+        Self::new(key, value)
+    }
+}
+
+impl<'a> PropertyValue<'a> {
+    pub const fn new(key: &'a str, value: &'a str) -> Self {
+        Self { key, value }
+    }
 }
 
 #[cfg(feature = "std")]

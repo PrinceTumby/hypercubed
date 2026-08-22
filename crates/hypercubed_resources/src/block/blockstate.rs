@@ -1094,6 +1094,12 @@ pub enum CollisionInfo {
     Complex(Box<[AABB]>),
 }
 
+impl<T: AsRef<[AABB]>> From<T> for CollisionInfo {
+    fn from(aabbs: T) -> Self {
+        Self::Complex(Box::from(aabbs.as_ref()))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ModelData {
     Single(ModelIndex),
