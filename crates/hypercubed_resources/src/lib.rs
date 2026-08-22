@@ -28,8 +28,10 @@ impl GameResourceData {
     /// Can be used either to load the game data at run time, or from a build script to then embed
     /// the data at compile time.
     #[cfg(feature = "std")]
-    pub fn load_vanilla_data() -> anyhow::Result<GameResourceData> {
-        let block_data = block::ResourceData::load_vanilla_data()
+    pub fn load_vanilla_data(
+        block_registrations: impl IntoIterator<Item = block::Registration>,
+    ) -> anyhow::Result<GameResourceData> {
+        let block_data = block::ResourceData::load_vanilla_data(block_registrations)
             .context("Error while loading block resource data")?;
         let environment_data = environment::ResourceData::load_vanilla_data()
             .context("Error while loading environment resource data")?;

@@ -31,16 +31,16 @@ pub fn get_resource_file(
             MainFilesystem::JarFile(_zip_archive) => PathBuf::from("assets"),
             MainFilesystem::AssetsFolder(path_prefix) => path_prefix.clone(),
         };
-        path.push(identifier.get_namespace().as_ref());
+        path.push(identifier.get_namespace().as_str());
         path.push(match resource_type {
             ResourceType::Blockstate => "blockstates",
             ResourceType::Model => "models",
             ResourceType::Texture | ResourceType::TextureMeta => "textures",
         });
         for segment in identifier.get_path_prefix_segments() {
-            path.push(segment.as_ref());
+            path.push(segment.as_str());
         }
-        path.push(identifier.get_path_name().as_ref());
+        path.push(identifier.get_path_name().as_str());
         path.set_extension(match resource_type {
             ResourceType::Blockstate | ResourceType::Model => "json",
             ResourceType::Texture => "png",

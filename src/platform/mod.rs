@@ -17,8 +17,32 @@ pub fn load_resource_data() -> anyhow::Result<resources::GameResourceData> {
         feature = "use_embedded_cache" => {
             Ok(extract_embedded_resource_data_cache())
         }
+        feature = "full_std" => {
+            use anyhow::{Context, anyhow};
+            static COMPRESSED_POSTCARD: &[u8] = include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/vanilla_blocks_registration_list.postcard.zlib",
+            ));
+            let uncompressed_postcard = miniz_oxide::inflate::decompress_to_vec_zlib(COMPRESSED_POSTCARD)
+                .map_err(|err| anyhow!("Failed to decompress vanilla block postcard data - {err:#}"))?;
+            let registrations: Vec<resources::block::Registration> = {
+                let start_time = std::time::Instant::now();
+                let registrations: Vec<resources::block::Registration> = postcard::from_bytes(&uncompressed_postcard)
+                    .context("Error while deserialising registration list postcard data")?;
+                log::debug!(
+                    "Block registration list load time: {:?}",
+                    std::time::Instant::now() - start_time
+                );
+                registrations
+            };
+            resources::GameResourceData::load_vanilla_data(registrations)
+        }
         _ => {
-            resources::GameResourceData::load_vanilla_data()
+            compile_error!(concat!(
+                "Either a full standard library must be available, or an embedded cache must be ",
+                "generated at compile time. ",
+                "See the `full_std` and `embeded_vanilla_cache` features."
+            ));
         }
     }
 }

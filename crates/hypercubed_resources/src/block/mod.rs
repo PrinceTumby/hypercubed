@@ -1,5 +1,6 @@
 pub mod blockstate;
 pub mod model;
+#[cfg(any(test, feature = "vanilla_block_definitions"))]
 pub mod vanilla_blocks;
 
 use crate::{Identifier, RegistryData, RegistryIndex, texture};
@@ -33,7 +34,9 @@ impl ResourceData {
     /// Can be used either to load the game data at run time, or from a build script to then embed
     /// the resource data at compile time.
     #[cfg(feature = "std")]
-    pub fn load_vanilla_data() -> anyhow::Result<ResourceData> {
+    pub fn load_vanilla_data(
+        vanilla_block_registrations: impl IntoIterator<Item = Registration>,
+    ) -> anyhow::Result<ResourceData> {
         let square_length = 16;
         let mut atlas_builder = crate::texture::AtlasBuilder::new(square_length);
         let mut model_registry_builder = ModelRegistryBuilder::new();
@@ -42,6 +45,7 @@ impl ResourceData {
             &mut block_registry,
             &mut model_registry_builder,
             &mut atlas_builder,
+            vanilla_block_registrations,
         )?;
         let atlas = atlas_builder.finish();
         log::info!("Atlas dimensions = {}x{}px", atlas.width, atlas.height);
@@ -151,9 +155,9 @@ impl Registry {
         model_cache: &mut ModelRegistryBuilder,
         texture_atlas: &mut texture::AtlasBuilder,
         identifier: Identifier,
-        custom_variant_properties: Option<&'a [(&'a str, CustomPropertyType)]>,
-        replacement_variant_properties: Option<&'a [(&'a str, CustomPropertyType)]>,
-        default_override: Option<&'a [(&'a str, &'a str)]>,
+        custom_variant_properties: Option<&'a [(Atom, CustomPropertyType)]>,
+        replacement_variant_properties: Option<&'a [(Atom, CustomPropertyType)]>,
+        default_override: Option<&'a [(Atom, Atom)]>,
         properties: Properties,
         default_extra_info: BlockstateInfo,
         extra_info_modifiers: II,
@@ -185,7 +189,7 @@ impl Registry {
                             "Extra info property",
                             k,
                             "not found in blockstate properties for",
-                            &identifier,
+                            identifier,
                         )
                     })?;
                     if property_value != *v {
@@ -220,7 +224,7 @@ impl Registry {
             Some(default_override) => {
                 let override_map = default_override
                     .iter()
-                    .map(|(k, v)| (Atom::from(*k), Atom::from(*v)))
+                    .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 self.global_palette.len()
                     + blockstates
@@ -260,9 +264,9 @@ impl Registry {
         model_cache: &mut ModelRegistryBuilder,
         texture_atlas: &mut texture::AtlasBuilder,
         identifier: Identifier,
-        custom_properties: &'a [(&'a str, CustomPropertyType)],
-        skip_properties: &'a [&'a str],
-        default_override: Option<&'a [(&'a str, &'a str)]>,
+        custom_properties: &'a [(Atom, CustomPropertyType)],
+        skip_properties: &'a [Atom],
+        default_override: Option<&'a [(Atom, Atom)]>,
         properties: Properties,
         default_extra_info: BlockstateInfo,
         extra_info_modifiers: II,
@@ -318,10 +322,7 @@ impl Registry {
         // Calculate default index
         let default_index = match default_override {
             Some(default_override) => {
-                let override_map = default_override
-                    .iter()
-                    .map(|(k, v)| (Atom::from(*k), Atom::from(*v)))
-                    .collect();
+                let override_map = default_override.iter().cloned().collect();
                 self.global_palette.len()
                     + blockstates
                         .iter()
@@ -524,40 +525,30 @@ impl core::ops::SubAssign for RightAngleRotation {
     }
 }
 
-// Nickel/JSON types
-
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-enum Registration<'a> {
-    #[serde(borrow)]
-    Standard(StandardRegistration<'a>),
-    #[serde(borrow)]
-    FullCustom(FullCustomRegistration<'a>),
-    #[serde(borrow)]
-    Liquid(LiquidRegistration<'a>),
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Registration {
+    Standard(StandardRegistration),
+    FullCustom(FullCustomRegistration),
+    Liquid(LiquidRegistration),
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StandardRegistration<'a> {
-    pub identifier: &'a str,
-    #[serde(borrow)]
-    pub custom_variants: Option<Vec<CustomProperty<'a>>>,
-    #[serde(borrow)]
-    pub replacement_variants: Option<Vec<CustomProperty<'a>>>,
-    #[serde(borrow)]
-    pub default_override: Option<Vec<PropertyValue<'a>>>,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StandardRegistration {
+    pub identifier: Atom,
+    pub custom_variants: Option<Vec<CustomProperty>>,
+    pub replacement_variants: Option<Vec<CustomProperty>>,
+    pub default_override: Option<Vec<PropertyValue>>,
     pub properties: Properties,
     pub default_extra_info: BlockstateInfo,
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
-impl<'a> StandardRegistration<'a> {
-    pub fn new(identifier: &'a str) -> Self {
+impl StandardRegistration {
+    pub fn new(identifier: impl Into<Atom>) -> Self {
         Self {
-            identifier,
+            identifier: identifier.into(),
             custom_variants: None,
             replacement_variants: None,
             default_override: None,
@@ -569,25 +560,21 @@ impl<'a> StandardRegistration<'a> {
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FullCustomRegistration<'a> {
-    pub identifier: &'a str,
-    #[serde(borrow)]
-    pub custom_variants: Vec<CustomProperty<'a>>,
-    #[serde(borrow)]
-    pub skip_properties: Vec<&'a str>,
-    #[serde(borrow)]
-    pub default_override: Option<Vec<PropertyValue<'a>>>,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FullCustomRegistration {
+    pub identifier: Atom,
+    pub custom_variants: Vec<CustomProperty>,
+    pub skip_properties: Vec<Atom>,
+    pub default_override: Option<Vec<PropertyValue>>,
     pub properties: Properties,
     pub default_extra_info: BlockstateInfo,
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
-impl<'a> FullCustomRegistration<'a> {
-    pub fn new(identifier: &'a str) -> Self {
+impl FullCustomRegistration {
+    pub fn new(identifier: impl Into<Atom>) -> Self {
         Self {
-            identifier,
+            identifier: identifier.into(),
             custom_variants: Vec::new(),
             skip_properties: Vec::new(),
             default_override: None,
@@ -599,19 +586,18 @@ impl<'a> FullCustomRegistration<'a> {
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LiquidRegistration<'a> {
-    pub identifier: &'a str,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LiquidRegistration {
+    pub identifier: Atom,
     pub properties: Properties,
     pub default_extra_info: BlockstateInfo,
     pub extra_info_modifiers: Vec<BlockstateInfoModifierCase>,
 }
 
-impl<'a> LiquidRegistration<'a> {
-    pub fn new(identifier: &'a str) -> Self {
+impl LiquidRegistration {
+    pub fn new(identifier: impl Into<Atom>) -> Self {
         Self {
-            identifier,
+            identifier: identifier.into(),
             properties: Properties::default(),
             default_extra_info: BlockstateInfo::default(),
             extra_info_modifiers: Vec::new(),
@@ -620,29 +606,27 @@ impl<'a> LiquidRegistration<'a> {
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BlockstateInfoModifierCase {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlockstateInfoModifierCase {
     pub modifier: BlockstateInfoModifier,
-    pub conditions: Vec<PropertyValueAtoms>,
+    pub conditions: Vec<PropertyValue>,
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PropertyValueAtoms {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PropertyValue {
     pub key: Atom,
     pub value: Atom,
 }
 
-impl From<(&str, &str)> for PropertyValueAtoms {
+impl From<(&str, &str)> for PropertyValue {
     fn from((key, value): (&str, &str)) -> Self {
-        Self::from_strs(key, value)
+        Self::new(key, value)
     }
 }
 
-impl PropertyValueAtoms {
-    pub fn from_strs(key: &str, value: &str) -> Self {
+impl PropertyValue {
+    pub fn new(key: impl Into<Atom>, value: impl Into<Atom>) -> Self {
         Self {
             key: key.into(),
             value: value.into(),
@@ -651,106 +635,78 @@ impl PropertyValueAtoms {
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CustomProperty<'a> {
-    pub name: &'a str,
-    #[serde(borrow)]
-    pub prop_type: JsonCustomPropertyType<'a>,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CustomProperty {
+    pub name: Atom,
+    pub prop_type: SerialisedCustomPropertyType,
 }
 
-impl<'a> CustomProperty<'a> {
-    pub const fn boolean(name: &'a str) -> Self {
+impl CustomProperty {
+    pub fn boolean(name: impl Into<Atom>) -> Self {
         Self {
-            name,
-            prop_type: JsonCustomPropertyType::Boolean,
+            name: name.into(),
+            prop_type: SerialisedCustomPropertyType::Boolean,
         }
     }
 
-    pub const fn int(name: &'a str, range: core::ops::RangeInclusive<u32>) -> Self {
+    pub fn int(name: impl Into<Atom>, range: core::ops::RangeInclusive<u32>) -> Self {
         Self {
-            name,
-            prop_type: JsonCustomPropertyType::Int {
+            name: name.into(),
+            prop_type: SerialisedCustomPropertyType::Int {
                 start: *range.start(),
                 end: *range.end(),
             },
         }
     }
 
-    pub const fn enum_variants(name: &'a str, variants: Vec<&'a str>) -> Self {
+    pub fn enum_variants(
+        name: impl Into<Atom>,
+        variants: impl IntoIterator<Item = impl Into<Atom>>,
+    ) -> Self {
         Self {
-            name,
-            prop_type: JsonCustomPropertyType::Enum(variants),
+            name: name.into(),
+            prop_type: SerialisedCustomPropertyType::Enum(
+                variants.into_iter().map(Into::into).collect(),
+            ),
         }
     }
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-enum JsonCustomPropertyType<'a> {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SerialisedCustomPropertyType {
     Boolean,
-    Int {
-        start: u32,
-        end: u32,
-    },
-    #[serde(borrow)]
-    Enum(Vec<&'a str>),
+    Int { start: u32, end: u32 },
+    Enum(Vec<Atom>),
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PropertyValue<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
-}
-
-impl<'a> From<(&'a str, &'a str)> for PropertyValue<'a> {
-    fn from((key, value): (&'a str, &'a str)) -> Self {
-        Self::new(key, value)
-    }
-}
-
-impl<'a> PropertyValue<'a> {
-    pub const fn new(key: &'a str, value: &'a str) -> Self {
-        Self { key, value }
-    }
-}
-
-#[cfg(feature = "std")]
-pub fn register_blocks_from_json(
+pub fn register_blocks_from_list(
     registry: &mut Registry,
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas_builder: &mut texture::AtlasBuilder,
-    json_data: &[u8],
+    registrations: impl IntoIterator<Item = Registration>,
 ) -> anyhow::Result<()> {
-    let start_time = std::time::Instant::now();
-    let registrations: Vec<Registration> = serde_json::from_slice(json_data)?;
-    println!(
-        "Block JSON load time: {:?}",
-        std::time::Instant::now() - start_time
-    );
-    for registration in registrations {
+    for registration in registrations.into_iter() {
         fn convert_custom_property_list<'a>(
-            properties: &'a [CustomProperty<'a>],
-        ) -> Vec<(&'a str, CustomPropertyType<'a, 'a>)> {
+            properties: &'a [CustomProperty],
+        ) -> Vec<(Atom, CustomPropertyType<'a>)> {
             properties
                 .iter()
                 .map(move |property| {
-                    use JsonCustomPropertyType::*;
+                    use SerialisedCustomPropertyType::*;
                     let prop_type = match &property.prop_type {
                         Boolean => CustomPropertyType::Bool,
-                        &Int { start, end } => CustomPropertyType::Int(start..=end),
+                        Int { start, end } => CustomPropertyType::Int(*start..=*end),
                         Enum(variants) => CustomPropertyType::Enum(variants.as_slice()),
                     };
-                    (property.name, prop_type)
+                    (property.name.clone(), prop_type)
                 })
                 .collect()
         }
         match registration {
             Registration::Standard(standard_reg) => {
-                let identifier = Identifier::parse(standard_reg.identifier)?;
+                let identifier = Identifier::parse(&standard_reg.identifier)?;
                 let custom_variants = standard_reg
                     .custom_variants
                     .as_ref()
@@ -762,9 +718,8 @@ pub fn register_blocks_from_json(
                 let default_override = standard_reg.default_override.as_ref().map(|prop_values| {
                     prop_values
                         .iter()
-                        .copied()
-                        .map(|PropertyValue { key, value }| (key, value))
-                        .collect::<Vec<(&str, &str)>>()
+                        .map(|PropertyValue { key, value }| (key.clone(), value.clone()))
+                        .collect::<Vec<(Atom, Atom)>>()
                 });
                 let extra_info_modifiers = standard_reg
                     .extra_info_modifiers
@@ -795,14 +750,14 @@ pub fn register_blocks_from_json(
                 )?;
             }
             Registration::FullCustom(custom_reg) => {
-                let identifier = Identifier::parse(custom_reg.identifier)?;
+                let identifier = Identifier::parse(&custom_reg.identifier)?;
                 let custom_variants = convert_custom_property_list(&custom_reg.custom_variants);
                 let default_override = custom_reg.default_override.as_ref().map(|prop_values| {
                     prop_values
                         .iter()
-                        .copied()
+                        .cloned()
                         .map(|PropertyValue { key, value }| (key, value))
-                        .collect::<Vec<(&str, &str)>>()
+                        .collect::<Vec<(Atom, Atom)>>()
                 });
                 let extra_info_modifiers = custom_reg
                     .extra_info_modifiers
@@ -833,7 +788,7 @@ pub fn register_blocks_from_json(
                 )?;
             }
             Registration::Liquid(liquid_reg) => {
-                let identifier = Identifier::parse(liquid_reg.identifier)?;
+                let identifier = Identifier::parse(&liquid_reg.identifier)?;
                 let extra_info_modifiers = liquid_reg
                     .extra_info_modifiers
                     .iter()
@@ -869,30 +824,55 @@ pub fn register_vanilla_blocks(
     registry: &mut Registry,
     model_registry_builder: &mut ModelRegistryBuilder,
     texture_atlas_builder: &mut texture::AtlasBuilder,
+    vanilla_block_registrations: impl IntoIterator<Item = Registration>,
 ) -> anyhow::Result<()> {
     // Register blocks
     {
         let start_time = std::time::Instant::now();
-        // Generated by `build.rs` from `vanilla_block.ncl`.
-        static COMPRESSED_JSON: &[u8] = include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/vanilla_blocks_generated.json.zlib"
-        ));
-        let uncompressed_json = miniz_oxide::inflate::decompress_to_vec_zlib(COMPRESSED_JSON)
-            .expect("Failed to decompress vanilla block JSON data");
-        register_blocks_from_json(
+        // // Generated by `build.rs` from `vanilla_block.ncl`.
+        // static COMPRESSED_JSON: &[u8] = include_bytes!(concat!(
+        //     env!("OUT_DIR"),
+        //     "/vanilla_blocks_generated.json.zlib"
+        // ));
+        // let uncompressed_json = miniz_oxide::inflate::decompress_to_vec_zlib(COMPRESSED_JSON)
+        //     .map_err(|err| anyhow!("Failed to decompress registration list JSON data - {err:#}"))?;
+        // let registrations: Vec<Registration> = {
+        //     let start_time = std::time::Instant::now();
+        //     let registrations: Vec<Registration> = serde_json::from_slice(uncompressed_json)?;
+        //     println!(
+        //         "Block JSON load time: {:?}",
+        //         std::time::Instant::now() - start_time
+        //     );
+        //     registrations
+        // };
+
+        // let uncompressed_postcard = miniz_oxide::inflate::decompress_to_vec_zlib(vanilla_block_compressed_postcard_data)
+        //     .map_err(|err| anyhow!("Failed to decompress vanilla block postcard data - {err:#}"))?;
+        // let registrations: Vec<Registration> = {
+        //     let start_time = std::time::Instant::now();
+        //     let registrations: Vec<Registration> = postcard::from_bytes(&uncompressed_postcard)
+        //         .context("Error while deserialising registration list postcard data")?;
+        //     println!(
+        //         "Block registration list load time: {:?}",
+        //         std::time::Instant::now() - start_time
+        //     );
+        //     registrations
+        // };
+
+        register_blocks_from_list(
             registry,
             model_registry_builder,
             texture_atlas_builder,
-            &uncompressed_json,
+            vanilla_block_registrations,
         )?;
-        println!(
+        log::debug!(
             "Block load time: {:?}",
             std::time::Instant::now() - start_time
         );
     }
-    // TODO: Move this to a startup flag
-    // Write out registry IDs to "entries.json", helpful for adding new blocks
+    // Write out registry IDs to "entries.json", helpful for adding new blocks.
+    // TODO: Move this to a startup flag, gated behind an extra "debug" feature.
+    // - These are now entirely in the wrong place as well.
     #[cfg(debug_assertions)]
     {
         use core::fmt::Write;
@@ -915,7 +895,8 @@ pub fn register_vanilla_blocks(
         std::fs::write("entries.json", entries_string)?;
     }
     // Write out registry blockstate information to "blocks_rust.json".
-    // Helpful for adding new blocks
+    // Helpful for adding new blocks.
+    // TODO: Move this to a startup flag, gated behind an extra "debug" feature.
     #[cfg(debug_assertions)]
     {
         use ahash::AHashMap;

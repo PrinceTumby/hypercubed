@@ -30,7 +30,7 @@ vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "432955a" }
 vulkan_prelude = { path = "crates/vulkan_prelude" }
 serde_repr = "0.1"
 smallstr = { version = "0.3", features = ["serde"] }
-string_cache = "0.10"
+string_cache = "0.11"
 thiserror = { version = "2", default-features = false }
 wesl = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate"] }
@@ -82,7 +82,7 @@ default = [
 
 # Represents platforms which have full access to a standard library, and for which using `std`
 # should be the default mechanism for most I/O.
-# This includes using `std` for printing, file I/O, and networking.
+# This includes using `std` for stdout/stderr, file I/O, and networking.
 full_std = [
     "mini_std",
 ]
@@ -211,7 +211,7 @@ wesl = { workspace = true, optional = true }
 [build-dependencies.resources]
 package = "hypercubed_resources"
 path = "crates/hypercubed_resources"
-features = ["std"]
+features = ["std", "vanilla_block_definitions"]
 
 [dependencies]
 aes = "0.9"

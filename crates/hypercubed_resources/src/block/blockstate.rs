@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow, bail, ensure};
 use core::fmt::Write;
 use portable_std::prelude::*;
-use portable_std::{Atom, Cow, FastHashMap, FastHashSet};
+use portable_std::{Atom, FastHashMap, FastHashSet};
 use serde::{Deserialize, Serialize};
 
 use super::model::{ModelIndex, ModelRotationInfo};
@@ -22,8 +22,8 @@ mod std_imports {
 pub fn load_blockstates(
     block_index: RegistryIndex,
     identifier: &Identifier,
-    custom_properties: Option<&[(&str, CustomPropertyType)]>,
-    replacement_properties: Option<&[(&str, CustomPropertyType)]>,
+    custom_properties: Option<&[(Atom, CustomPropertyType)]>,
+    replacement_properties: Option<&[(Atom, CustomPropertyType)]>,
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
@@ -64,8 +64,8 @@ pub fn load_blockstates(
 fn load_blockstate_variants(
     block_index: RegistryIndex,
     variants: IndexMap<String, Variant>,
-    custom_properties: &[(&str, CustomPropertyType)],
-    replacement_properties: Option<&[(&str, CustomPropertyType)]>,
+    custom_properties: &[(Atom, CustomPropertyType)],
+    replacement_properties: Option<&[(Atom, CustomPropertyType)]>,
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
@@ -85,7 +85,7 @@ fn load_blockstate_variants(
                     .filter(|condition| condition != &"")
                     .map(|condition| condition.split_once('=').unwrap().0)
             })
-            .find(|variant_name| variant_name == custom_property_name)
+            .find(|variant_name| *variant_name == custom_property_name.as_str())
         {
             bail!(
                 "Custom variant {:?} also found in blockstate file",
@@ -95,7 +95,7 @@ fn load_blockstate_variants(
     }
     let mut custom_property_iters: Vec<_> = custom_properties
         .iter()
-        .map(|(name, ty)| (*name, ty.iter()))
+        .map(|(name, ty)| (name.clone(), ty.iter()))
         .collect();
     let mut current_custom_property_states: Vec<_> = custom_property_iters
         .iter_mut()
@@ -114,7 +114,7 @@ fn load_blockstate_variants(
                         .filter(|condition| condition != &"")
                         .map(|condition| condition.split_once('=').unwrap().0)
                 })
-                .any(|variant_name| &variant_name == property_name)
+                .any(|variant_name| variant_name == property_name.as_str())
             {
                 bail!(
                     "Replacement property {:?} not found in blockstate file",
@@ -124,7 +124,7 @@ fn load_blockstate_variants(
         }
         let mut property_iters: Vec<_> = replacement_properties
             .iter()
-            .map(|(name, ty)| (*name, ty.iter()))
+            .map(|(name, ty)| (name.clone(), ty.iter()))
             .collect();
         let mut current_property_states: Vec<_> = property_iters
             .iter_mut()
@@ -137,7 +137,7 @@ fn load_blockstate_variants(
             let state: Vec<_> = property_iters
                 .iter()
                 .zip(current_property_states.iter())
-                .map(|((name, _iter), value)| (*name, value.clone()))
+                .map(|((name, _iter), value)| (name.clone(), value.clone()))
                 .collect();
             // Generate next state
             for (i, ((_name, property_iter), state)) in property_iters
@@ -169,7 +169,7 @@ fn load_blockstate_variants(
                 Variant::Single(model_info) => {
                     let model_location =
                         Identifier::parse(&model_info.model).with_context(|| {
-                            format!("Failed to parse {:?} as identifier", &model_info.model)
+                            format!("Failed to parse {:?} as identifier", model_info.model)
                         })?;
                     let model = model_cache
                         .load_model(
@@ -190,7 +190,7 @@ fn load_blockstate_variants(
                         let custom_state: Vec<_> = custom_property_iters
                             .iter()
                             .zip(current_custom_property_states.iter())
-                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .map(|((name, _iter), value)| (name.clone(), value.clone()))
                             .collect();
                         // Generate next custom state
                         for (i, ((_name, property_iter), state)) in custom_property_iters
@@ -257,7 +257,7 @@ fn load_blockstate_variants(
                         let custom_state: Vec<_> = custom_property_iters
                             .iter()
                             .zip(current_custom_property_states.iter())
-                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .map(|((name, _iter), value)| (name.clone(), value.clone()))
                             .collect();
                         // Generate next custom state
                         for (i, ((_name, property_iter), state)) in custom_property_iters
@@ -315,7 +315,7 @@ fn load_blockstate_variants(
                 Variant::Single(model_info) => {
                     let model_location =
                         Identifier::parse(&model_info.model).with_context(|| {
-                            format!("Failed to parse {:?} as identifier", &model_info.model)
+                            format!("Failed to parse {:?} as identifier", model_info.model)
                         })?;
                     let model = model_cache
                         .load_model(
@@ -336,7 +336,7 @@ fn load_blockstate_variants(
                         let custom_state: Vec<_> = custom_property_iters
                             .iter()
                             .zip(current_custom_property_states.iter())
-                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .map(|((name, _iter), value)| (name.clone(), value.clone()))
                             .collect();
                         // Generate next custom state
                         for (i, ((_name, property_iter), state)) in custom_property_iters
@@ -410,7 +410,7 @@ fn load_blockstate_variants(
                         let custom_state: Vec<_> = custom_property_iters
                             .iter()
                             .zip(current_custom_property_states.iter())
-                            .map(|((name, _iter), value)| (*name, value.clone()))
+                            .map(|((name, _iter), value)| (name.clone(), value.clone()))
                             .collect();
                         // Generate next custom state
                         for (i, ((_name, property_iter), state)) in custom_property_iters
@@ -453,7 +453,7 @@ fn load_blockstate_multipart_cases(
     block_index: RegistryIndex,
     identifier: &Identifier,
     mut cases: Vec<MultipartCase>,
-    properties: &[(&str, CustomPropertyType)],
+    properties: &[(Atom, CustomPropertyType)],
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
@@ -468,7 +468,7 @@ fn load_blockstate_multipart_cases(
     }
     let mut property_iters: Vec<_> = properties
         .iter()
-        .map(|(name, ty)| (*name, ty.iter()))
+        .map(|(name, ty)| (name.clone(), ty.iter()))
         .collect();
     let mut current_property_states: Vec<_> = property_iters
         .iter_mut()
@@ -481,7 +481,7 @@ fn load_blockstate_multipart_cases(
         let state: FastHashMap<_, _> = property_iters
             .iter()
             .zip(current_property_states.iter())
-            .map(|((name, _iter), value)| (*name, value.clone()))
+            .map(|((name, _iter), value)| (name.clone(), value.clone()))
             .collect();
         // Generate next state
         for (i, ((_name, property_iter), state)) in property_iters
@@ -498,10 +498,8 @@ fn load_blockstate_multipart_cases(
                 is_final_state = true;
             }
         }
-        let condition_map: FastHashMap<Atom, Atom> = state
-            .iter()
-            .map(|(&k, v)| (Atom::from(k), Atom::from(v.as_ref())))
-            .collect();
+        let condition_map: FastHashMap<Atom, Atom> =
+            state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         // Some blockstate files use a multipart with only one variant (useful for generating
         // models with randomised parts)
         if properties.is_empty() {
@@ -543,7 +541,7 @@ fn load_blockstate_multipart_cases(
                     Variant::Single(variant) => {
                         let model_part = RawCompositeModelPart {
                             location: Identifier::parse(&variant.model).with_context(|| {
-                                format!("Failed to parse {:?} as identifier", &variant.model)
+                                format!("Failed to parse {:?} as identifier", variant.model)
                             })?,
                             x_rotation: variant.x_rotation,
                             y_rotation: variant.y_rotation,
@@ -558,7 +556,7 @@ fn load_blockstate_multipart_cases(
                         for variant in variants {
                             let variant_part = RawCompositeModelPart {
                                 location: Identifier::parse(&variant.model).with_context(|| {
-                                    format!("Failed to parse {:?} as identifier", &variant.model)
+                                    format!("Failed to parse {:?} as identifier", variant.model)
                                 })?,
                                 x_rotation: variant.x_rotation,
                                 y_rotation: variant.y_rotation,
@@ -584,7 +582,7 @@ fn load_blockstate_multipart_cases(
             // Only one possible model
             let model = model_cache
                 .load_composite_model(identifier, &model_parts.parts, texture_atlas)
-                .with_context(|| format!("Error combining model list {:?}", &model_parts.parts))?;
+                .with_context(|| format!("Error combining model list {:?}", model_parts.parts))?;
             blockstates.push(Blockstate {
                 block_index,
                 properties: condition_map,
@@ -601,7 +599,7 @@ fn load_blockstate_multipart_cases(
                     let model = model_cache
                         .load_composite_model(identifier, &group.parts, texture_atlas)
                         .with_context(|| {
-                            format!("Error combining model list {:?}", &group.parts)
+                            format!("Error combining model list {:?}", group.parts)
                         })?;
                     Ok(WeightedModel {
                         model,
@@ -624,16 +622,16 @@ fn load_blockstate_multipart_cases(
 
 #[cfg(feature = "std")]
 fn is_multipart_condition_group_satisfied(
-    state: &FastHashMap<&str, Cow<'_, str>>,
+    state: &FastHashMap<Atom, Atom>,
     condition_group: &MultipartConditionGroup,
 ) -> bool {
     for condition in &condition_group.0 {
         let mut found_condition = false;
         for allowed_property in &condition.property_set {
-            let Some(state_value) = state.get(allowed_property.as_str()) else {
+            let Some(state_value) = state.get(allowed_property) else {
                 continue;
             };
-            if condition.value_set.contains(state_value.as_ref()) {
+            if condition.value_set.contains(state_value) {
                 found_condition = true;
                 break;
             }
@@ -652,8 +650,8 @@ fn is_multipart_condition_group_satisfied(
 pub fn load_full_custom_blockstates(
     block_index: RegistryIndex,
     identifier: &Identifier,
-    properties: &[(&str, CustomPropertyType)],
-    skip_properties: &[&str],
+    properties: &[(Atom, CustomPropertyType)],
+    skip_properties: &[Atom],
     model_cache: &mut ModelRegistryBuilder,
     texture_atlas: &mut texture::AtlasBuilder,
 ) -> anyhow::Result<Vec<Blockstate>> {
@@ -666,7 +664,7 @@ pub fn load_full_custom_blockstates(
             "Skip property '{skip_prop}' not found in properties"
         );
     }
-    let skip_properties: FastHashSet<_> = skip_properties.iter().map(|p| Atom::from(*p)).collect();
+    let skip_properties: FastHashSet<_> = skip_properties.iter().cloned().collect();
     let blockstate_json_bytes = get_resource_file(ResourceType::Blockstate, identifier)
         .with_context(|| format!("Failed to read raw blockstate JSON data for {identifier:?}"))?;
     let file: File = serde_json::from_slice(&blockstate_json_bytes)
@@ -681,7 +679,7 @@ pub fn load_full_custom_blockstates(
             }
             let mut property_iters: Vec<_> = properties
                 .iter()
-                .map(|(name, ty)| (Atom::from(*name), ty.iter()))
+                .map(|(name, ty)| (name.clone(), ty.iter()))
                 .collect();
             let mut current_property_states: Vec<_> = property_iters
                 .iter_mut()
@@ -730,7 +728,7 @@ pub fn load_full_custom_blockstates(
                     Variant::Single(model_info) => {
                         let model_location =
                             Identifier::parse(&model_info.model).with_context(|| {
-                                format!("Failed to parse {:?} as identifier", &model_info.model)
+                                format!("Failed to parse {:?} as identifier", model_info.model)
                             })?;
                         let model = model_cache
                             .load_model(
@@ -887,15 +885,15 @@ fn is_valid_condition_set(set: &str) -> bool {
 
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CustomPropertyType<'a, 'b> {
+pub enum CustomPropertyType<'a> {
     Bool,
     Int(core::ops::RangeInclusive<u32>),
-    Enum(&'a [&'b str]),
+    Enum(&'a [Atom]),
 }
 
 #[cfg(feature = "std")]
-impl<'a, 'b> CustomPropertyType<'a, 'b> {
-    pub fn iter(&self) -> CustomPropertyIterator<'a, 'b> {
+impl<'a> CustomPropertyType<'a> {
+    pub fn iter(&self) -> CustomPropertyIterator<'a> {
         let type_state = match self {
             Self::Bool => CustomPropertyIteratorType::Bool {
                 current_state: true,
@@ -918,14 +916,14 @@ impl<'a, 'b> CustomPropertyType<'a, 'b> {
 
 #[cfg(feature = "std")]
 #[derive(Clone, Debug)]
-pub struct CustomPropertyIterator<'a, 'b> {
-    type_state: CustomPropertyIteratorType<'a, 'b>,
+pub struct CustomPropertyIterator<'a> {
+    type_state: CustomPropertyIteratorType<'a>,
     just_reset: bool,
 }
 
 #[cfg(feature = "std")]
 #[derive(Clone, Debug)]
-pub enum CustomPropertyIteratorType<'a, 'b> {
+pub enum CustomPropertyIteratorType<'a> {
     Bool {
         current_state: bool,
     },
@@ -934,16 +932,16 @@ pub enum CustomPropertyIteratorType<'a, 'b> {
         current_num: u32,
     },
     Enum {
-        kinds: &'a [&'b str],
+        kinds: &'a [Atom],
         current_index: usize,
     },
 }
 
 #[cfg(feature = "std")]
-impl<'b> CustomPropertyIterator<'_, 'b> {
+impl CustomPropertyIterator<'_> {
     /// Returns the next value, along with whether the value has just reset
     #[expect(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> (Cow<'b, str>, bool) {
+    pub fn next(&mut self) -> (Atom, bool) {
         let (state, is_last_state) = match &mut self.type_state {
             CustomPropertyIteratorType::Bool {
                 current_state: state,
@@ -951,7 +949,11 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
                 let current_state = *state;
                 *state = !current_state;
                 (
-                    Cow::Borrowed(if current_state { "true" } else { "false" }),
+                    if current_state {
+                        Atom::from("true")
+                    } else {
+                        Atom::from("false")
+                    },
                     !current_state,
                 )
             }
@@ -959,10 +961,10 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
                 if range.contains(&(*current_num + 1)) {
                     let num = *current_num;
                     *current_num += 1;
-                    (Cow::Owned(format!("{num}")), false)
+                    (Atom::from(format!("{num}")), false)
                 } else {
                     (
-                        Cow::Owned(format!(
+                        Atom::from(format!(
                             "{}",
                             core::mem::replace(current_num, *range.start())
                         )),
@@ -977,12 +979,9 @@ impl<'b> CustomPropertyIterator<'_, 'b> {
                 if *current_index + 1 < kinds.len() {
                     let index = *current_index;
                     *current_index += 1;
-                    (Cow::Borrowed(kinds[index]), false)
+                    (kinds[index].clone(), false)
                 } else {
-                    (
-                        Cow::Borrowed(kinds[core::mem::replace(current_index, 0)]),
-                        true,
-                    )
+                    (kinds[core::mem::replace(current_index, 0)].clone(), true)
                 }
             }
         };
@@ -1188,8 +1187,8 @@ pub struct MultipartConditionGroup(Vec<MultipartCondition>);
 #[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 struct MultipartCondition {
-    pub property_set: FastHashSet<String>,
-    pub value_set: FastHashSet<String>,
+    pub property_set: FastHashSet<Atom>,
+    pub value_set: FastHashSet<Atom>,
 }
 
 #[cfg(feature = "std")]
@@ -1209,8 +1208,8 @@ impl TryFrom<FastHashMap<String, String>> for MultipartConditionGroup {
                 if !is_valid_property_or_value_set(&value_set_string) {
                     return Err(format!("invalid value set {value_set_string:?}"));
                 }
-                let property_set = property_set_string.split('|').map(String::from).collect();
-                let value_set = value_set_string.split('|').map(String::from).collect();
+                let property_set = property_set_string.split('|').map(Atom::from).collect();
+                let value_set = value_set_string.split('|').map(Atom::from).collect();
                 Ok(MultipartCondition {
                     property_set,
                     value_set,

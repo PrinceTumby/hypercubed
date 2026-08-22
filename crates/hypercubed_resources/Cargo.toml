@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 default = ["std"]
+vanilla_block_definitions = ["std"]
 std = [
     # Dependencies
     "dep:image",
@@ -25,12 +26,6 @@ no_std = ["lazy_static/spin_no_std"]
 # Data embedding
 use_embedded_cache = []
 
-[build-dependencies]
-miniz_oxide.workspace = true
-nickel-lang-core = { version = "0.13", default-features = false }
-postcard.workspace = true
-serde_json.workspace = true
-
 [dependencies]
 ahash.workspace = true
 anyhow.workspace = true
@@ -42,6 +37,7 @@ lazy_static.workspace = true
 log.workspace = true
 miniz_oxide.workspace = true
 nalgebra.workspace = true
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_repr.workspace = true
