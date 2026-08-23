@@ -101,7 +101,7 @@ pub fn process_game_events(
             ClientboundPacket::ChunkBatchStart => {}
             ClientboundPacket::ChunkBatchEnd { num_chunks: _ } => {
                 // TODO: Calculate time taken since batch started, send back value
-                // to use half of available bandwidth
+                //       to use half of available bandwidth.
                 server_connection
                     .send_packet(serverbound_packets::ChunkBatchReceived {
                         desired_chunks_per_tick: 8.0,
@@ -412,7 +412,10 @@ pub fn process_game_events(
             ClientboundPacket::SetTickingState(new_ticking_state) => {
                 play_state.ticking_state = new_ticking_state
             }
-            // other => println!("{other:?}"),
+            // XXX: DEBUG
+            ClientboundPacket::SpawnEntity(entity_info) => {
+                log::info!("Spawn entity - {entity_info:?}");
+            }
             _ => {}
         }
     }

@@ -275,7 +275,7 @@ pub async fn login(
                 configuration::Pong(id).serialize_into(&mut write_stream)?;
             }
             Response::RegistryData(registry_data) => {
-                log::warn!(
+                log::debug!(
                     "Server registry data handling currently unimplemented, ignoring for now"
                 );
                 log::debug!("Server registry data: {registry_data:?}");
@@ -285,11 +285,11 @@ pub async fn login(
                     todo!("Support alternative features: {:?}", features);
                 }
             }
-            Response::UpdateTags(_registry_tags) => log::warn!(
+            Response::UpdateTags(_registry_tags) => log::debug!(
                 "Server registry tags data handling currently unimplemented, ignoring for now"
             ),
             Response::ServerDataPacks(data_packs) => {
-                log::warn!(
+                log::debug!(
                     "{}, {}",
                     "Server data pack checking currently unimplemented",
                     "responding as only having <minecraft:core>",
