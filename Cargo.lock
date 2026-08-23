@@ -1933,6 +1933,7 @@ dependencies = [
  "glutin",
  "hypercubed_portable_std",
  "hypercubed_resources",
+ "hypercubed_vanilla",
  "hypercubed_vk_shaders",
  "image",
  "indexmap",
@@ -2010,6 +2011,33 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.19",
  "zip",
+]
+
+[[package]]
+name = "hypercubed_vanilla"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hypercubed_portable_std",
+ "hypercubed_resources",
+ "hypercubed_vanilla_data_gen",
+ "indexmap",
+ "log",
+ "miniz_oxide 0.9.1",
+ "nalgebra",
+ "postcard",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hypercubed_vanilla_data_gen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hypercubed_portable_std",
+ "hypercubed_resources",
+ "nalgebra",
 ]
 
 [[package]]

@@ -5,7 +5,6 @@ edition = "2024"
 
 [features]
 default = ["std"]
-vanilla_block_definitions = ["std"]
 std = [
     # Dependencies
     "dep:image",

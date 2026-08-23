@@ -244,12 +244,12 @@ impl GraphicsBackend for GraphicsState {
             block_data,
             environment_data,
         } = game_data;
-        let resources::block::ResourceData {
+        let resources::block::Data {
             block_registry,
             model_registry,
             atlas,
         } = block_data;
-        let resources::environment::ResourceData {
+        let resources::environment::Data {
             moon_phases_texture,
             sun_texture,
         } = environment_data;

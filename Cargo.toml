@@ -1,10 +1,12 @@
 [workspace]
 members = [
+    "crates/hypercubed_portable_std",
+    "crates/hypercubed_resources",
+    "crates/hypercubed_vanilla",
+    "crates/hypercubed_vanilla_data_gen",
+    "crates/hypercubed_vk_shaders",
     "crates/protocol_derive",
     "crates/vulkan_prelude",
-    "crates/hypercubed_resources",
-    "crates/hypercubed_portable_std",
-    "crates/hypercubed_vk_shaders",
 ]
 
 [workspace.dependencies]
@@ -71,10 +73,11 @@ name = "hypercubed"
 
 [features]
 default = [
+    # XXX: DEBUG
     "platform_winit",
     "graphics_backend_opengl",
-    "graphics_backend_vulkan",
-    "graphics_backend_wgpu",
+    # "graphics_backend_vulkan",
+    # "graphics_backend_wgpu",
     # "embed_vanilla_cache",
     # "tracy",
 ]
@@ -96,6 +99,7 @@ mini_std = [
     "dep:egui",
     "dep:egui_plot",
     "dep:env_logger",
+    "dep:hypercubed_vanilla",
     "dep:image",
     "dep:pollster",
     "dep:threadpool",
@@ -202,7 +206,6 @@ platform_linux_drm = [
 ]
 
 [build-dependencies]
-anyhow.workspace = true
 miniz_oxide.workspace = true
 postcard.workspace = true
 serde.workspace = true
@@ -211,7 +214,9 @@ wesl = { workspace = true, optional = true }
 [build-dependencies.resources]
 package = "hypercubed_resources"
 path = "crates/hypercubed_resources"
-features = ["std", "vanilla_block_definitions"]
+
+[build-dependencies.hypercubed_vanilla]
+path = "crates/hypercubed_vanilla"
 
 [dependencies]
 aes = "0.9"
@@ -287,6 +292,10 @@ version = "0.10.0-rc.18"
 default-features = false
 features = ["encoding"]
 
+[dependencies.hypercubed_vanilla]
+path = "crates/hypercubed_vanilla"
+optional = true
+
 [dependencies.hypercubed_vk_shaders]
 path = "crates/hypercubed_vk_shaders"
 optional = true
@@ -306,9 +315,6 @@ default-features = false
 [profile.dev]
 opt-level = 1
 
-[profile.dev.build-override]
-opt-level = 1
-
 [profile.dev-no-opt]
 inherits = "dev"
 opt-level = 0
@@ -316,17 +322,11 @@ panic = "unwind"
 debug = "full"
 strip = "none"
 
-[profile.dev-no-opt.build-override]
-opt-level = 1
-
 [profile.release]
 debug = false
 lto = true
 codegen-units = 1
 panic = "abort"
-
-[profile.release.build-override]
-opt-level = 1
 
 [profile.release-profiling]
 inherits = "release"
@@ -335,6 +335,3 @@ codegen-units = 8
 panic = "abort"
 debug = "full"
 strip = "none"
-
-[profile.release-profiling.build-override]
-opt-level = 1

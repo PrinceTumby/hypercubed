@@ -26,7 +26,10 @@ struct Args {
 
 pub fn main() -> anyhow::Result<()> {
     use protocol::configuration;
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
     #[cfg(feature = "tracy")]
     {
         use tracing_subscriber::layer::SubscriberExt;

@@ -1,33 +1,22 @@
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    match std::env::var("CARGO_FEATURE_USE_EMBEDDED_CACHE").is_ok() {
-        // Generate embedded cache.
-        true => {
-            let resource_data = if std::env::var("CARGO_FEATURE_EMBED_VANILLA_CACHE").is_ok() {
-                let registrations_list = resources::block::vanilla_blocks::registrations();
-                resources::GameResourceData::load_vanilla_data(registrations_list)
-                    .expect("Error while building vanilla embedded resource data cache")
-            } else {
-                panic!(concat!(
-                    "Feature `use_embedded_cache` requires another feature to be enabled to ",
-                    "specify which resource data cache to generate and embed. ",
-                    "See feature `embed_vanilla_cache`.",
-                ));
-            };
-            zlib_postcard_encode_to_file(
-                format!("{out_dir}/embedded_cache.postcard.zlib"),
-                resource_data,
-            );
-        }
-        // Generate and serialise vanilla block definitions.
-        false => {
-            let registrations_list = resources::block::vanilla_blocks::registrations();
-            zlib_postcard_encode_to_file(
-                format!("{out_dir}/vanilla_blocks_registration_list.postcard.zlib"),
-                registrations_list,
-            );
-        }
+    // Generate embedded cache.
+    if std::env::var("CARGO_FEATURE_USE_EMBEDDED_CACHE").is_ok() {
+        let resource_data = if std::env::var("CARGO_FEATURE_EMBED_VANILLA_CACHE").is_ok() {
+            hypercubed_vanilla::load_data()
+                .expect("Error while building vanilla embedded resource data cache")
+        } else {
+            panic!(concat!(
+                "Feature `use_embedded_cache` requires another feature to be enabled to ",
+                "specify which resource data cache to generate and embed. ",
+                "See feature `embed_vanilla_cache`.",
+            ));
+        };
+        zlib_postcard_encode_to_file(
+            format!("{out_dir}/embedded_cache.postcard.zlib"),
+            resource_data,
+        );
     }
     // Compile WESL shaders.
     #[cfg(feature = "graphics_backend_wgpu")]

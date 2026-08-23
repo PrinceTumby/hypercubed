@@ -10,46 +10,24 @@ pub mod texture;
 
 pub use identifier::{Atom as IdentifierAtom, Identifier, ParseIdentifierError};
 
-use anyhow::Context;
 use bimap::BiMap;
 use portable_std::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct GameResourceData {
-    pub block_data: block::ResourceData,
-    pub environment_data: environment::ResourceData,
-}
-
-#[cfg(feature = "std")]
-impl GameResourceData {
-    /// Loads the vanilla game data from either a vanilla client `minecraft.jar` file, or from an
-    /// extracted `assets`.
-    /// Can be used either to load the game data at run time, or from a build script to then embed
-    /// the data at compile time.
-    #[cfg(feature = "std")]
-    pub fn load_vanilla_data(
-        block_registrations: impl IntoIterator<Item = block::Registration>,
-    ) -> anyhow::Result<GameResourceData> {
-        let block_data = block::ResourceData::load_vanilla_data(block_registrations)
-            .context("Error while loading block resource data")?;
-        let environment_data = environment::ResourceData::load_vanilla_data()
-            .context("Error while loading environment resource data")?;
-        Ok(Self {
-            block_data,
-            environment_data,
-        })
-    }
+    pub block_data: block::Data,
+    pub environment_data: environment::Data,
 }
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct RegistryIndex(u16);
+pub struct RegistryIndex(pub u16);
 
 #[derive(Default, Serialize, Deserialize)]
-struct RegistryData<T> {
-    entries: Vec<T>,
-    identifier_map: BiMap<Identifier, RegistryIndex>,
+pub struct RegistryData<T> {
+    pub entries: Vec<T>,
+    pub identifier_map: BiMap<Identifier, RegistryIndex>,
 }
 
 impl<T> RegistryData<T> {

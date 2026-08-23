@@ -1,15 +1,15 @@
 use nalgebra::Point3;
 use portable_std::Atom;
 
-use super::blockstate::{
+use resources::block::blockstate::{
     BlockLightInfo, BlockOpacity, BlockstateInfo, BlockstateInfoModifier, CollisionInfo,
     SkyLightOpacity,
 };
-use super::{
+use resources::block::{
     BlockstateInfoModifierCase, CustomProperty, FullCustomRegistration, LiquidRegistration,
     Properties, Registration, StandardRegistration,
 };
-use crate::aabb::AABB;
+use resources::aabb::AABB;
 
 fn facing_nswe_prop() -> CustomProperty {
     CustomProperty::enum_variants("facing", vec!["north", "south", "west", "east"])
@@ -1126,11 +1126,6 @@ fn bulb_reg(identifier: &str, emission_level: u8) -> Registration {
         }],
         ..StandardRegistration::new(identifier)
     })
-}
-
-pub fn registrations_json() -> String {
-    let registrations_list = registrations();
-    serde_json::to_string(&registrations_list).unwrap()
 }
 
 pub fn registrations() -> Vec<Registration> {

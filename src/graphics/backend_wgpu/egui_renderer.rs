@@ -335,7 +335,7 @@ impl Renderer {
                 uvs: [v.uv.x, v.uv.y],
                 color: v.color.to_array(),
             }));
-            indices.extend(mesh.indices.into_iter());
+            indices.extend(mesh.indices);
             let indices_end = indices.len() as u32;
             meshes.push(RenderMeshInfo {
                 scissor_rect: ScissorRect {
