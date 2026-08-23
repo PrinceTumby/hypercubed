@@ -42,7 +42,7 @@ mod wesl_include {
 pub(crate) use wesl_include::include_wesl_module;
 
 mod common_bind_group_idxs {
-    include!("shaders/common_bind_group_idxs.wesl");
+    include!("backend_wgpu/shaders/common_bind_group_idxs.wesl");
     /// Render info uniform buffer.
     pub const RENDER_INFO_IDX: u32 = RENDER_INFO;
     /// Lightmap storage buffer.

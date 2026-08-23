@@ -62,7 +62,7 @@ const CAMERA_ZNEAR_OVERRIDE: f32 = 0.1;
 mod chunk_vertex_program {
     use super::*;
 
-    pub static CODE: &str = include_str!("chunk_vertex.arb");
+    pub static CODE: &str = include_str!("backend_opengl/chunk_vertex.arb");
 
     // Environment variables
     /// `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`

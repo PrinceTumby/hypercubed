@@ -12,7 +12,7 @@ macro_rules! make_entry_macro {
             ($name:expr) => {
                 $map.insert(
                     identifier!($name),
-                    include_bytes!(concat!("minecraft/", $subpath, "/", $name, $extension))
+                    include_bytes!(concat!("internal_overlay/minecraft/", $subpath, "/", $name, $extension))
                         .as_ref(),
                 )
             };
