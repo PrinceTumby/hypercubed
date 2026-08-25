@@ -3,25 +3,4 @@ name = "hypercubed_vanilla"
 version = "0.1.0"
 edition = "2024"
 
-[build-dependencies]
-miniz_oxide.workspace = true
-postcard.workspace = true
-hypercubed_vanilla_data_gen = { path = "../hypercubed_vanilla_data_gen" }
-
 [dependencies]
-anyhow.workspace = true
-indexmap.workspace = true
-log.workspace = true
-miniz_oxide.workspace = true
-nalgebra.workspace = true
-postcard.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-
-[dependencies.portable_std]
-package = "hypercubed_portable_std"
-path = "../hypercubed_portable_std"
-
-[dependencies.resources]
-package = "hypercubed_resources"
-path = "../hypercubed_resources"

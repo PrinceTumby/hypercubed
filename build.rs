@@ -4,7 +4,7 @@ fn main() {
     // Generate embedded cache.
     if std::env::var("CARGO_FEATURE_USE_EMBEDDED_CACHE").is_ok() {
         let resource_data = if std::env::var("CARGO_FEATURE_EMBED_VANILLA_CACHE").is_ok() {
-            hypercubed_vanilla::load_data()
+            resources_vanilla::load_data()
                 .expect("Error while building vanilla embedded resource data cache")
         } else {
             panic!(concat!(

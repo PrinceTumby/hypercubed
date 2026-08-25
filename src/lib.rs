@@ -312,7 +312,7 @@ impl ApplicationHandler for App {
                     .proj_matrix
                     .set_aspect((graphics_size.width as f32) / (graphics_size.height as f32));
             }
-            // TODO: Implement egui keyboard support
+            // TODO: Implement egui keyboard support.
             WindowEvent::KeyboardInput {
                 device_id: _,
                 event,

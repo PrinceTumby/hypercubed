@@ -27,7 +27,7 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
     cargo run \
         --bin hypercubed \
         --no-default-features \
-        --features=platform_winit,graphics_backend_vulkan \
+        --features=platform_winit,platform_winit_wayland,graphics_backend_vulkan \
         {{BUILD_FLAGS}}
 
 @build-winit-vulkan *BUILD_FLAGS:
@@ -35,7 +35,7 @@ ignore_error := if os_family == "windows" { "|| rem" } else { "|| true" }
     cargo build \
         --bin hypercubed \
         --no-default-features \
-        --features=platform_winit,graphics_backend_vulkan \
+        --features=platform_winit,platform_winit_wayland,graphics_backend_vulkan \
         {{BUILD_FLAGS}}
 
 # Linux DRM

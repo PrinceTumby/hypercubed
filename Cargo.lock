@@ -1933,6 +1933,7 @@ dependencies = [
  "glutin",
  "hypercubed_portable_std",
  "hypercubed_resources",
+ "hypercubed_resources_vanilla",
  "hypercubed_vanilla",
  "hypercubed_vk_shaders",
  "image",
@@ -1967,12 +1968,16 @@ dependencies = [
  "tracing-subscriber",
  "tracing-tracy",
  "uuid",
- "vulkan_prelude",
  "vulkano",
+ "vulkano_prelude",
  "wesl",
  "wgpu",
  "winit",
 ]
+
+[[package]]
+name = "hypercubed_core"
+version = "0.1.0"
 
 [[package]]
 name = "hypercubed_portable_std"
@@ -2014,13 +2019,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "hypercubed_vanilla"
+name = "hypercubed_resources_vanilla"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "hypercubed_portable_std",
  "hypercubed_resources",
- "hypercubed_vanilla_data_gen",
+ "hypercubed_resources_vanilla_data_gen",
  "indexmap",
  "log",
  "miniz_oxide 0.9.1",
@@ -2031,7 +2036,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hypercubed_vanilla_data_gen"
+name = "hypercubed_resources_vanilla_data_gen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2039,6 +2044,10 @@ dependencies = [
  "hypercubed_resources",
  "nalgebra",
 ]
+
+[[package]]
+name = "hypercubed_vanilla"
+version = "0.1.0"
 
 [[package]]
 name = "hypercubed_vk_shaders"
@@ -2050,8 +2059,8 @@ dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
  "lazy_static",
- "vulkan_prelude",
  "vulkano",
+ "vulkano_prelude",
 ]
 
 [[package]]
@@ -5000,15 +5009,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vulkan_prelude"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "smallvec",
- "vulkano",
-]
-
-[[package]]
 name = "vulkano"
 version = "0.35.0"
 source = "git+https://github.com/vulkano-rs/vulkano?rev=432955a#432955a54469342ac7bb090a6f41c572ca6e6ccc"
@@ -5039,6 +5039,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "vulkano_prelude"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "smallvec",
+ "vulkano",
 ]
 
 [[package]]

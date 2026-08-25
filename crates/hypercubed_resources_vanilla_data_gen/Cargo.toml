@@ -1,0 +1,10 @@
+[package]
+name = "hypercubed_resources_vanilla_data_gen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+nalgebra.workspace = true
+portable_std.workspace = true
+resources.workspace = true

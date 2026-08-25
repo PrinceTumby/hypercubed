@@ -1,0 +1,21 @@
+[package]
+name = "hypercubed_resources_vanilla"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+miniz_oxide.workspace = true
+postcard.workspace = true
+resources_vanilla_data_gen.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+indexmap.workspace = true
+log.workspace = true
+miniz_oxide.workspace = true
+nalgebra.workspace = true
+portable_std.workspace = true
+postcard.workspace = true
+resources.workspace = true
+serde.workspace = true
+serde_json.workspace = true

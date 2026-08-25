@@ -1,5 +1,5 @@
 [package]
-name = "vulkan_prelude"
+name = "vulkano_prelude"
 version = "0.1.0"
 edition = "2024"
 

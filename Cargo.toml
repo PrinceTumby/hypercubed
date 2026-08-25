@@ -1,12 +1,14 @@
 [workspace]
 members = [
+    "crates/hypercubed_core",
     "crates/hypercubed_portable_std",
     "crates/hypercubed_resources",
+    "crates/hypercubed_resources_vanilla",
+    "crates/hypercubed_resources_vanilla_data_gen",
     "crates/hypercubed_vanilla",
-    "crates/hypercubed_vanilla_data_gen",
     "crates/hypercubed_vk_shaders",
     "crates/protocol_derive",
-    "crates/vulkan_prelude",
+    "crates/vulkano_prelude",
 ]
 
 [workspace.dependencies]
@@ -29,7 +31,6 @@ postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "432955a" }
-vulkan_prelude = { path = "crates/vulkan_prelude" }
 serde_repr = "0.1"
 smallstr = { version = "0.3", features = ["serde"] }
 string_cache = "0.11"
@@ -56,6 +57,40 @@ version = "0.12"
 default-features = false
 features = ["mutex", "spin_mutex", "portable_atomic"]
 
+# Hypercubed crates
+
+[workspace.dependencies.hypercubed_core]
+path = "crates/hypercubed_core"
+default-features = false
+
+[workspace.dependencies.hypercubed_vk_shaders]
+path = "crates/hypercubed_vk_shaders"
+
+[workspace.dependencies.portable_std]
+package = "hypercubed_portable_std"
+path = "crates/hypercubed_portable_std"
+default-features = false
+
+[workspace.dependencies.resources]
+package = "hypercubed_resources"
+path = "crates/hypercubed_resources"
+default-features = false
+
+[workspace.dependencies.resources_vanilla]
+package = "hypercubed_resources_vanilla"
+path = "crates/hypercubed_resources_vanilla"
+
+[workspace.dependencies.resources_vanilla_data_gen]
+package = "hypercubed_resources_vanilla_data_gen"
+path = "crates/hypercubed_resources_vanilla_data_gen"
+
+[workspace.dependencies.vanilla]
+package = "hypercubed_vanilla"
+path = "crates/hypercubed_vanilla"
+
+[workspace.dependencies.vulkano_prelude]
+path = "crates/vulkano_prelude"
+
 # Package
 
 [package]
@@ -64,7 +99,7 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["lib", "staticlib"]
+# crate-type = ["lib", "staticlib"]
 test = false
 bench = false
 
@@ -75,6 +110,7 @@ name = "hypercubed"
 default = [
     # XXX: DEBUG
     "platform_winit",
+    "platform_winit_wayland",
     "graphics_backend_opengl",
     # "graphics_backend_vulkan",
     # "graphics_backend_wgpu",
@@ -99,10 +135,11 @@ mini_std = [
     "dep:egui",
     "dep:egui_plot",
     "dep:env_logger",
-    "dep:hypercubed_vanilla",
     "dep:image",
     "dep:pollster",
+    "dep:resources_vanilla",
     "dep:threadpool",
+    "dep:vanilla",
     # Dependency features
     "ahash/default",
     "ahash/serde",
@@ -152,7 +189,7 @@ graphics_backend_vulkan = [
     "mimalloc",
     # Dependencies
     "dep:vulkano",
-    "dep:vulkan_prelude",
+    "dep:vulkano_prelude",
     "dep:hypercubed_vk_shaders",
 ]
 
@@ -208,15 +245,10 @@ platform_linux_drm = [
 [build-dependencies]
 miniz_oxide.workspace = true
 postcard.workspace = true
+resources = { workspace = true, features = ["std"] }
+resources_vanilla.workspace = true
 serde.workspace = true
 wesl = { workspace = true, optional = true }
-
-[build-dependencies.resources]
-package = "hypercubed_resources"
-path = "crates/hypercubed_resources"
-
-[build-dependencies.hypercubed_vanilla]
-path = "crates/hypercubed_vanilla"
 
 [dependencies]
 aes = "0.9"
@@ -239,6 +271,7 @@ foldhash.workspace = true
 futures = { version = "0.3", default-features = false, features = ["async-await"] }
 gbm = { version = "0.18", default-features = false, features = ["drm-support"], optional = true }
 glutin = { version = "0.32", default-features = false, optional = true }
+hypercubed_vk_shaders = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 indexmap.workspace = true
 input = { version = "0.10", optional = true }
@@ -252,6 +285,7 @@ nom_locate = { version = "5", default-features = false, features = ["alloc"] }
 once_cell.workspace = true
 ordered-float = { version = "5.3", default-features = false }
 pollster = { version = "1.0", optional = true }
+portable_std.workspace = true
 postcard.workspace = true
 protocol_derive = { version = "0.1.0", path = "crates/protocol_derive" }
 rand = { version = "0.10", default-features = false, features = ["std_rng"] }
@@ -259,6 +293,8 @@ rand_core = "0.10"
 raw-window-handle = { version = "0.6", optional = true }
 rayon = { version = "1.12", optional = true }
 reqwest = { version = "0.13", features = ["blocking", "json"], optional = true }
+resources.workspace = true
+resources_vanilla = { workspace = true, optional = true }
 rustix = { version = "1.1", features = ["event"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -270,7 +306,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["a
 tracing-tracy = { version = "0.11", optional = true }
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 uuid = { version = "1", default-features = false, features = ["serde", "v3"] }
-vulkan_prelude = { workspace = true, optional = true }
+vanilla = { workspace = true, optional = true }
+vulkano_prelude = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true }
 wesl = { workspace = true, optional = true }
 wgpu = { version = "30", optional = true }
@@ -291,24 +328,6 @@ optional = true
 version = "0.10.0-rc.18"
 default-features = false
 features = ["encoding"]
-
-[dependencies.hypercubed_vanilla]
-path = "crates/hypercubed_vanilla"
-optional = true
-
-[dependencies.hypercubed_vk_shaders]
-path = "crates/hypercubed_vk_shaders"
-optional = true
-
-[dependencies.portable_std]
-package = "hypercubed_portable_std"
-path = "crates/hypercubed_portable_std"
-default-features = false
-
-[dependencies.resources]
-package = "hypercubed_resources"
-path = "crates/hypercubed_resources"
-default-features = false
 
 # Profiles
 

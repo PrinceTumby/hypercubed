@@ -20,7 +20,7 @@ pub fn load_resource_data() -> anyhow::Result<GameResourceData> {
             Ok(extract_embedded_resource_data_cache())
         }
         feature = "full_std" => {
-            hypercubed_vanilla::load_data()
+            resources_vanilla::load_data()
         }
         _ => {
             compile_error!(concat!(

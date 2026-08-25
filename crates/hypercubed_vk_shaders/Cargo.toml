@@ -9,7 +9,7 @@ anyhow.workspace = true
 [dependencies]
 bitfield.workspace = true
 vulkano.workspace = true
-vulkan_prelude.workspace = true
+vulkano_prelude.workspace = true
 ahash.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
