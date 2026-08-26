@@ -1,15 +1,16 @@
 mod internal_overlay;
 
-use super::Identifier;
-use ahash::{AHashMap, AHashSet};
-use anyhow::anyhow;
-use lazy_static::lazy_static;
-use portable_std::{Arc, Cow};
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
-#[cfg(feature = "std")]
 use std::sync::RwLock;
+
+use ahash::{AHashMap, AHashSet};
+use anyhow::anyhow;
+use once_cell::sync::Lazy;
+use portable_std::{Arc, Cow};
 use zip::ZipArchive;
+
+use super::Identifier;
 
 // TODO: Move this whole system from global functions and statics to a `Manager` struct.
 
@@ -71,40 +72,37 @@ pub enum ResourceType {
     TextureMeta,
 }
 
-lazy_static! {
-    static ref MAIN_FILESYSTEM: MainFilesystem = {
-        // TODO: Make this configurable.
-        if let Ok(jar_bytes) = std::fs::read("minecraft.jar")
-            && let jar_cursor = Cursor::new(jar_bytes.into())
-            && let Ok(zip_archive) = ZipArchive::new(jar_cursor)
-        {
-            MainFilesystem::JarFile(zip_archive)
-        } else if std::fs::read_dir("assets").is_ok() {
-            MainFilesystem::AssetsFolder(PathBuf::from("assets"))
-        } else {
-            panic!(concat!(
-                "Cannot find assets source! ",
-                "Expected to find `minecraft.jar` or an `assets` directory",
-            ));
-        }
-    };
+static MAIN_FILESYSTEM: Lazy<MainFilesystem> = Lazy::new(|| {
+    // TODO: Make this configurable.
+    if let Ok(jar_bytes) = std::fs::read("minecraft.jar")
+        && let jar_cursor = Cursor::new(jar_bytes.into())
+        && let Ok(zip_archive) = ZipArchive::new(jar_cursor)
+    {
+        MainFilesystem::JarFile(zip_archive)
+    } else if std::fs::read_dir("assets").is_ok() {
+        MainFilesystem::AssetsFolder(PathBuf::from("assets"))
+    } else {
+        panic!(concat!(
+            "Cannot find assets source! ",
+            "Expected to find `minecraft.jar` or an `assets` directory",
+        ));
+    }
+});
 
-    static ref GLOBAL_OVERLAY_SET: RwLock<GlobalOverlays> = {
-        let internal_blockstates: AHashSet<_> =
-            internal_overlay::BLOCKSTATES.keys().cloned().collect();
-        let internal_models: AHashSet<_> = internal_overlay::MODELS.keys().cloned().collect();
-        let internal_textures: AHashSet<_> = internal_overlay::TEXTURES.keys().cloned().collect();
-        let internal_filesystem_overlay = FilesystemOverlay {
-            filesystem: Box::new(internal_overlay::InternalOverlayFilesystem),
-            blockstates: internal_blockstates,
-            models: internal_models,
-            textures: internal_textures,
-        };
-        RwLock::new(GlobalOverlays::new(
-            [internal_filesystem_overlay].into_iter(),
-        ))
+static GLOBAL_OVERLAY_SET: Lazy<RwLock<GlobalOverlays>> = Lazy::new(|| {
+    let internal_blockstates: AHashSet<_> = internal_overlay::BLOCKSTATES.keys().cloned().collect();
+    let internal_models: AHashSet<_> = internal_overlay::MODELS.keys().cloned().collect();
+    let internal_textures: AHashSet<_> = internal_overlay::TEXTURES.keys().cloned().collect();
+    let internal_filesystem_overlay = FilesystemOverlay {
+        filesystem: Box::new(internal_overlay::InternalOverlayFilesystem),
+        blockstates: internal_blockstates,
+        models: internal_models,
+        textures: internal_textures,
     };
-}
+    RwLock::new(GlobalOverlays::new(
+        [internal_filesystem_overlay].into_iter(),
+    ))
+});
 
 trait Filesystem: Send + Sync {
     fn get(

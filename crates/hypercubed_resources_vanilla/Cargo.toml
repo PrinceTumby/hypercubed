@@ -3,6 +3,10 @@ name = "hypercubed_resources_vanilla"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["std"]
+std = ["resources/std"]
+
 [build-dependencies]
 miniz_oxide.workspace = true
 postcard.workspace = true

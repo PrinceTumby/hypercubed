@@ -1,7 +1,7 @@
 use anyhow::Context;
+use resources::environment::Data as EnvironmentData;
 use resources::identifier;
 use resources::texture::RawTexture;
-use resources::environment::Data as EnvironmentData;
 
 pub fn load_data() -> anyhow::Result<EnvironmentData> {
     let moon_phases_texture =

@@ -1,8 +1,10 @@
-use anyhow::{anyhow, Context};
-use portable_std::{FastHashMap, Atom};
+use anyhow::{Context, anyhow};
+use portable_std::{Atom, FastHashMap};
 
-use resources::block::{Registry as BlockRegistry, Data as BlockResourceData, Registration as BlockRegistration};
 use resources::block::model::ModelRegistryBuilder;
+use resources::block::{
+    Data as BlockResourceData, Registration as BlockRegistration, Registry as BlockRegistry,
+};
 
 /// Loads the vanilla game data from either a vanilla client `minecraft.jar` file, or from an
 /// extracted `assets`.
@@ -40,12 +42,14 @@ pub fn register_into(
             env!("OUT_DIR"),
             "/blocks_registration_list.postcard.zlib"
         ));
-        let uncompressed_postcard = miniz_oxide::inflate::decompress_to_vec_zlib(COMPRESSED_POSTCARD)
-            .map_err(|err| anyhow!("Failed to decompress block postcard data - {err:#}"))?;
+        let uncompressed_postcard =
+            miniz_oxide::inflate::decompress_to_vec_zlib(COMPRESSED_POSTCARD)
+                .map_err(|err| anyhow!("Failed to decompress block postcard data - {err:#}"))?;
         let registrations: Vec<BlockRegistration> = {
             let start_time = std::time::Instant::now();
-            let registrations: Vec<BlockRegistration> = postcard::from_bytes(&uncompressed_postcard)
-                .context("Error while deserialising registration list postcard data")?;
+            let registrations: Vec<BlockRegistration> =
+                postcard::from_bytes(&uncompressed_postcard)
+                    .context("Error while deserialising registration list postcard data")?;
             log::debug!(
                 "Block registration list load time: {:?}",
                 std::time::Instant::now() - start_time

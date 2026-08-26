@@ -7,11 +7,11 @@ edition = "2024"
 anyhow.workspace = true
 
 [dependencies]
-bitfield.workspace = true
-vulkano.workspace = true
-vulkano_prelude.workspace = true
 ahash.workspace = true
 anyhow.workspace = true
+bitfield.workspace = true
 bytemuck.workspace = true
 foldhash.workspace = true
-lazy_static.workspace = true
+once_cell = { workspace = true, default-features = true }
+vulkano_prelude.workspace = true
+vulkano.workspace = true

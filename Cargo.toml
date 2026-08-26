@@ -23,7 +23,6 @@ embedded-io-async = { version = "0.7", features = ["alloc"] }
 foldhash = { version = "0.2", default-features = false }
 hashbrown = { version = "0.17", features = ["serde"] }
 indexmap = { version = "2", default-features = false }
-lazy_static = "1"
 log = "0.4"
 miniz_oxide = "0.9"
 once_cell = { version = "1", default-features = false, features = ["alloc"] }
@@ -79,6 +78,7 @@ default-features = false
 [workspace.dependencies.resources_vanilla]
 package = "hypercubed_resources_vanilla"
 path = "crates/hypercubed_resources_vanilla"
+default-features = false
 
 [workspace.dependencies.resources_vanilla_data_gen]
 package = "hypercubed_resources_vanilla_data_gen"
@@ -156,6 +156,7 @@ mini_std = [
     "postcard/use-std",
     "rand/default",
     "resources/default",
+    "resources_vanilla/default",
     "serde/default",
     "tracing/default",
     "tracing-subscriber/default",

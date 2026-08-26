@@ -32,7 +32,7 @@ pub struct RawRenderInfo {
 pub mod shader_modules {
     use ahash::AHashMap;
     use anyhow::Context;
-    use lazy_static::lazy_static;
+    use once_cell::sync::Lazy;
     use std::sync::{Arc, Mutex};
     use vulkan_prelude::*;
 
@@ -44,8 +44,8 @@ pub mod shader_modules {
         bytes: Bytes,
     }
 
-    lazy_static! {
-        static ref RAW_MODULES: AHashMap<&'static str, &'static SpvAlignedBytes<[u8]>> = {
+    static RAW_MODULES: Lazy<AHashMap<&'static str, &'static SpvAlignedBytes<[u8]>>> =
+        Lazy::new(|| {
             let mut map = AHashMap::new();
             macro_rules! generate_module_name {
                 ($x:literal) => {
@@ -68,10 +68,10 @@ pub mod shader_modules {
                     static MODULE_BYTES: &'static SpvAlignedBytes<[u8]> = &SpvAlignedBytes {
                         _align: [],
                         bytes: *include_bytes!(concat!(
-                            env!("OUT_DIR"),
-                            "/",
-                            generate_file_stem!($($name_segments),+),
-                            ".spv",
+                                env!("OUT_DIR"),
+                                "/",
+                                generate_file_stem!($($name_segments),+),
+                                ".spv",
                         )),
                     };
                     map.insert(
@@ -96,18 +96,15 @@ pub mod shader_modules {
             module!("debug", "triangle");
             map.shrink_to_fit();
             map
-        };
-    }
+        });
 
     pub fn get_entry_point(
         device: &Arc<VulkanDevice>,
         module: &'static str,
         entry_point: &'static str,
     ) -> VulkanEntryPoint {
-        lazy_static! {
-            static ref LOADED_MODULES: Mutex<AHashMap<&'static str, Arc<VulkanShaderModule>>> =
-                Mutex::new(AHashMap::new());
-        }
+        static LOADED_MODULES: Mutex<AHashMap<&'static str, Arc<VulkanShaderModule>>> =
+            Mutex::new(AHashMap::new());
         LOADED_MODULES
             .lock()
             .unwrap()

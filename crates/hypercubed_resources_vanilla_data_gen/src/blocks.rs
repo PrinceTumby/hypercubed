@@ -1,6 +1,7 @@
 use nalgebra::Point3;
 use portable_std::Atom;
 
+use resources::aabb::AABB;
 use resources::block::blockstate::{
     BlockLightInfo, BlockOpacity, BlockstateInfo, BlockstateInfoModifier, CollisionInfo,
     SkyLightOpacity,
@@ -9,7 +10,6 @@ use resources::block::{
     BlockstateInfoModifierCase, CustomProperty, FullCustomRegistration, LiquidRegistration,
     Properties, Registration, StandardRegistration,
 };
-use resources::aabb::AABB;
 
 fn facing_nswe_prop() -> CustomProperty {
     CustomProperty::enum_variants("facing", vec!["north", "south", "west", "east"])

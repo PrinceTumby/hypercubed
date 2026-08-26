@@ -598,9 +598,7 @@ fn load_blockstate_multipart_cases(
                 .map(|group| {
                     let model = model_cache
                         .load_composite_model(identifier, &group.parts, texture_atlas)
-                        .with_context(|| {
-                            format!("Error combining model list {:?}", group.parts)
-                        })?;
+                        .with_context(|| format!("Error combining model list {:?}", group.parts))?;
                     Ok(WeightedModel {
                         model,
                         weight: group.weight,

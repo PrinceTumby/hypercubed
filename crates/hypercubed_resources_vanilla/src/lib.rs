@@ -10,10 +10,9 @@ use resources::GameResourceData;
 /// Can be used either to load the game data at run time, or from a build script to then embed the
 /// resource data at compile time.
 pub fn load_data() -> anyhow::Result<GameResourceData> {
-    let block_data = blocks::load_data()
-        .context("Error while loading block resource data")?;
-    let environment_data = environment::load_data()
-        .context("Error while loading environment resource data")?;
+    let block_data = blocks::load_data().context("Error while loading block resource data")?;
+    let environment_data =
+        environment::load_data().context("Error while loading environment resource data")?;
     Ok(GameResourceData {
         block_data,
         environment_data,

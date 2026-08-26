@@ -14,13 +14,10 @@ std = [
     "ahash/serde",
     "anyhow/default",
     "bimap/default",
+    "once_cell/default",
     "portable_std/default",
     "thiserror/default",
 ]
-# Unfortunately lazy_static has a `no_std` feature, not a `std` feature, so
-# we need this as a separate feature.
-# Can be removed once we've removed lazy_static.
-no_std = ["lazy_static/spin_no_std"]
 
 # Data embedding
 use_embedded_cache = []
@@ -32,10 +29,10 @@ bimap.workspace = true
 bitfield.workspace = true
 image = { workspace = true, features = ["png"], optional = true }
 indexmap = { workspace = true, features = ["serde"] }
-lazy_static.workspace = true
 log.workspace = true
 miniz_oxide.workspace = true
 nalgebra.workspace = true
+once_cell.workspace = true
 portable_std.workspace = true
 postcard.workspace = true
 serde.workspace = true
