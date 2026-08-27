@@ -29,7 +29,7 @@ use resources::block::model::Tint;
 use shader_exports::chunk::SubchunkFaceGroupInfo;
 use shader_exports::{CommonDescriptorSetIdxs, RawRenderInfo};
 use threadpool::ThreadPool;
-use vulkan_prelude::*;
+use vulkano_prelude::*;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 

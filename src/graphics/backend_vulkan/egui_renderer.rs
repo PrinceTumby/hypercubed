@@ -3,7 +3,7 @@ use super::shader_exports::shader_stage_from_entry_point;
 use anyhow::Context;
 use foldhash::{HashMap, HashMapExt};
 use std::sync::Arc;
-use vulkan_prelude::*;
+use vulkano_prelude::*;
 
 pub struct Renderer {
     pipeline_layout: Arc<VulkanPipelineLayout>,

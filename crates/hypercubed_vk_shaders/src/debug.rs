@@ -56,7 +56,7 @@ pub struct TriangleInstance {
 
 pub mod vertex_input_state {
     use super::*;
-    use vulkan_prelude::*;
+    use vulkano_prelude::*;
 
     pub fn point() -> VulkanVertexInputState {
         VulkanVertexInputState {

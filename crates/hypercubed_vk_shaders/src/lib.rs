@@ -34,7 +34,7 @@ pub mod shader_modules {
     use anyhow::Context;
     use once_cell::sync::Lazy;
     use std::sync::{Arc, Mutex};
-    use vulkan_prelude::*;
+    use vulkano_prelude::*;
 
     // We have to do a little hacking here to get the embedded SPIR-V module to be u32 aligned, for
     // the bytemuck slice cast.
@@ -103,8 +103,8 @@ pub mod shader_modules {
         module: &'static str,
         entry_point: &'static str,
     ) -> VulkanEntryPoint {
-        static LOADED_MODULES: Mutex<AHashMap<&'static str, Arc<VulkanShaderModule>>> =
-            Mutex::new(AHashMap::new());
+        static LOADED_MODULES: Lazy<Mutex<AHashMap<&'static str, Arc<VulkanShaderModule>>>> =
+            Lazy::new(|| Mutex::new(AHashMap::new()));
         LOADED_MODULES
             .lock()
             .unwrap()

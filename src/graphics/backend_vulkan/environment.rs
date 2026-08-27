@@ -1,7 +1,7 @@
 use super::shader_exports::shader_stage_from_entry_point;
 use anyhow::Context;
 use std::sync::Arc;
-use vulkan_prelude::*;
+use vulkano_prelude::*;
 
 pub mod sky {
     use super::*;

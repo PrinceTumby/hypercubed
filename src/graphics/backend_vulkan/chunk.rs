@@ -13,7 +13,7 @@ use resources::block::model::{ModelRegistry, Tint};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use vulkan_prelude::*;
+use vulkano_prelude::*;
 
 pub struct Subchunk {
     pub dispatch_id: u64,

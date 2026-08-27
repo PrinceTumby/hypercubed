@@ -5017,20 +5017,8 @@ dependencies = [
  "slabbin",
  "smallvec",
  "thread_local",
- "vulkano-macros",
  "x11-dl",
  "x11rb",
-]
-
-[[package]]
-name = "vulkano-macros"
-version = "0.35.0"
-source = "git+https://github.com/vulkano-rs/vulkano?rev=432955a#432955a54469342ac7bb090a6f41c572ca6e6ccc"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
