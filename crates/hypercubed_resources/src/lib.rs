@@ -20,6 +20,9 @@ pub struct GameResourceData {
     pub environment_data: environment::Data,
 }
 
+// TODO: Change to `u32`.
+// - The memory savings of using a `u16` probably just aren't worth it.
+// - Can easily have more than 64K entries.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RegistryIndex(pub u16);

@@ -1,3 +1,5 @@
+pub mod entity;
+
 use crate::graphics::{self, DEFAULT_FOV, GraphicsBackend};
 use crate::input::PlayControlState;
 use crate::portable_prelude::{println, *};

@@ -33,6 +33,9 @@ pub struct Registry {
     pub light_emitting_blockstates: FastHashSet<GlobalPaletteIndex>,
 }
 
+// TODO: Change to `u32`.
+// - The memory savings of using a `u16` probably just aren't worth it.
+// - Can easily have more than 64K entries.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalPaletteIndex(u16);

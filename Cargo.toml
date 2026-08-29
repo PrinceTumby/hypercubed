@@ -30,6 +30,7 @@ postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 serde_repr = "0.1"
+slab = { version = "0.4", default-features = false }
 smallstr = { version = "0.3", features = ["serde"] }
 string_cache = "0.11"
 thiserror = { version = "2", default-features = false }
@@ -162,6 +163,7 @@ mini_std = [
     "resources/default",
     "resources_vanilla/default",
     "serde/default",
+    "slab/default",
     "tracing/default",
     "tracing-subscriber/default",
     "uuid/default",
@@ -305,6 +307,7 @@ rustix = { version = "1.1", features = ["event"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha1 = { version = "0.11", default-features = false }
+slab.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 threadpool = { version = "1.8", optional = true }
