@@ -14,6 +14,7 @@ std = [
     "ahash/serde",
     "anyhow/default",
     "bimap/default",
+    "hypercubed_core/default",
     "once_cell/default",
     "portable_std/default",
     "thiserror/default",
@@ -27,6 +28,8 @@ ahash.workspace = true
 anyhow.workspace = true
 bimap.workspace = true
 bitfield.workspace = true
+hypercubed_core.workspace = true
+guillotiere.workspace = true
 image = { workspace = true, features = ["png"], optional = true }
 indexmap = { workspace = true, features = ["serde"] }
 log.workspace = true
@@ -35,10 +38,12 @@ nalgebra.workspace = true
 once_cell.workspace = true
 portable_std.workspace = true
 postcard.workspace = true
+protocol_derive.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_repr.workspace = true
 smallstr.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
+tracing = { workspace = true, features = ["attributes"] }
 zip = { workspace = true, optional = true }

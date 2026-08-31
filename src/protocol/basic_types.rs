@@ -1,7 +1,6 @@
-use super::prelude::*;
-use crate::portable_prelude::*;
 use core::mem::MaybeUninit;
 use core::num::NonZeroU32;
+
 use nom::bytes::complete::{take, take_while, take_while1};
 use nom::combinator::{recognize, success, verify};
 use nom::error::ParseError;
@@ -11,6 +10,10 @@ use nom::{Input, Parser};
 #[cfg_attr(not(feature = "mini_std"), expect(unused))]
 use portable_std::{FastHashMap, HashMap, io};
 use protocol_derive::Deserialize;
+use resources::RegistryIndex;
+
+use super::prelude::*;
+use crate::portable_prelude::*;
 
 // Helper macros
 
@@ -939,9 +942,9 @@ impl Deserialize for BitSet {
 #[repr(transparent)]
 pub struct Angle(u8);
 
-impl From<Angle> for f32 {
-    fn from(value: Angle) -> Self {
-        value.0 as f32 * (256.0 / 360.0)
+impl Angle {
+    pub const fn degrees(&self) -> f32 {
+        self.0 as f32 * (256.0 / 360.0)
     }
 }
 
@@ -974,9 +977,19 @@ pub struct GlobalPosition {
     pub pos: Position,
 }
 
+// Registry indices
+
+impl Deserialize for RegistryIndex {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        nom_context("RegistryIndex", VarInt::deserialize)
+            .map_res(|idx| idx.0.try_into().map(Self))
+            .parse(input)
+    }
+}
+
 // EntityId and OptionalEntityId, these uniquely identify entities in the world
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct EntityId(pub u32);
 

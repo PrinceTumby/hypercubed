@@ -37,7 +37,6 @@ pub mod portable_prelude {
     }
 }
 
-pub mod basic_types;
 #[cfg(feature = "mini_std")]
 pub mod debug;
 pub mod game;

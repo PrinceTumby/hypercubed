@@ -12,7 +12,14 @@ use resources::block::{
 /// resource data at compile time.
 pub fn load_data() -> anyhow::Result<BlockResourceData> {
     let square_length = 16;
-    let mut atlas_builder = resources::texture::AtlasBuilder::new(square_length);
+    let mut atlas_builder = resources::texture::AtlasBuilder::new(
+        [256; 2],
+        resources::texture::AtlasAllocatorOptions {
+            alignment: resources::texture::size2(square_length, square_length),
+            small_size_threshold: 16,
+            large_size_threshold: 16,
+        },
+    );
     let mut model_registry_builder = ModelRegistryBuilder::new();
     let mut block_registry = BlockRegistry::new();
     register_into(

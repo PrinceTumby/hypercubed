@@ -3,6 +3,7 @@
 pub mod aabb;
 pub mod block;
 pub mod environment;
+pub mod entity;
 pub mod identifier;
 #[cfg(feature = "std")]
 pub mod manager;
@@ -12,22 +13,29 @@ pub use identifier::{Atom as IdentifierAtom, Identifier, ParseIdentifierError};
 
 use bimap::BiMap;
 use portable_std::prelude::*;
-use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct GameResourceData {
     pub block_data: block::Data,
     pub environment_data: environment::Data,
+    pub entity_data: entity::Data,
 }
 
 // TODO: Change to `u32`.
 // - The memory savings of using a `u16` probably just aren't worth it.
 // - Can easily have more than 64K entries.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct RegistryIndex(pub u16);
 
-#[derive(Default, Serialize, Deserialize)]
+impl RegistryIndex {
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct RegistryData<T> {
     pub entries: Vec<T>,
     pub identifier_map: BiMap<Identifier, RegistryIndex>,
@@ -51,6 +59,14 @@ impl<T> RegistryData<T> {
         }
         self.entries.push(entry);
         index
+    }
+
+    pub fn get(&self, index: RegistryIndex) -> Option<&T> {
+        self.entries.get(index.as_usize())
+    }
+
+    pub fn get_mut(&mut self, index: RegistryIndex) -> Option<&mut T> {
+        self.entries.get_mut(index.as_usize())
     }
 
     pub fn get_index_from_identifier(&self, identifier: &Identifier) -> Option<RegistryIndex> {

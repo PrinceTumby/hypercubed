@@ -91,7 +91,6 @@ impl ModelRegistryBuilder {
         }
     }
 
-    // #[tracing::instrument(skip(self, texture_atlas))]
     pub fn load_model(
         &mut self,
         location: &Identifier,
@@ -105,7 +104,7 @@ impl ModelRegistryBuilder {
         }
     }
 
-    // #[tracing::instrument(skip(self, texture_atlas))]
+    #[tracing::instrument(skip(self, texture_atlas))]
     pub fn load_liquid(
         &mut self,
         location: &Identifier,
@@ -150,10 +149,14 @@ impl ModelRegistryBuilder {
             );
             let particle_identifier = Identifier::parse(&texture_vars["particle"])
                 .context("Failed to parse identifier for \"particle\" texture variable")?;
-            let uvs = texture_atlas
+            let texture_info = texture_atlas
                 .get_or_load_texture(&particle_identifier)
-                .context("Failed to load \"particle\" texture")?
-                .uvs;
+                .context("Failed to load \"particle\" texture")?;
+            // TODO: Animated texture support.
+            let uvs = match texture_info {
+                texture::TextureInfo::Basic { uvs } => uvs,
+                texture::TextureInfo::Animated(info) => info.frame_uvs[0],
+            };
             let completed_model_idx = self.register_model(ModelType::Liquid(LiquidInfo { uvs }));
             self.completed_models
                 .insert(location_and_rotation, completed_model_idx);
@@ -209,7 +212,6 @@ impl ModelRegistryBuilder {
 
     /// If `skip_finalising_model` is specified, this will return the model's template instead of
     /// attempting to finalise and return the completed model.
-    // #[tracing::instrument(skip(self, texture_atlas))]
     fn get_or_load_model(
         &mut self,
         location: &Identifier,
@@ -229,6 +231,7 @@ impl ModelRegistryBuilder {
         {
             (template.as_ref().clone(), Some(template.clone()))
         } else {
+            let _span = tracing::trace_span!("load_new_model", ?location).entered();
             let json_bytes = get_resource_file(ResourceType::Model, location)
                 .with_context(|| format!("Failed to read raw model JSON data for {location:?}"))?;
             let mut model_template: Template = serde_json::from_slice(&json_bytes)
@@ -335,7 +338,7 @@ impl ModelRegistryBuilder {
         ModelIndex(index.try_into().unwrap())
     }
 
-    // #[tracing::instrument(skip(texture_atlas))]
+    #[tracing::instrument(skip(self, model_template, rotation, texture_atlas))]
     fn finalise_model(
         &mut self,
         model_template: Template,
@@ -1008,9 +1011,12 @@ impl ModelRegistryBuilder {
         atlas: &mut texture::AtlasBuilder,
         face: &TemplateElementFace,
     ) -> anyhow::Result<[u16; 4]> {
-        let base_uvs = atlas
-            .get_or_load_texture(&Identifier::parse(&face.texture)?)?
-            .uvs;
+        let texture_info = atlas.get_or_load_texture(&Identifier::parse(&face.texture)?)?;
+        // TODO: Animated texture support.
+        let base_uvs = match texture_info {
+            texture::TextureInfo::Basic { uvs } => uvs,
+            texture::TextureInfo::Animated(info) => info.frame_uvs[0],
+        };
         let custom_uvs = match face.uvs {
             None => base_uvs,
             Some(uvs) => {
@@ -1108,9 +1114,12 @@ impl ModelRegistryBuilder {
         start_pos: [f32; 3],
         end_pos: [f32; 3],
     ) -> anyhow::Result<ModelElementFace> {
-        let texture_uvs = texture_atlas
-            .get_or_load_texture(&Identifier::parse(&face.texture)?)?
-            .uvs;
+        let texture_info = texture_atlas.get_or_load_texture(&Identifier::parse(&face.texture)?)?;
+        // TODO: Animated texture support.
+        let texture_uvs = match texture_info {
+            texture::TextureInfo::Basic { uvs } => uvs,
+            texture::TextureInfo::Animated(info) => info.frame_uvs[0],
+        };
         let element_uvs = face.uvs.unwrap_or_else(|| match index {
             BlockFace::Top | BlockFace::Bottom => {
                 [start_pos[0], start_pos[2], end_pos[0], end_pos[2]]

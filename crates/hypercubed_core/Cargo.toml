@@ -8,3 +8,4 @@ default = ["std"]
 std = []
 
 [dependencies]
+nalgebra.workspace = true

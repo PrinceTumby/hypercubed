@@ -1,11 +1,12 @@
-use crate::basic_types::AxisDirection;
-use crate::portable_prelude::*;
-use crate::protocol::chunk::{ChunkSection, ChunkSectionLightChannelInfoMut, LightType};
-use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32};
 use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
+use hypercubed_core::types::AxisDirection;
 use resources::block::GlobalPaletteIndex;
 use resources::block::blockstate::{BlockOpacity, SkyLightOpacity};
 use smallvec::SmallVec;
+
+use crate::portable_prelude::*;
+use crate::protocol::chunk::{ChunkSection, ChunkSectionLightChannelInfoMut, LightType};
+use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32};
 
 pub fn recalculate_light(
     block_registry: &resources::block::Registry,

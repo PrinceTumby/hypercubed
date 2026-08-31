@@ -2,19 +2,22 @@ pub mod crafting;
 pub mod entity_metadata;
 pub mod particle;
 
-use super::PluginMessage;
-use super::chunk::RawChunkLightInfo;
-pub use super::configuration::{ChatMode, MainHand};
-use super::prelude::*;
-use crate::portable_prelude::*;
 use nom::Parser;
 use nom::bytes::complete::take;
 use nom::combinator::{cond, verify};
 use nom::multi::length_count;
 use nom::sequence::pair;
 use protocol_derive::{Deserialize, PacketRead, PacketWrite, Serialize};
+use resources::RegistryIndex;
 use resources::block::GlobalPaletteIndex;
 use uuid::Uuid;
+
+use super::PluginMessage;
+use super::chunk::RawChunkLightInfo;
+use super::prelude::*;
+use crate::portable_prelude::*;
+
+pub use super::configuration::{ChatMode, MainHand};
 
 #[derive(Clone, Debug, Deserialize, PacketRead)]
 #[repr(i32)]
@@ -182,7 +185,7 @@ pub enum Clientbound {
 pub struct SpawnEntityInfo {
     pub id: EntityId,
     pub uuid: Uuid,
-    pub entity_type: VarInt,
+    pub entity_type: RegistryIndex,
     pub coords: [f64; 3],
     pub pitch: Angle,
     pub yaw: Angle,
