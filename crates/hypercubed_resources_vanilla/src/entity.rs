@@ -12,13 +12,6 @@ pub fn load_data() -> anyhow::Result<EntityData> {
             ..Default::default()
         },
     );
-    // TODO:
-    // - We're going to have to write some kind of texture "load_from_parts" function.
-    // - Takes in a "file identifier", for the actual texture file.
-    // - Takes in a number of parts, where each part is an identifier and a subrect of the texture.
-    // - Can load in bits of the oak boat:
-    //   - Main file can be found as "minecraft:entity/boat/oak".
-    //   - Part identifiers might be things like "hypercubed_vanilla:entity/boat/oak/bottom".
     todo!()
 }
 

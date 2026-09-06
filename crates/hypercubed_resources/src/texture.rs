@@ -67,6 +67,12 @@ impl core::ops::Index<(u32, u32)> for Atlas {
     }
 }
 
+impl Atlas {
+    pub fn get_texture<'a>(&'a self, identifier: &Identifier) -> Option<&'a TextureInfo> {
+        self.stored_textures.get(identifier)
+    }
+}
+
 #[cfg(feature = "std")]
 pub struct AtlasBuilder {
     texture: RgbaImage,
@@ -78,6 +84,15 @@ pub struct AtlasBuilder {
 pub enum TextureInfo {
     Basic { uvs: [u16; 4] },
     Animated(Arc<AnimatedTextureInfo>),
+}
+
+impl TextureInfo {
+    pub fn basic_or_first_frame(&self) -> [u16; 4] {
+        match self {
+            Self::Basic { uvs } => *uvs,
+            Self::Animated(info) => info.frame_uvs[0],
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
