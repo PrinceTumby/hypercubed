@@ -152,7 +152,10 @@ impl Identifier {
 
     pub fn parse(str_identifier: &str) -> Result<Self, ParseIdentifierError> {
         let (namespace, path_str) = match str_identifier.find(':') {
-            None => (IdentifierPart::parse(Self::DEFAULT_NAMESPACE_STR).unwrap(), str_identifier),
+            None => (
+                IdentifierPart::parse(Self::DEFAULT_NAMESPACE_STR).unwrap(),
+                str_identifier,
+            ),
             Some(colon_position) => {
                 let namespace_str = &str_identifier[..colon_position];
                 if !Self::is_valid_namespace(namespace_str) {
@@ -181,7 +184,8 @@ impl Identifier {
                 Ok(Self {
                     namespace,
                     path_prefix_segments,
-                    path_name: IdentifierPart::parse(&path_str[final_slash_position + 1..]).unwrap(),
+                    path_name: IdentifierPart::parse(&path_str[final_slash_position + 1..])
+                        .unwrap(),
                 })
             }
         }
@@ -193,7 +197,8 @@ impl Identifier {
         path_name: IdentifierPart,
     ) -> Self {
         Self {
-            namespace: namespace.unwrap_or_else(|| IdentifierPart::parse(Self::DEFAULT_NAMESPACE_STR).unwrap()),
+            namespace: namespace
+                .unwrap_or_else(|| IdentifierPart::parse(Self::DEFAULT_NAMESPACE_STR).unwrap()),
             path_prefix_segments: path_prefix_segments.into_iter().collect(),
             path_name,
         }

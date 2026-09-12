@@ -1,5 +1,5 @@
-use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 use hypercubed_core::types::AxisDirection;
+use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 use resources::block::GlobalPaletteIndex;
 use resources::block::blockstate::{BlockOpacity, SkyLightOpacity};
 use smallvec::SmallVec;

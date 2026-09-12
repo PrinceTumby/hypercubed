@@ -1,5 +1,7 @@
+use anyhow::Context;
 use nalgebra::Point3;
 use slab::Slab;
+use hypercubed_entity_models::{self as models, EntityRenderQuad};
 
 use super::{EntityHandle, EntityTypeManager};
 use crate::protocol::play::SpawnEntityInfo;
@@ -14,11 +16,16 @@ pub struct BoatEntity {
 
 pub struct BoatManager {
     pub boats: Slab<BoatEntity>,
+    pub oak_uv_storage: models::oak_boat::UvStorage,
 }
 
 impl BoatManager {
-    pub fn new(/* entity_texture_atlas: &resources::texture::Atlas */) -> Self {
-        Self { boats: Slab::new() }
+    pub fn new(entity_texture_atlas: &resources::texture::Atlas) -> anyhow::Result<Self> {
+        Ok(Self {
+            boats: Slab::new(),
+            oak_uv_storage: models::oak_boat::UvStorage::load_from(entity_texture_atlas)
+                .context("Error while loading oak boat UVs")?,
+        })
     }
 }
 
@@ -29,5 +36,9 @@ impl EntityTypeManager for BoatManager {
             yaw: entity_info.yaw.degrees(),
         });
         Ok(EntityHandle(key))
+    }
+
+    fn render_visible(&self, out_quads: &mut Vec<EntityRenderQuad>) {
+        models::oak_boat::render(out_quads);
     }
 }

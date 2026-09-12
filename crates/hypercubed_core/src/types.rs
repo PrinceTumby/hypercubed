@@ -69,7 +69,7 @@ impl core::ops::Mul<PercentageF32> for u32 {
 
 impl PercentageF32 {
     #[inline]
-    pub const fn from_f32_0_1_clamped(x: f32) -> Self {
+    pub const fn from_f32_0_1_clamp(x: f32) -> Self {
         Self(x.clamp(0.0, 1.0))
     }
 

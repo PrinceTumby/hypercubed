@@ -51,11 +51,6 @@ pub mod world;
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use crate::physics::PlayerPhysicsState;
-use crate::portable_prelude::*;
-use crate::protocol::chunk as protocol_chunk;
-use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode, TickingState, WorldTime};
-use crate::protocol::prelude::*;
 #[allow(unused)]
 use anyhow::Context;
 use graphics::{Camera, GraphicsBackend, SelectedGraphicsBackend};
@@ -64,6 +59,12 @@ use portable_std::sync::mpsc;
 #[allow(unused)]
 use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 
+use crate::game::entity::EntityState;
+use crate::physics::PlayerPhysicsState;
+use crate::portable_prelude::*;
+use crate::protocol::chunk as protocol_chunk;
+use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode, TickingState, WorldTime};
+use crate::protocol::prelude::*;
 use crate::platform::libs::{egui, winit};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, StartCause, WindowEvent};
@@ -133,6 +134,7 @@ pub struct App {
     graphics_backend: Option<Box<dyn GraphicsBackend>>,
     input_state: input::PlayControlState,
     play_state: ClientPlayState,
+    entity_state: Option<EntityState>,
     server_connection: Arc<PlayConnection>,
     clientbound_tx: mpsc::Sender<ClientboundPacket>,
     clientbound_rx: mpsc::Receiver<ClientboundPacket>,
@@ -211,6 +213,7 @@ impl App {
             graphics_backend: None,
             input_state,
             play_state,
+            entity_state: None,
             server_connection,
             clientbound_tx,
             clientbound_rx,
@@ -243,6 +246,9 @@ impl ApplicationHandler for App {
         // Load resources, and setup a graphics backend.
         let resource_data =
             platform::load_resource_data().expect("Error while loading resource data");
+        let entity_state = EntityState::new_vanilla(&resource_data.entity_data.atlas)
+            .expect("Error while creating entity state");
+        self.entity_state = Some(entity_state);
         cfg_select! {
             any(feature = "platform_winit", feature = "platform_linux_drm") => {
                 let graphics_backend: Box<dyn GraphicsBackend> =

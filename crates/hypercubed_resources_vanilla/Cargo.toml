@@ -5,7 +5,10 @@ edition = "2024"
 
 [features]
 default = ["std"]
-std = ["resources/std"]
+std = [
+    "hypercubed_entity_models/std",
+    "resources/std",
+]
 
 [build-dependencies]
 miniz_oxide.workspace = true
@@ -15,6 +18,7 @@ resources_vanilla_data_gen.workspace = true
 [dependencies]
 anyhow.workspace = true
 hypercubed_core.workspace = true
+hypercubed_entity_models.workspace = true
 indexmap.workspace = true
 log.workspace = true
 miniz_oxide.workspace = true

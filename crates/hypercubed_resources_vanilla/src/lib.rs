@@ -1,6 +1,6 @@
 pub mod blocks;
-pub mod environment;
 pub mod entity;
+pub mod environment;
 
 use anyhow::Context;
 
@@ -12,12 +12,12 @@ use resources::GameResourceData;
 /// resource data at compile time.
 pub fn load_data() -> anyhow::Result<GameResourceData> {
     let block_data = blocks::load_data().context("Error while loading block resource data")?;
+    let entity_data = entity::load_data().context("Error while loading entity resource data")?;
     let environment_data =
         environment::load_data().context("Error while loading environment resource data")?;
-    let entity_data = entity::load_data().context("Error while loading entity resource data")?;
     Ok(GameResourceData {
         block_data,
-        environment_data,
         entity_data,
+        environment_data,
     })
 }

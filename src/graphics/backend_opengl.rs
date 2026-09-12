@@ -10,6 +10,7 @@ pub mod gl;
 use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::Context;
+use hypercubed_entity_models::{EntityRenderQuad, EntityRenderVertex};
 use nalgebra::{Isometry3, Vector3};
 use portable_std::{Arc, FastHashMap, FastHashSet};
 use resources::GameResourceData;
@@ -64,13 +65,26 @@ mod chunk_vertex_program {
 
     pub static CODE: &str = include_str!("backend_opengl/chunk_vertex.arb");
 
-    // Environment variables
-    /// `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`
-    pub const ENV_INV_ATLAS_TEXTURE_DIMS: gl::GLuint = 0;
+    // Local parameters.
 
-    // Attribute indices
-    /// `[Sky Light Level (0..=15), Block Light Level (0..=15)]`
+    /// `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`
+    pub const LOCAL_PARAM_INV_ATLAS_TEXTURE_DIMS: gl::GLuint = 0;
+
+    // Attribute indices.
+
+    /// `[Sky Light Level (0..=15), Block Light Level (0..=15), 0.0, 0.0]`
     pub const ATTRIB_LIGHT_LEVELS: gl::GLuint = 1;
+}
+
+mod entity_vertex_program {
+    use super::*;
+
+    pub static CODE: &str = include_str!("backend_opengl/entity_vertex.arb");
+
+    // Local parameters.
+
+    /// `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`
+    pub const LOCAL_PARAM_INV_ATLAS_TEXTURE_DIMS: gl::GLuint = 0;
 }
 
 #[derive(Clone)]
@@ -80,6 +94,7 @@ pub struct GraphicsResources {
     #[cfg(feature = "platform_winit")]
     glutin_resources: Arc<GlutinResources>,
     pub atlas_texture: Arc<GlTexture>,
+    pub entity_atlas_texture: Arc<GlTexture>,
     pub moon_phases_texture: Arc<GlTexture>,
     pub sun_texture: Arc<GlTexture>,
     pub lightmap_texture_handle: Arc<gl::texture::batch_collected::TextureHandle>,
@@ -240,20 +255,25 @@ impl GraphicsBackend for GraphicsState {
             handle
         };
         // Load game resources.
-        let resources::GameResourceData {
+        let GameResourceData {
             block_data,
             environment_data,
+            entity_data,
         } = game_data;
         let resources::block::Data {
             block_registry,
             model_registry,
             atlas,
         } = block_data;
+        let resources::entity::Data {
+            atlas: entity_atlas,
+        } = entity_data;
         let resources::environment::Data {
             moon_phases_texture,
             sun_texture,
         } = environment_data;
         let atlas_texture = unsafe { GlTexture::create_from_resource_atlas(&atlas) };
+        let entity_atlas_texture = unsafe { GlTexture::create_from_resource_atlas(&entity_atlas) };
         let (moon_phases_texture, sun_texture) = unsafe {
             let moon_phases_texture = GlTexture::create_from_resource_texture(
                 &moon_phases_texture,
@@ -272,6 +292,32 @@ impl GraphicsBackend for GraphicsState {
             gl::program_arb::set_current_program_string(
                 ProgramType::VertexProgram,
                 chunk_vertex_program::CODE,
+            );
+            gl::program_arb::set_program_local_parameter_f32(
+                ProgramType::VertexProgram,
+                chunk_vertex_program::LOCAL_PARAM_INV_ATLAS_TEXTURE_DIMS,
+                1.0 / atlas_texture.width as f32,
+                1.0 / atlas_texture.height as f32,
+                1.0,
+                1.0,
+            );
+            program
+        };
+        let entity_vertex_program = unsafe {
+            use gl::program_arb::ProgramType;
+            let [program] = gl::program_arb::gen_programs();
+            gl::program_arb::bind(ProgramType::VertexProgram, Some(program));
+            gl::program_arb::set_current_program_string(
+                ProgramType::VertexProgram,
+                entity_vertex_program::CODE,
+            );
+            gl::program_arb::set_program_local_parameter_f32(
+                ProgramType::VertexProgram,
+                entity_vertex_program::LOCAL_PARAM_INV_ATLAS_TEXTURE_DIMS,
+                1.0 / entity_atlas_texture.width as f32,
+                1.0 / entity_atlas_texture.height as f32,
+                1.0,
+                1.0,
             );
             program
         };
@@ -302,6 +348,7 @@ impl GraphicsBackend for GraphicsState {
                 block_registry: Arc::new(block_registry),
                 model_registry: Arc::new(model_registry),
                 atlas_texture: Arc::new(atlas_texture),
+                entity_atlas_texture: Arc::new(entity_atlas_texture),
                 moon_phases_texture: Arc::new(moon_phases_texture),
                 sun_texture: Arc::new(sun_texture),
                 chunk_vertex_program,
@@ -468,6 +515,7 @@ impl GraphicsBackend for GraphicsState {
     fn render(
         &mut self,
         play_state: &ClientPlayState,
+        entity_quads: &[EntityRenderQuad],
         current_time_s: f64,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,
@@ -496,9 +544,8 @@ impl GraphicsBackend for GraphicsState {
                     let window_context = self.resources.window.get_context_blocking();
                 }
             }
-            // Delete all batch collected buffers.
+            // Delete all batch collected buffers and textures.
             gl::buffer::batch_collected::drain_pool();
-            // Delete all batch collected textures.
             gl::texture::batch_collected::drain_pool();
             // Upload pending subchunks.
             if self.num_pending_subchunks > 0 {
@@ -557,7 +604,7 @@ impl GraphicsBackend for GraphicsState {
                         0.0,
                     );
                 }
-                // Bind vertex program, set environment variables.
+                // Bind vertex program.
                 {
                     gl::enable(gl::EnableComponent::VertexProgramARB);
                     let span = tracing::trace_span!("subchunks_set_vertex_program");
@@ -565,14 +612,6 @@ impl GraphicsBackend for GraphicsState {
                     gl::program_arb::bind(
                         ProgramType::VertexProgram,
                         Some(self.resources.chunk_vertex_program),
-                    );
-                    gl::program_arb::set_program_env_parameter_f32(
-                        ProgramType::VertexProgram,
-                        chunk_vertex_program::ENV_INV_ATLAS_TEXTURE_DIMS,
-                        1.0 / self.resources.atlas_texture.width as f32,
-                        1.0 / self.resources.atlas_texture.height as f32,
-                        1.0,
-                        1.0,
                     );
                 }
                 // Load and enable texture atlas.
@@ -716,6 +755,50 @@ impl GraphicsBackend for GraphicsState {
                 gl::texture::switch_active(ActiveTexture::Texture1);
                 gl::disable(gl::EnableComponent::Texture2D);
                 gl::texture::switch_active(ActiveTexture::Texture0);
+            }
+            // Render entities.
+            {
+                let _span = tracing::trace_span!("render_entities").entered();
+                // Bind vertex program.
+                {
+                    let _span = tracing::trace_span!("bind_vertex_program").entered();
+                    gl::enable(gl::EnableComponent::VertexProgramARB);
+                    gl::program_arb::bind(
+                        ProgramType::VertexProgram,
+                        Some(self.resources.chunk_vertex_program),
+                    );
+                }
+                // Load and enable texture atlas.
+                {
+                    let _span = tracing::trace_span!("bind_texture_atlas").entered();
+                    gl::enable(gl::EnableComponent::Texture2D);
+                    gl::texture::set_env_mode(TexEnvTarget::TextureEnv, TexEnvMode::Modulate);
+                    self.resources
+                        .entity_atlas_texture
+                        .handle
+                        .bind(TexTarget::Texture2D);
+                }
+                // Draw entities.
+                {
+                    let _span = tracing::trace_span!("draw_entities").entered();
+                    gl::array::vertex_pointer(
+                        3,
+                        VertexType::F32,
+                        size_of::<EntityRenderVertex>().try_into().unwrap(),
+                        (&raw const entity_quads[0].0[0].pos).addr(),
+                    );
+                    gl::array::texture_coord_pointer(
+                        2,
+                        TextureCoordType::I16,
+                        size_of::<EntityRenderVertex>().try_into().unwrap(),
+                        (&raw const entity_quads[0].0[0].uv).addr(),
+                    );
+                    gl::array::draw(
+                        gl::ShapeMode::Quads,
+                        0,
+                        (entity_quads.len() * 4).try_into().unwrap(),
+                    );
+                }
             }
             // Render sky.
             {

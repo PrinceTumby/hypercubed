@@ -798,6 +798,16 @@ pub mod program_arb {
             z: f32,
             w: f32,
         );
+
+        #[gl = "glProgramLocalParameter4fARB"]
+        pub unsafe fn set_program_local_parameter_f32(
+            target: ProgramType,
+            index: GLuint,
+            x: f32,
+            y: f32,
+            z: f32,
+            w: f32,
+        );
     }
 }
 

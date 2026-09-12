@@ -1,6 +1,7 @@
 pub mod boat;
 
 use anyhow::{Context, ensure};
+use hypercubed_entity_models::EntityRenderQuad;
 use portable_std::FastHashMap;
 use resources::{RegistryData, RegistryIndex, identifier};
 
@@ -18,6 +19,9 @@ pub struct ActiveEntity {
 
 pub trait EntityTypeManager {
     fn spawn_entity(&mut self, entity_info: &SpawnEntityInfo) -> anyhow::Result<EntityHandle>;
+
+    // TODO: Visibility information.
+    fn render_visible(&self, out_quads: &mut Vec<EntityRenderQuad>);
 }
 
 pub struct EntityState {
@@ -26,13 +30,14 @@ pub struct EntityState {
 }
 
 impl EntityState {
-    pub fn new_vanilla() -> Self {
+    pub fn new_vanilla(entity_texture_atlas: &resources::texture::Atlas) -> anyhow::Result<Self> {
         let mut manager_registry = RegistryData::new();
-        register_vanilla_managers(&mut manager_registry);
-        Self {
+        register_vanilla_managers(&mut manager_registry, entity_texture_atlas)
+            .context("Error while registering vanilla entity managers")?;
+        Ok(Self {
             manager_registry,
             entities: FastHashMap::new(),
-        }
+        })
     }
 
     pub fn spawn_entity(&mut self, entity_info: &SpawnEntityInfo) -> anyhow::Result<()> {
@@ -49,7 +54,10 @@ impl EntityState {
     }
 }
 
-fn register_vanilla_managers(registry: &mut RegistryData<Box<dyn EntityTypeManager>>) {
+fn register_vanilla_managers(
+    registry: &mut RegistryData<Box<dyn EntityTypeManager>>,
+    entity_texture_atlas: &resources::texture::Atlas,
+) -> anyhow::Result<()> {
     registry.register(identifier!("allay"), Box::new(DummyManager));
     registry.register(identifier!("area_effect_cloud"), Box::new(DummyManager));
     registry.register(identifier!("armadillo"), Box::new(DummyManager));
@@ -60,7 +68,11 @@ fn register_vanilla_managers(registry: &mut RegistryData<Box<dyn EntityTypeManag
     registry.register(identifier!("bee"), Box::new(DummyManager));
     registry.register(identifier!("blaze"), Box::new(DummyManager));
     registry.register(identifier!("block_display"), Box::new(DummyManager));
-    registry.register(identifier!("boat"), Box::new(boat::BoatManager::new()));
+    registry.register(
+        identifier!("boat"),
+        Box::new(boat::BoatManager::new(entity_texture_atlas)
+            .context("Error while registering boat manager")?),
+    );
     registry.register(identifier!("bogged"), Box::new(DummyManager));
     registry.register(identifier!("breeze"), Box::new(DummyManager));
     registry.register(identifier!("breeze_wind_charge"), Box::new(DummyManager));
@@ -183,6 +195,7 @@ fn register_vanilla_managers(registry: &mut RegistryData<Box<dyn EntityTypeManag
     registry.register(identifier!("zombified_piglin"), Box::new(DummyManager));
     registry.register(identifier!("player"), Box::new(DummyManager));
     registry.register(identifier!("fishing_bobber"), Box::new(DummyManager));
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -192,4 +205,6 @@ impl EntityTypeManager for DummyManager {
     fn spawn_entity(&mut self, _entity_info: &SpawnEntityInfo) -> anyhow::Result<EntityHandle> {
         Ok(EntityHandle(0))
     }
+
+    fn render_visible(&self, _out_quads: &mut Vec<EntityRenderQuad>) {}
 }

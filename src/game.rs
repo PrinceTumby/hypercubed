@@ -1,5 +1,13 @@
 pub mod entity;
 
+use nalgebra::Vector3;
+use portable_std::{Arc, FastHashMap, FastHashSet, sync};
+use resources::block::GlobalPaletteIndex;
+use resources::identifier;
+#[cfg(feature = "full_std")]
+use threadpool::ThreadPool;
+
+use entity::EntityState;
 use crate::graphics::{self, DEFAULT_FOV, GraphicsBackend};
 use crate::input::PlayControlState;
 use crate::portable_prelude::{println, *};
@@ -10,18 +18,13 @@ use crate::protocol::play::{
 };
 use crate::protocol::prelude::*;
 use crate::{ClientPlayState, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32, physics, world};
-use nalgebra::Vector3;
-use portable_std::{Arc, FastHashMap, FastHashSet, sync};
-use resources::block::GlobalPaletteIndex;
-use resources::identifier;
-#[cfg(feature = "full_std")]
-use threadpool::ThreadPool;
 
 #[expect(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all)]
 pub fn process_game_events(
     #[cfg(feature = "full_std")] thread_pool: &ThreadPool,
     play_state: &mut ClientPlayState,
+    entity_state: &mut EntityState,
     graphics_backend: &mut dyn GraphicsBackend,
     debug_state: &mut graphics::DebugState,
     input_state: &mut PlayControlState,
@@ -417,6 +420,10 @@ pub fn process_game_events(
             // XXX: DEBUG
             ClientboundPacket::SpawnEntity(entity_info) => {
                 log::info!("Spawn entity - {entity_info:?}");
+                let spawn_result = entity_state.spawn_entity(&entity_info);
+                if let Err(err) = spawn_result {
+                    log::error!("Error while spawning entity - {err:#}");
+                }
             }
             _ => {}
         }

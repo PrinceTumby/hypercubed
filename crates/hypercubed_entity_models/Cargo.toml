@@ -1,0 +1,18 @@
+[package]
+name = "hypercubed_entity_models"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["std"]
+std = [
+    "hypercubed_core/default",
+    "resources/default",
+]
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+hypercubed_core.workspace = true
+nalgebra.workspace = true
+resources.workspace = true

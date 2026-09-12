@@ -950,7 +950,7 @@ impl Angle {
 
 // Direction on wiki.vg
 
-pub use crate::basic_types::AxisDirection;
+pub use hypercubed_core::types::AxisDirection;
 
 impl Deserialize for AxisDirection {
     fn deserialize(input: InputSpan) -> IResult<Self> {

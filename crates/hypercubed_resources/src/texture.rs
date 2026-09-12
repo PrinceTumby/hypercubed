@@ -1,6 +1,6 @@
 use anyhow::{Context, ensure};
-use hypercubed_core::types::PercentageF32;
 use guillotiere::SimpleAtlasAllocator;
+use hypercubed_core::types::PercentageF32;
 use portable_std::prelude::*;
 use portable_std::{Arc, FastHashMap};
 use serde::{Deserialize, Serialize};
@@ -87,7 +87,7 @@ pub enum TextureInfo {
 }
 
 impl TextureInfo {
-    pub fn basic_or_first_frame(&self) -> [u16; 4] {
+    pub fn basic_or_first_frame_uvs(&self) -> [u16; 4] {
         match self {
             Self::Basic { uvs } => *uvs,
             Self::Animated(info) => info.frame_uvs[0],
@@ -241,8 +241,8 @@ impl AtlasBuilder {
         file_identifier: &Identifier,
         parts: impl IntoIterator<Item = (Identifier, [PercentageF32; 4])>,
     ) -> anyhow::Result<()> {
-        let texture_bytes =
-            get_resource_file(ResourceType::Texture, file_identifier).with_context(|| {
+        let texture_bytes = get_resource_file(ResourceType::Texture, file_identifier)
+            .with_context(|| {
                 format!("Failed to read raw image texture data for {file_identifier:?}")
             })?;
         let raw_texture = image::load_from_memory_with_format(&texture_bytes, ImageFormat::Png)
@@ -259,14 +259,12 @@ impl AtlasBuilder {
             let start_y = raw_texture.height() * part_uv_percentages[1];
             let end_x = raw_texture.width() * part_uv_percentages[2];
             let end_y = raw_texture.height() * part_uv_percentages[3];
-            let texture_part = raw_texture.view(
-                start_x,
-                start_y,
-                end_x - start_x,
-                end_y - start_y,
-            );
-            let part_uvs = self.stitch_in(&*texture_part).context("Error while stitching in texture part")?;
-            self.stored_textures.insert(part_identifier, TextureInfo::Basic { uvs: part_uvs });
+            let texture_part = raw_texture.view(start_x, start_y, end_x - start_x, end_y - start_y);
+            let part_uvs = self
+                .stitch_in(&*texture_part)
+                .context("Error while stitching in texture part")?;
+            self.stored_textures
+                .insert(part_identifier, TextureInfo::Basic { uvs: part_uvs });
         }
         Ok(())
     }
@@ -315,8 +313,7 @@ impl AtlasBuilder {
         };
         let end_x = start_x + texture.width();
         let end_y = start_y + texture.height();
-        self.texture
-            .copy_from(texture, start_x, start_y)?;
+        self.texture.copy_from(texture, start_x, start_y)?;
         Ok([start_x, start_y, end_x, end_y].map(|v| v as u16))
     }
 

@@ -28,6 +28,18 @@ pub mod backend_wgpu;
 ))]
 compile_error!("At least one graphics backend feature must be enabled.");
 
+use chunk::{HasSubchunkData, SubchunkData};
+use hypercubed_core::types::AxisDirection;
+use hypercubed_entity_models::EntityRenderQuad;
+use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
+use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
+use threadpool::ThreadPool;
+use winit::event_loop::OwnedDisplayHandle;
+use winit::window::Window;
+
+use crate::platform::libs::winit;
+use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
     any(feature = "platform_winit", feature = "platform_linux_drm"),
@@ -85,17 +97,6 @@ impl core::fmt::Display for SelectedGraphicsBackend {
     }
 }
 
-use chunk::{HasSubchunkData, SubchunkData};
-use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
-use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
-use threadpool::ThreadPool;
-use winit::event_loop::OwnedDisplayHandle;
-use winit::window::Window;
-
-use crate::basic_types::AxisDirection;
-use crate::platform::libs::winit;
-use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsOptions {
     pub vsync: bool,
@@ -145,6 +146,7 @@ pub trait GraphicsBackend {
     fn render(
         &mut self,
         play_state: &ClientPlayState,
+        entity_quads: &[EntityRenderQuad],
         current_time_s: f64,
         egui_ctx: &egui::Context,
         egui_full_output: egui::output::FullOutput,

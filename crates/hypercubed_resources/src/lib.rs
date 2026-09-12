@@ -2,8 +2,8 @@
 
 pub mod aabb;
 pub mod block;
-pub mod environment;
 pub mod entity;
+pub mod environment;
 pub mod identifier;
 #[cfg(feature = "std")]
 pub mod manager;
@@ -17,16 +17,17 @@ use portable_std::prelude::*;
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct GameResourceData {
     pub block_data: block::Data,
-    pub environment_data: environment::Data,
     pub entity_data: entity::Data,
+    pub environment_data: environment::Data,
 }
 
 // TODO: Change to `u32`.
 // - The memory savings of using a `u16` probably just aren't worth it.
 // - Can easily have more than 64K entries.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct RegistryIndex(pub u16);
 
 impl RegistryIndex {

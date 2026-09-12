@@ -1,11 +1,12 @@
-use crate::basic_types::AxisDirection;
-use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32};
 use ahash::AHasher;
 use core::hash::Hasher;
 use fixedbitset::FixedBitSet;
+use hypercubed_core::types::AxisDirection;
 use portable_std::{Arc, FastHashMap};
 use resources::block::blockstate::BlockOpacity;
 use resources::identifier;
+
+use crate::{MAX_HEIGHT_I32, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN, SUBCHUNK_AXIS_LEN_I32};
 
 pub trait HasSubchunkData {
     fn get_data(&self) -> SubchunkData;

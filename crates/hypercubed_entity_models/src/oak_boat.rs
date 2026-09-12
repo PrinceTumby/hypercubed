@@ -1,7 +1,8 @@
 // This file was generated from "oak.bbmodel" using the Hypercubed Blockbench plugin.
 
-#![rustfmt::skip]
+#![allow(unused)]
 
+use anyhow::Context as _;
 use hypercubed_core::types::PercentageF32;
 use nalgebra::{Matrix4, Point3, Vector3};
 use resources::Identifier;
@@ -46,135 +47,136 @@ impl UvStorage {
     pub fn load_from(atlas: &resources::texture::Atlas) -> anyhow::Result<Self> {
         Ok(Self {
             base_north: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/north")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/north").unwrap())
                 .context("Error while loading texture part \"base/north\"")?
                 .basic_or_first_frame_uvs(),
             base_east: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/east")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/east").unwrap())
                 .context("Error while loading texture part \"base/east\"")?
                 .basic_or_first_frame_uvs(),
             base_south: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/south")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/south").unwrap())
                 .context("Error while loading texture part \"base/south\"")?
                 .basic_or_first_frame_uvs(),
             base_west: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/west")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/west").unwrap())
                 .context("Error while loading texture part \"base/west\"")?
                 .basic_or_first_frame_uvs(),
             base_up: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/up")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/up").unwrap())
                 .context("Error while loading texture part \"base/up\"")?
                 .basic_or_first_frame_uvs(),
             base_down: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/down")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/down").unwrap())
                 .context("Error while loading texture part \"base/down\"")?
                 .basic_or_first_frame_uvs(),
             back_north: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/north")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/north").unwrap())
                 .context("Error while loading texture part \"back/north\"")?
                 .basic_or_first_frame_uvs(),
             back_east: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/east")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/east").unwrap())
                 .context("Error while loading texture part \"back/east\"")?
                 .basic_or_first_frame_uvs(),
             back_south: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/south")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/south").unwrap())
                 .context("Error while loading texture part \"back/south\"")?
                 .basic_or_first_frame_uvs(),
             back_west: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/west")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/west").unwrap())
                 .context("Error while loading texture part \"back/west\"")?
                 .basic_or_first_frame_uvs(),
             back_up: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/up")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/up").unwrap())
                 .context("Error while loading texture part \"back/up\"")?
                 .basic_or_first_frame_uvs(),
             back_down: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/down")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/down").unwrap())
                 .context("Error while loading texture part \"back/down\"")?
                 .basic_or_first_frame_uvs(),
             left_north: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/north")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/north").unwrap())
                 .context("Error while loading texture part \"left/north\"")?
                 .basic_or_first_frame_uvs(),
             left_east: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/east")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/east").unwrap())
                 .context("Error while loading texture part \"left/east\"")?
                 .basic_or_first_frame_uvs(),
             left_south: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/south")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/south").unwrap())
                 .context("Error while loading texture part \"left/south\"")?
                 .basic_or_first_frame_uvs(),
             left_west: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/west")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/west").unwrap())
                 .context("Error while loading texture part \"left/west\"")?
                 .basic_or_first_frame_uvs(),
             left_up: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/up")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/up").unwrap())
                 .context("Error while loading texture part \"left/up\"")?
                 .basic_or_first_frame_uvs(),
             left_down: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/down")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/down").unwrap())
                 .context("Error while loading texture part \"left/down\"")?
                 .basic_or_first_frame_uvs(),
             right_north: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/north")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/north").unwrap())
                 .context("Error while loading texture part \"right/north\"")?
                 .basic_or_first_frame_uvs(),
             right_east: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/east")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/east").unwrap())
                 .context("Error while loading texture part \"right/east\"")?
                 .basic_or_first_frame_uvs(),
             right_south: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/south")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/south").unwrap())
                 .context("Error while loading texture part \"right/south\"")?
                 .basic_or_first_frame_uvs(),
             right_west: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/west")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/west").unwrap())
                 .context("Error while loading texture part \"right/west\"")?
                 .basic_or_first_frame_uvs(),
             right_up: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/up")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/up").unwrap())
                 .context("Error while loading texture part \"right/up\"")?
                 .basic_or_first_frame_uvs(),
             right_down: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/down")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/down").unwrap())
                 .context("Error while loading texture part \"right/down\"")?
                 .basic_or_first_frame_uvs(),
             front_north: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/north")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/north").unwrap())
                 .context("Error while loading texture part \"front/north\"")?
                 .basic_or_first_frame_uvs(),
             front_east: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/east")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/east").unwrap())
                 .context("Error while loading texture part \"front/east\"")?
                 .basic_or_first_frame_uvs(),
             front_south: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/south")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/south").unwrap())
                 .context("Error while loading texture part \"front/south\"")?
                 .basic_or_first_frame_uvs(),
             front_west: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/west")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/west").unwrap())
                 .context("Error while loading texture part \"front/west\"")?
                 .basic_or_first_frame_uvs(),
             front_up: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/up")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/up").unwrap())
                 .context("Error while loading texture part \"front/up\"")?
                 .basic_or_first_frame_uvs(),
             front_down: atlas
-                .get_texture(&Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/down")).unwrap())
+                .get_texture(&Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/down").unwrap())
                 .context("Error while loading texture part \"front/down\"")?
                 .basic_or_first_frame_uvs(),
         })
     }
 }
 
+#[cfg(feature = "std")]
 pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> anyhow::Result<()> {
     atlas_builder.load_texture_parts(
-        &Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak")).unwrap(),
+        &Identifier::parse("minecraft:entity/boat/oak").unwrap(),
         [
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/north")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/north").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.2421875_f32),
                     PercentageF32::from_f32_0_1_clamp(0.046875_f32),
@@ -183,7 +185,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/east")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/east").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.0234375_f32),
                     PercentageF32::from_f32_0_1_clamp(0_f32),
@@ -192,7 +194,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/south")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/south").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0_f32),
                     PercentageF32::from_f32_0_1_clamp(0.046875_f32),
@@ -201,7 +203,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/west")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/west").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.2421875_f32),
                     PercentageF32::from_f32_0_1_clamp(0_f32),
@@ -210,7 +212,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/up")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/up").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.265625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.046875_f32),
@@ -219,7 +221,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/base/down")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/base/down").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.0234375_f32),
                     PercentageF32::from_f32_0_1_clamp(0.046875_f32),
@@ -228,7 +230,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/north")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/north").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.328125_f32),
@@ -237,7 +239,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/east")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/east").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0_f32),
                     PercentageF32::from_f32_0_1_clamp(0.328125_f32),
@@ -246,7 +248,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/south")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/south").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.171875_f32),
                     PercentageF32::from_f32_0_1_clamp(0.328125_f32),
@@ -255,7 +257,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/west")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/west").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.15625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.328125_f32),
@@ -264,7 +266,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/up")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/up").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.296875_f32),
@@ -273,7 +275,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/back/down")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/back/down").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.15625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.296875_f32),
@@ -282,7 +284,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/north")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/north").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.234375_f32),
                     PercentageF32::from_f32_0_1_clamp(0.703125_f32),
@@ -291,7 +293,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/east")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/east").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.703125_f32),
@@ -300,7 +302,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/south")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/south").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0_f32),
                     PercentageF32::from_f32_0_1_clamp(0.703125_f32),
@@ -309,7 +311,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/west")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/west").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.25_f32),
                     PercentageF32::from_f32_0_1_clamp(0.703125_f32),
@@ -318,7 +320,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/up")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/up").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.671875_f32),
@@ -327,7 +329,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/left/down")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/left/down").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.234375_f32),
                     PercentageF32::from_f32_0_1_clamp(0.671875_f32),
@@ -336,7 +338,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/north")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/north").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0_f32),
                     PercentageF32::from_f32_0_1_clamp(0.578125_f32),
@@ -345,7 +347,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/east")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/east").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.25_f32),
                     PercentageF32::from_f32_0_1_clamp(0.578125_f32),
@@ -354,7 +356,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/south")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/south").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.234375_f32),
                     PercentageF32::from_f32_0_1_clamp(0.578125_f32),
@@ -363,7 +365,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/west")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/west").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.578125_f32),
@@ -372,7 +374,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/up")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/up").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.546875_f32),
@@ -381,7 +383,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/right/down")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/right/down").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.234375_f32),
                     PercentageF32::from_f32_0_1_clamp(0.546875_f32),
@@ -390,7 +392,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/north")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/north").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.15625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.453125_f32),
@@ -399,7 +401,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/east")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/east").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.140625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.453125_f32),
@@ -408,7 +410,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/south")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/south").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.453125_f32),
@@ -417,7 +419,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/west")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/west").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0_f32),
                     PercentageF32::from_f32_0_1_clamp(0.453125_f32),
@@ -426,7 +428,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/up")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/up").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.015625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.421875_f32),
@@ -435,7 +437,7 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
             (
-                Identifier::parse(&format!("hypercubed_vanilla:entity/boat/oak/front/down")).unwrap(),
+                Identifier::parse("hypercubed_vanilla:entity/boat/oak/front/down").unwrap(),
                 [
                     PercentageF32::from_f32_0_1_clamp(0.15625_f32),
                     PercentageF32::from_f32_0_1_clamp(0.421875_f32),
@@ -444,11 +446,12 @@ pub fn load_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> an
                 ],
             ),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 pub fn render(
-    out_quads: &mut Vec<EntityRenderQuad>,
+    out_quads: &mut Vec<Quad>,
     uv_storage: &UvStorage,
     pos: Point3<f32>,
     yaw_degrees: f32,
@@ -456,7 +459,7 @@ pub fn render(
     pitch_degrees: f32,
 ) {
     let matrix: Matrix4<f32> = Matrix4::from_scaled_axis(Vector3::y() * yaw_degrees.to_radians())
-        .prepend_translation(pos.coords);
+        .prepend_translation(&pos.coords);
     const BASE_BASE_POSITIONS: [Point3<f32>; 8] = [
         Point3::new(8_f32, 3_f32, 14_f32),
         Point3::new(8_f32, 3_f32, -14_f32),
@@ -468,7 +471,7 @@ pub fn render(
         Point3::new(-8_f32, 0_f32, 14_f32),
     ];
     let base_positions: [[f32; 3]; 8] =
-        BASE_BASE_POSITIONS.map(|p| (matrix * p).into());
+        BASE_BASE_POSITIONS.map(|p| matrix.transform_point(&p).into());
     const BACK_BASE_POSITIONS: [Point3<f32>; 8] = [
         Point3::new(9_f32, 9_f32, 16_f32),
         Point3::new(9_f32, 9_f32, 14_f32),
@@ -480,7 +483,7 @@ pub fn render(
         Point3::new(-9_f32, 3_f32, 16_f32),
     ];
     let back_positions: [[f32; 3]; 8] =
-        BACK_BASE_POSITIONS.map(|p| (matrix * p).into());
+        BACK_BASE_POSITIONS.map(|p| matrix.transform_point(&p).into());
     const LEFT_BASE_POSITIONS: [Point3<f32>; 8] = [
         Point3::new(-8_f32, 9_f32, 14_f32),
         Point3::new(-8_f32, 9_f32, -14_f32),
@@ -492,7 +495,7 @@ pub fn render(
         Point3::new(-10_f32, 3_f32, 14_f32),
     ];
     let left_positions: [[f32; 3]; 8] =
-        LEFT_BASE_POSITIONS.map(|p| (matrix * p).into());
+        LEFT_BASE_POSITIONS.map(|p| matrix.transform_point(&p).into());
     const RIGHT_BASE_POSITIONS: [Point3<f32>; 8] = [
         Point3::new(10_f32, 9_f32, 14_f32),
         Point3::new(10_f32, 9_f32, -14_f32),
@@ -504,7 +507,7 @@ pub fn render(
         Point3::new(8_f32, 3_f32, 14_f32),
     ];
     let right_positions: [[f32; 3]; 8] =
-        RIGHT_BASE_POSITIONS.map(|p| (matrix * p).into());
+        RIGHT_BASE_POSITIONS.map(|p| matrix.transform_point(&p).into());
     const FRONT_BASE_POSITIONS: [Point3<f32>; 8] = [
         Point3::new(8_f32, 9_f32, -14_f32),
         Point3::new(8_f32, 9_f32, -16_f32),
@@ -516,7 +519,7 @@ pub fn render(
         Point3::new(-8_f32, 3_f32, -14_f32),
     ];
     let front_positions: [[f32; 3]; 8] =
-        FRONT_BASE_POSITIONS.map(|p| (matrix * p).into());
+        FRONT_BASE_POSITIONS.map(|p| matrix.transform_point(&p).into());
     out_quads.extend([
         Quad([Vertex { pos: base_positions[1], uv: [uv_storage.base_north[0], uv_storage.base_north[1]] }, Vertex { pos: base_positions[4], uv: [uv_storage.base_north[0], uv_storage.base_north[3]] }, Vertex { pos: base_positions[6], uv: [uv_storage.base_north[2], uv_storage.base_north[1]] }, Vertex { pos: base_positions[3], uv: [uv_storage.base_north[2], uv_storage.base_north[3]] }]),
         Quad([Vertex { pos: base_positions[0], uv: [uv_storage.base_east[0], uv_storage.base_east[3]] }, Vertex { pos: base_positions[1], uv: [uv_storage.base_east[2], uv_storage.base_east[3]] }, Vertex { pos: base_positions[3], uv: [uv_storage.base_east[0], uv_storage.base_east[1]] }, Vertex { pos: base_positions[2], uv: [uv_storage.base_east[2], uv_storage.base_east[1]] }]),
