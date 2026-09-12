@@ -7,7 +7,6 @@ use resources::identifier;
 #[cfg(feature = "full_std")]
 use threadpool::ThreadPool;
 
-use entity::EntityState;
 use crate::graphics::{self, DEFAULT_FOV, GraphicsBackend};
 use crate::input::PlayControlState;
 use crate::portable_prelude::{println, *};
@@ -18,6 +17,7 @@ use crate::protocol::play::{
 };
 use crate::protocol::prelude::*;
 use crate::{ClientPlayState, MIN_HEIGHT_I32, RawChunk, SUBCHUNK_AXIS_LEN_I32, physics, world};
+use entity::EntityState;
 
 #[expect(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all)]
@@ -423,6 +423,38 @@ pub fn process_game_events(
                 let spawn_result = entity_state.spawn_entity(&entity_info);
                 if let Err(err) = spawn_result {
                     log::error!("Error while spawning entity - {err:#}");
+                }
+            }
+            ClientboundPacket::RemoveEntities(entities) => {
+                for entity_id in entities {
+                    let remove_result = entity_state.remove_entity(entity_id);
+                    if let Err(err) = remove_result {
+                        log::error!("Error while removing entity - {err:#}");
+                    }
+                }
+            }
+            ClientboundPacket::UpdateEntityPosition(new_pos_info) => {
+                let update_result = entity_state.update_entity_pos(&new_pos_info);
+                if let Err(err) = update_result {
+                    log::error!("Error while updating entity position - {err:#}");
+                }
+            }
+            ClientboundPacket::UpdateEntityRotation(new_rot_info) => {
+                let update_result = entity_state.update_entity_rot(&new_rot_info);
+                if let Err(err) = update_result {
+                    log::error!("Error while updating entity rotation - {err:#}");
+                }
+            }
+            ClientboundPacket::UpdateEntityPositionAndRotation(new_pos_and_rot_info) => {
+                let update_result = entity_state.update_entity_pos_and_rot(&new_pos_and_rot_info);
+                if let Err(err) = update_result {
+                    log::error!("Error while updating entity position and rotation - {err:#}");
+                }
+            }
+            ClientboundPacket::TeleportEntity(teleport_info) => {
+                let update_result = entity_state.teleport_entity(&teleport_info);
+                if let Err(err) = update_result {
+                    log::error!("Error while teleporting entity - {err:#}");
                 }
             }
             _ => {}

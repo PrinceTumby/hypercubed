@@ -10,8 +10,8 @@ pub mod gl;
 use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::Context;
-use hypercubed_entity_models::{EntityRenderQuad, EntityRenderVertex};
-use nalgebra::{Isometry3, Vector3};
+use hypercubed_entity_models::EntityRenderQuad;
+use nalgebra::{Isometry3, Matrix4, Point3, Vector3};
 use portable_std::{Arc, FastHashMap, FastHashSet};
 use resources::GameResourceData;
 use threadpool::ThreadPool;
@@ -26,7 +26,7 @@ use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions}
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
 use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use gl::array::{AttributeNormalisation, AttributeType, ColorType, TextureCoordType, VertexType};
+use gl::array::{AttributeNormalisation, AttributeType, ColorType, TextureCoordType, VertexType, NormalType};
 use gl::buffer::BufferType;
 use gl::client_state::ClientArrayType;
 use gl::texture::{
@@ -99,6 +99,7 @@ pub struct GraphicsResources {
     pub sun_texture: Arc<GlTexture>,
     pub lightmap_texture_handle: Arc<gl::texture::batch_collected::TextureHandle>,
     pub chunk_vertex_program: gl::program_arb::ProgramHandle,
+    pub entity_vertex_program: gl::program_arb::ProgramHandle,
     pub window: Arc<Window>,
 }
 
@@ -351,8 +352,9 @@ impl GraphicsBackend for GraphicsState {
                 entity_atlas_texture: Arc::new(entity_atlas_texture),
                 moon_phases_texture: Arc::new(moon_phases_texture),
                 sun_texture: Arc::new(sun_texture),
-                chunk_vertex_program,
                 lightmap_texture_handle: Arc::new(lightmap_texture_handle),
+                chunk_vertex_program,
+                entity_vertex_program,
                 window,
             },
             subchunk_data_storage: SubchunkDataStorage {
@@ -532,6 +534,7 @@ impl GraphicsBackend for GraphicsState {
             use gl::framebuffer::ClearBufferBits;
             use gl::matrix::MatrixMode;
             use gl::program_arb::ProgramType;
+            let context_span = tracing::trace_span!("get_current_gl_context").entered();
             cfg_select! {
                 feature = "platform_winit" => {
                     let glutin_context = &self.resources.glutin_resources.context;
@@ -544,13 +547,16 @@ impl GraphicsBackend for GraphicsState {
                     let window_context = self.resources.window.get_context_blocking();
                 }
             }
+            drop(context_span);
             // Delete all batch collected buffers and textures.
-            gl::buffer::batch_collected::drain_pool();
-            gl::texture::batch_collected::drain_pool();
+            {
+                let _span = tracing::trace_span!("drain_batch_collected_pools").entered();
+                gl::buffer::batch_collected::drain_pool();
+                gl::texture::batch_collected::drain_pool();
+            }
             // Upload pending subchunks.
             if self.num_pending_subchunks > 0 {
-                let span = tracing::trace_span!("upload_pending_subchunks");
-                let _enter = span.enter();
+                let _span = tracing::trace_span!("upload_pending_subchunks").entered();
                 let mut subchunks_processed_this_frame: usize = 0;
                 for raw_subchunk in self
                     .pending_subchunk_rx
@@ -589,8 +595,7 @@ impl GraphicsBackend for GraphicsState {
             gl::framebuffer::clear(ClearBufferBits::COLOR | ClearBufferBits::DEPTH);
             // Render subchunks.
             {
-                let span = tracing::trace_span!("render_subchunks");
-                let _enter = span.enter();
+                let _span = tracing::trace_span!("render_subchunks").entered();
                 {
                     let span = tracing::trace_span!("subchunks_set_gl_state");
                     let _enter = span.enter();
@@ -757,15 +762,57 @@ impl GraphicsBackend for GraphicsState {
                 gl::texture::switch_active(ActiveTexture::Texture0);
             }
             // Render entities.
-            {
+            if !entity_quads.is_empty() {
                 let _span = tracing::trace_span!("render_entities").entered();
+                // Offset entity vertices slightly upwards, so that they're less likely to have
+                // Z-fighting with blocks.
+                // I think the vanilla client also does this? Judging by a test setup with a pig
+                // looking straight ahead, with its head partially inside a block in front of it.
+                // The inside of the pig's feet also don't have z-fighting with the blocks below it,
+                // which further supports this.
+                gl::matrix::switch_mode(gl::matrix::MatrixMode::ModelView);
+                let entity_offset_matrix = Matrix4::new_translation(&Vector3::new(
+                    0.0,
+                    // 1.0 / 16.0 (1 texture pixel) / 32.0
+                    0.001953125,
+                    0.0,
+                ));
+                gl::matrix::load_f32_matrix(entity_offset_matrix.as_ref());
+                gl::client_state::enable(ClientArrayType::NormalArray);
+                // Attach normals to quads, which are used in the vertex program to calculate
+                // directional face lighting.
+                // Ideally we'd use something like GL_AUTO_NORMAL, but that unfortunately doesn't
+                // seem to work with standard triangle/quad rendering.
+                #[repr(C)]
+                #[derive(Clone, Copy, Debug)]
+                struct EntityGlVertex {
+                    pub pos: [f32; 3],
+                    pub uv: [u16; 2],
+                    pub normal: [f32; 3],
+                }
+                type EntityGlQuad = [EntityGlVertex; 4];
+                let entity_gl_quads: Vec<EntityGlQuad> = entity_quads
+                    .iter()
+                    .map(|quad| {
+                        let [v_a, v_b, v_c, _] = quad.0;
+                        let p_a = Point3::from(v_a.pos);
+                        let p_b = Point3::from(v_b.pos);
+                        let p_c = Point3::from(v_c.pos);
+                        let normal: [f32; 3] = (p_c - p_a).cross(&(p_b - p_a)).into();
+                        quad.0.map(|v| EntityGlVertex {
+                            pos: v.pos,
+                            uv: v.uv,
+                            normal,
+                        })
+                    })
+                    .collect();
                 // Bind vertex program.
                 {
                     let _span = tracing::trace_span!("bind_vertex_program").entered();
                     gl::enable(gl::EnableComponent::VertexProgramARB);
                     gl::program_arb::bind(
                         ProgramType::VertexProgram,
-                        Some(self.resources.chunk_vertex_program),
+                        Some(self.resources.entity_vertex_program),
                     );
                 }
                 // Load and enable texture atlas.
@@ -778,27 +825,42 @@ impl GraphicsBackend for GraphicsState {
                         .handle
                         .bind(TexTarget::Texture2D);
                 }
-                // Draw entities.
+                // Draw.
                 {
                     let _span = tracing::trace_span!("draw_entities").entered();
                     gl::array::vertex_pointer(
                         3,
                         VertexType::F32,
-                        size_of::<EntityRenderVertex>().try_into().unwrap(),
-                        (&raw const entity_quads[0].0[0].pos).addr(),
+                        size_of::<EntityGlVertex>().try_into().unwrap(),
+                        (&raw const entity_gl_quads[0][0].pos).addr(),
                     );
                     gl::array::texture_coord_pointer(
                         2,
                         TextureCoordType::I16,
-                        size_of::<EntityRenderVertex>().try_into().unwrap(),
-                        (&raw const entity_quads[0].0[0].uv).addr(),
+                        size_of::<EntityGlVertex>().try_into().unwrap(),
+                        (&raw const entity_gl_quads[0][0].uv).addr(),
+                    );
+                    gl::array::texture_coord_pointer(
+                        2,
+                        TextureCoordType::I16,
+                        size_of::<EntityGlVertex>().try_into().unwrap(),
+                        (&raw const entity_gl_quads[0][0].uv).addr(),
+                    );
+                    gl::array::normal_pointer(
+                        NormalType::F32,
+                        size_of::<EntityGlVertex>().try_into().unwrap(),
+                        (&raw const entity_gl_quads[0][0].normal).addr(),
                     );
                     gl::array::draw(
                         gl::ShapeMode::Quads,
                         0,
-                        (entity_quads.len() * 4).try_into().unwrap(),
+                        (entity_gl_quads.len() * 4).try_into().unwrap(),
                     );
                 }
+                // Cleanup.
+                gl::program_arb::bind(ProgramType::VertexProgram, None);
+                gl::disable(gl::EnableComponent::VertexProgramARB);
+                gl::client_state::disable(ClientArrayType::NormalArray);
             }
             // Render sky.
             {

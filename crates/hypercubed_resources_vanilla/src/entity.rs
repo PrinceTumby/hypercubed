@@ -22,8 +22,9 @@ pub fn load_data() -> anyhow::Result<EntityData> {
 }
 
 fn load_model_textures(atlas_builder: &mut resources::texture::AtlasBuilder) -> anyhow::Result<()> {
-    // Boats.
     models::oak_boat::load_textures(atlas_builder)
         .context("Error while loading oak boat textures")?;
+    models::pig::load_textures(atlas_builder)
+        .context("Error while loading pig textures")?;
     Ok(())
 }

@@ -1,5 +1,5 @@
-use ahash::AHasher;
-use core::hash::Hasher;
+use core::hash::{BuildHasher, Hasher};
+
 use fixedbitset::FixedBitSet;
 use hypercubed_core::types::AxisDirection;
 use portable_std::{Arc, FastHashMap};
@@ -214,7 +214,7 @@ pub fn process_subchunk_models(
                     resources::block::blockstate::ModelData::Single(model_idx) => *model_idx,
                     resources::block::blockstate::ModelData::RandomChoice(models) => 'model_blk: {
                         // Find weight for model by hashed position.
-                        let mut block_hasher = AHasher::default();
+                        let mut block_hasher = foldhash::fast::FixedState::default().build_hasher();
                         block_hasher.write_i32(global_x_i32);
                         block_hasher.write_i32(global_y_i32);
                         block_hasher.write_i32(global_z_i32);

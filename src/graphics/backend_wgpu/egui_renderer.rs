@@ -1,14 +1,13 @@
 use super::{GraphicsResources, Texture, include_wesl_module};
-use ahash::AHashMap;
 use egui::{TextureId, epaint};
-use portable_std::Cow;
+use portable_std::{Cow, FastHashMap};
 use wgpu::util::DeviceExt as _;
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     texture_bind_group_layout: wgpu::BindGroupLayout,
-    textures: AHashMap<TextureId, TextureData>,
-    sampler_cache: AHashMap<epaint::textures::TextureOptions, wgpu::Sampler>,
+    textures: FastHashMap<TextureId, TextureData>,
+    sampler_cache: FastHashMap<epaint::textures::TextureOptions, wgpu::Sampler>,
     next_user_texture_id: u64,
 }
 
@@ -166,8 +165,8 @@ impl Renderer {
         Self {
             pipeline,
             texture_bind_group_layout,
-            textures: AHashMap::new(),
-            sampler_cache: AHashMap::new(),
+            textures: FastHashMap::default(),
+            sampler_cache: FastHashMap::default(),
             next_user_texture_id: 0,
         }
     }

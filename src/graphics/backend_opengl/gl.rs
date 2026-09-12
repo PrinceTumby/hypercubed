@@ -194,6 +194,7 @@ mod main_state {
             FaceCulling = 0x0B44,
             DepthTest = 0x0B71,
             AlphaTesting = 0x0BC0,
+            AutoNormal = 0x0D80,
             Texture2D = 0x0DE1,
             ScissorTest = 0x0C11,
             Blending = 0x0BE2,
@@ -341,6 +342,21 @@ pub mod array {
 
         #[gl = ["glDisableVertexAttribArray", "glDisableVertexAttribArrayARB"]]
         pub unsafe fn disable_attribute_array(index: GLuint);
+
+        #[gl = "glNormalPointer"]
+        pub unsafe fn normal_pointer(
+            normal_type: NormalType,
+            stride: GLsizei,
+            ptr: usize,
+        );
+
+        pub enum NormalType {
+            I8 = 0x1400,
+            I16 = 0x1402,
+            I32 = 0x1404,
+            F32 = 0x1406,
+            F64 = 0x140A,
+        }
 
         #[gl = "glDrawArrays"]
         pub unsafe fn draw(mode: ShapeMode, first: GLint, element_count: GLsizei);

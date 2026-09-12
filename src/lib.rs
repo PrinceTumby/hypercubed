@@ -61,11 +61,11 @@ use portable_std::{Arc, FastHashMap, FastHashSet, VecDeque};
 
 use crate::game::entity::EntityState;
 use crate::physics::PlayerPhysicsState;
+use crate::platform::libs::{egui, winit};
 use crate::portable_prelude::*;
 use crate::protocol::chunk as protocol_chunk;
 use crate::protocol::play::{Clientbound as ClientboundPacket, GameMode, TickingState, WorldTime};
 use crate::protocol::prelude::*;
-use crate::platform::libs::{egui, winit};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
@@ -203,7 +203,7 @@ impl App {
             thread_pool.execute(move || {
                 let tracy_client = tracing_tracy::client::Client::running().unwrap();
                 let thread_name = format!("Thread Pool Worker {thread_i}");
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::thread::sleep(core::time::Duration::from_millis(500));
                 tracy_client.set_thread_name(&thread_name);
             });
         }
@@ -244,10 +244,12 @@ impl ApplicationHandler for App {
         );
         let display = event_loop.owned_display_handle();
         // Load resources, and setup a graphics backend.
-        let resource_data =
-            platform::load_resource_data().expect("Error while loading resource data");
+        let resource_data = platform::load_resource_data()
+            .context("Error while loading resource data")
+            .unwrap();
         let entity_state = EntityState::new_vanilla(&resource_data.entity_data.atlas)
-            .expect("Error while creating entity state");
+            .context("Error while creating entity state")
+            .unwrap();
         self.entity_state = Some(entity_state);
         cfg_select! {
             any(feature = "platform_winit", feature = "platform_linux_drm") => {
@@ -421,6 +423,7 @@ impl ApplicationHandler for App {
         }
         let window = self.window.as_ref().unwrap();
         let graphics_backend = self.graphics_backend.as_mut().unwrap();
+        let entity_state = self.entity_state.as_mut().unwrap();
         let scale_factor = window.scale_factor();
         let new_time = Instant::now();
         let delta_time_f64 =
@@ -431,7 +434,7 @@ impl ApplicationHandler for App {
         }
         self.current_time_s += delta_time_f64;
         let delta_time = delta_time_f64 as f32;
-        // Debug GUI
+        // Debug GUI.
         #[cfg(feature = "full_std")]
         let debug::DebugRenderOutput {
             egui_output,
@@ -465,10 +468,15 @@ impl ApplicationHandler for App {
             _ = window
                 .set_cursor_position(winit::dpi::PhysicalPosition::new(physical_x, physical_y));
         }
+        // Compact entity storage down.
+        // Improves performance if a large number of entities have recently been deleted.
+        entity_state.compact_if_needed();
         // Main rendering.
+        let entity_render_quads = entity_state.render();
         let maybe_new_debug_output = graphics_backend
             .render(
                 &self.play_state,
+                &entity_render_quads,
                 self.current_time_s,
                 &self.egui_ctx,
                 egui_output,
@@ -489,6 +497,7 @@ impl ApplicationHandler for App {
             #[cfg(feature = "full_std")]
             &self.thread_pool,
             &mut self.play_state,
+            entity_state,
             graphics_backend.as_mut(),
             &mut self.debug_state,
             &mut self.input_state,

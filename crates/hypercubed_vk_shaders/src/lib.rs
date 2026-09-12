@@ -30,10 +30,11 @@ pub struct RawRenderInfo {
 }
 
 pub mod shader_modules {
-    use ahash::AHashMap;
-    use anyhow::Context;
-    use once_cell::sync::Lazy;
     use std::sync::{Arc, Mutex};
+
+    use anyhow::Context;
+    use foldhash::{HashMap, HashMapExt};
+    use once_cell::sync::Lazy;
     use vulkano_prelude::*;
 
     // We have to do a little hacking here to get the embedded SPIR-V module to be u32 aligned, for
@@ -44,9 +45,9 @@ pub mod shader_modules {
         bytes: Bytes,
     }
 
-    static RAW_MODULES: Lazy<AHashMap<&'static str, &'static SpvAlignedBytes<[u8]>>> =
+    static RAW_MODULES: Lazy<HashMap<&'static str, &'static SpvAlignedBytes<[u8]>>> =
         Lazy::new(|| {
-            let mut map = AHashMap::new();
+            let mut map = HashMap::new();
             macro_rules! generate_module_name {
                 ($x:literal) => {
                     $x
@@ -103,8 +104,8 @@ pub mod shader_modules {
         module: &'static str,
         entry_point: &'static str,
     ) -> VulkanEntryPoint {
-        static LOADED_MODULES: Lazy<Mutex<AHashMap<&'static str, Arc<VulkanShaderModule>>>> =
-            Lazy::new(|| Mutex::new(AHashMap::new()));
+        static LOADED_MODULES: Lazy<Mutex<HashMap<&'static str, Arc<VulkanShaderModule>>>> =
+            Lazy::new(|| Mutex::new(HashMap::new()));
         LOADED_MODULES
             .lock()
             .unwrap()

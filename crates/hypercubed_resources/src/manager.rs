@@ -4,10 +4,9 @@ use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::sync::RwLock;
 
-use ahash::{AHashMap, AHashSet};
 use anyhow::anyhow;
 use once_cell::sync::Lazy;
-use portable_std::{Arc, Cow};
+use portable_std::{Arc, Cow, FastHashMap, FastHashSet};
 use zip::ZipArchive;
 
 use super::Identifier;
@@ -90,9 +89,10 @@ static MAIN_FILESYSTEM: Lazy<MainFilesystem> = Lazy::new(|| {
 });
 
 static GLOBAL_OVERLAY_SET: Lazy<RwLock<GlobalOverlays>> = Lazy::new(|| {
-    let internal_blockstates: AHashSet<_> = internal_overlay::BLOCKSTATES.keys().cloned().collect();
-    let internal_models: AHashSet<_> = internal_overlay::MODELS.keys().cloned().collect();
-    let internal_textures: AHashSet<_> = internal_overlay::TEXTURES.keys().cloned().collect();
+    let internal_blockstates: FastHashSet<_> =
+        internal_overlay::BLOCKSTATES.keys().cloned().collect();
+    let internal_models: FastHashSet<_> = internal_overlay::MODELS.keys().cloned().collect();
+    let internal_textures: FastHashSet<_> = internal_overlay::TEXTURES.keys().cloned().collect();
     let internal_filesystem_overlay = FilesystemOverlay {
         filesystem: Box::new(internal_overlay::InternalOverlayFilesystem),
         blockstates: internal_blockstates,
@@ -119,17 +119,17 @@ enum MainFilesystem {
 
 struct GlobalOverlays {
     pub filesystems: Vec<Box<dyn Filesystem>>,
-    pub blockstates: AHashMap<Identifier, usize>,
-    pub models: AHashMap<Identifier, usize>,
-    pub textures: AHashMap<Identifier, usize>,
+    pub blockstates: FastHashMap<Identifier, usize>,
+    pub models: FastHashMap<Identifier, usize>,
+    pub textures: FastHashMap<Identifier, usize>,
 }
 
 impl GlobalOverlays {
     pub fn new(filesystem_overlays: impl Iterator<Item = FilesystemOverlay>) -> Self {
         let mut filesystems = Vec::new();
-        let mut blockstates = AHashMap::new();
-        let mut models = AHashMap::new();
-        let mut textures = AHashMap::new();
+        let mut blockstates = FastHashMap::default();
+        let mut models = FastHashMap::default();
+        let mut textures = FastHashMap::default();
         for filesystem_overlay in filesystem_overlays {
             let filesystem_index = filesystems.len();
             filesystems.push(filesystem_overlay.filesystem);
@@ -160,7 +160,7 @@ impl GlobalOverlays {
 
 struct FilesystemOverlay {
     pub filesystem: Box<dyn Filesystem>,
-    pub blockstates: AHashSet<Identifier>,
-    pub models: AHashSet<Identifier>,
-    pub textures: AHashSet<Identifier>,
+    pub blockstates: FastHashSet<Identifier>,
+    pub models: FastHashSet<Identifier>,
+    pub textures: FastHashSet<Identifier>,
 }

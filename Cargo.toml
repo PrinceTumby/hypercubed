@@ -12,7 +12,6 @@ members = [
 ]
 
 [workspace.dependencies]
-ahash = { version = "0.8", default-features = false }
 anyhow = { version = "1", default-features = false }
 bimap = { version = "0.6", default-features = false, features = ["serde"] }
 bitfield = "0.19"
@@ -150,8 +149,6 @@ mini_std = [
     "dep:resources_vanilla",
     "dep:threadpool",
     # Dependency features
-    "ahash/default",
-    "ahash/serde",
     "anyhow/default",
     "bimap/default",
     "crab_nbt/default",
@@ -266,7 +263,6 @@ wesl = { workspace = true, optional = true }
 
 [dependencies]
 aes = "0.9"
-ahash.workspace = true
 anyhow = { version = "1", default-features = false }
 bimap.workspace = true
 bitfield.workspace = true

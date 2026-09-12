@@ -1,5 +1,7 @@
 #[rustfmt::skip]
 pub mod oak_boat;
+#[rustfmt::skip]
+pub mod pig;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]

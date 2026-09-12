@@ -1,7 +1,6 @@
-use ahash::AHashMap;
 use anyhow::anyhow;
 use once_cell::sync::Lazy;
-use portable_std::Cow;
+use portable_std::{Cow, FastHashMap};
 
 use super::{Filesystem, ResourceType};
 use crate::Identifier;
@@ -27,8 +26,8 @@ macro_rules! make_entry_macro {
     };
 }
 
-pub static BLOCKSTATES: Lazy<AHashMap<Identifier, &[u8]>> = Lazy::new(|| {
-    let mut map = AHashMap::new();
+pub static BLOCKSTATES: Lazy<FastHashMap<Identifier, &[u8]>> = Lazy::new(|| {
+    let mut map = FastHashMap::default();
     make_entry_macro!(map, "blockstates", ".json");
     entry!("white_bed");
     entry!("orange_bed");
@@ -50,8 +49,8 @@ pub static BLOCKSTATES: Lazy<AHashMap<Identifier, &[u8]>> = Lazy::new(|| {
     map
 });
 
-pub static MODELS: Lazy<AHashMap<Identifier, &[u8]>> = Lazy::new(|| {
-    let mut map = AHashMap::new();
+pub static MODELS: Lazy<FastHashMap<Identifier, &[u8]>> = Lazy::new(|| {
+    let mut map = FastHashMap::default();
     make_entry_macro!(map, "models", ".json");
     entry!("block/template_bed_head");
     entry!("block/template_bed_foot");
@@ -93,9 +92,11 @@ pub static MODELS: Lazy<AHashMap<Identifier, &[u8]>> = Lazy::new(|| {
     map
 });
 
-pub static TEXTURES: Lazy<AHashMap<Identifier, &'static [u8]>> = Lazy::new(|| AHashMap::new());
+pub static TEXTURES: Lazy<FastHashMap<Identifier, &'static [u8]>> =
+    Lazy::new(|| FastHashMap::default());
 
-pub static TEXTURE_METAS: Lazy<AHashMap<Identifier, &'static [u8]>> = Lazy::new(|| AHashMap::new());
+pub static TEXTURE_METAS: Lazy<FastHashMap<Identifier, &'static [u8]>> =
+    Lazy::new(|| FastHashMap::default());
 
 pub struct InternalOverlayFilesystem;
 

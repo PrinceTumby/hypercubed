@@ -2,20 +2,36 @@
 OPTION ARB_position_invariant;
 
 ATTRIB in_pos = vertex.position;
-ATTRIB in_tint_colour_and_dir_light = vertex.color;
 ATTRIB in_atlas_texcoord = vertex.texcoord;
+ATTRIB in_normal = vertex.normal;
 
 # `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`
 PARAM inv_atlas_texture_dims = program.local[0];
+PARAM light_source_dir = {0.365148, 0.912871, 0.182574};
 
 OUTPUT out_colour = result.color;
 OUTPUT out_atlas_texcoord = result.texcoord[0];
+
+TEMP lighting_temp;
 
 # Position calculation is handled by fixed-function transformation, so nothing to do here.
 
 # Divide texture coordinate by atlas texture dimensions.
 MUL out_atlas_texcoord, inv_atlas_texture_dims, in_atlas_texcoord;
 
-MOV out_colour, 1.0;
+# Calculate directional lighting.
+
+# Normalise the input normal.
+DP3 lighting_temp.w, in_normal, in_normal;
+RSQ lighting_temp.w, lighting_temp.w;
+MUL lighting_temp.xyz, lighting_temp.w, in_normal;
+
+# Calculate the lighting coefficient.
+DP3 lighting_temp.w, lighting_temp, light_source_dir;
+MAD lighting_temp.w, lighting_temp.w, 0.3, 0.7;
+
+# Apply the lighting coefficient to the output colour.
+MOV out_colour.xyz, lighting_temp.w;
+MOV out_colour.w, 1.0;
 
 END

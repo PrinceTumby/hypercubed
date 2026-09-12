@@ -944,7 +944,11 @@ pub struct Angle(u8);
 
 impl Angle {
     pub const fn degrees(&self) -> f32 {
-        self.0 as f32 * (256.0 / 360.0)
+        self.0 as f32 * (360.0 / 256.0)
+    }
+
+    pub const fn radians(&self) -> f32 {
+        self.0 as f32 * (core::f32::consts::TAU / 256.0)
     }
 }
 

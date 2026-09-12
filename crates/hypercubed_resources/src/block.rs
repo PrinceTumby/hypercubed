@@ -154,7 +154,7 @@ impl Registry {
             blockstate.extra_info = default_extra_info.clone();
             'case_loop: for (info_modifier, property_set) in extra_info_modifiers_iter.clone() {
                 for (k, v) in property_set {
-                    let property_value = blockstate.properties.get(k).with_context(|| {
+                    let property_value = blockstate.properties.get(*k).with_context(|| {
                         format!(
                             "{} \"{}\" {} {:?}",
                             "Extra info property",
@@ -263,7 +263,7 @@ impl Registry {
             blockstate.extra_info = default_extra_info.clone();
             'case_loop: for (info_modifier, property_set) in extra_info_modifiers_iter.clone() {
                 for (k, v) in property_set {
-                    if blockstate.properties[k] != **v {
+                    if blockstate.properties[*k] != **v {
                         continue 'case_loop;
                     }
                 }
@@ -348,7 +348,7 @@ impl Registry {
             blockstate.extra_info = default_extra_info.clone();
             'case_loop: for (info_modifier, property_set) in extra_info_modifiers_iter.clone() {
                 for (k, v) in property_set {
-                    if blockstate.properties[k] != **v {
+                    if blockstate.properties[*k] != **v {
                         continue 'case_loop;
                     }
                 }

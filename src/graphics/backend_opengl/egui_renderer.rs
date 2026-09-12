@@ -1,6 +1,5 @@
 use super::gl;
 use crate::platform::libs::winit;
-use ahash::AHashMap;
 use image::RgbaImage;
 use portable_std::FastHashMap;
 
@@ -137,7 +136,7 @@ struct Vertex {
 impl Renderer {
     pub fn new() -> Self {
         Self {
-            images: AHashMap::new(),
+            images: FastHashMap::new(),
             next_user_image_id: 0,
         }
     }
@@ -263,10 +262,13 @@ impl Renderer {
             gl::matrix::switch_mode(MatrixMode::Projection);
             gl::matrix::load_f32_matrix(screen_projection_matrix.as_matrix().as_ref());
             // Render meshes.
+            let mut current_texture_id: Option<egui::TextureId> = None;
             for mesh in meshes {
                 let texture = &self.images[&mesh.texture_id];
-                // Set texture.
-                texture.bind();
+                if current_texture_id != Some(mesh.texture_id) {
+                    texture.bind();
+                    current_texture_id = Some(mesh.texture_id);
+                }
                 // Set clipping rect.
                 {
                     // Adapted from the code for `egui_glow`'s `set_clip_rect` function.

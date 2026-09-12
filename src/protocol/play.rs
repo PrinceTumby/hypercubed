@@ -2,6 +2,7 @@ pub mod crafting;
 pub mod entity_metadata;
 pub mod particle;
 
+use nalgebra::{Point3, Vector3};
 use nom::Parser;
 use nom::bytes::complete::take;
 use nom::combinator::{cond, verify};
@@ -127,7 +128,7 @@ pub enum Clientbound {
     UpdatePlayerInfo(UpdatePlayerInfo) = 0x3E,
     SynchronizePlayerPosition(SynchronizePlayerPosition) = 0x40,
     UpdateRecipeBook(UpdateRecipeBook) = 0x41,
-    RemoveEntities(Vec<VarInt>) = 0x42,
+    RemoveEntities(Vec<EntityId>) = 0x42,
     SetHeadRotation(SetHeadRotation) = 0x48,
     UpdateSectionBlocks(UpdateSectionBlocks) = 0x49,
     ServerData(ServerData) = 0x4B,
@@ -151,6 +152,10 @@ pub enum Clientbound {
         food: VarInt,
         food_saturation: f32,
     } = 0x5D,
+    SetPassengers {
+        entity_id: EntityId,
+        passengers: Vec<EntityId>,
+    } = 0x5F,
     UpdateTime(WorldTime) = 0x64,
     PlaySoundEffect(PlaySoundEffect) = 0x68,
     SystemChatMessage {
@@ -166,13 +171,7 @@ pub enum Clientbound {
         collector_entity_id: EntityId,
         count: VarInt,
     } = 0x6F,
-    TeleportEntity {
-        id: EntityId,
-        coords: [f64; 3],
-        yaw: Angle,
-        pitch: Angle,
-        on_ground: bool,
-    } = 0x70,
+    TeleportEntity(TeleportEntity) = 0x70,
     SetTickingState(TickingState) = 0x71,
     StepTicks(VarInt) = 0x72,
     UpdateAdvancements(UpdateAdvancements) = 0x74,
@@ -351,23 +350,56 @@ pub struct UpdateEntityPosition {
     pub on_ground: bool,
 }
 
+impl UpdateEntityPosition {
+    pub fn get_delta_vec(&self) -> Vector3<f64> {
+        Vector3::new(self.delta_x, self.delta_y, self.delta_z)
+            .cast::<f64>()
+            .map(|n| n * (1.0 / 4096.0))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct UpdateEntityRotation {
+    pub entity_id: EntityId,
+    pub new_yaw: Angle,
+    pub new_pitch: Angle,
+    pub on_ground: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct UpdateEntityPositionAndRotation {
     pub entity_id: EntityId,
     pub delta_x: i16,
     pub delta_y: i16,
     pub delta_z: i16,
-    pub yaw: Angle,
-    pub pitch: Angle,
+    pub new_yaw: Angle,
+    pub new_pitch: Angle,
     pub on_ground: bool,
 }
 
+impl UpdateEntityPositionAndRotation {
+    pub fn get_delta_vec(&self) -> Vector3<f64> {
+        Vector3::new(self.delta_x, self.delta_y, self.delta_z)
+            .cast::<f64>()
+            .map(|n| n * (1.0 / 4096.0))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
-pub struct UpdateEntityRotation {
+pub struct TeleportEntity {
     pub entity_id: EntityId,
-    pub yaw: Angle,
-    pub pitch: Angle,
+    pub new_x: f64,
+    pub new_y: f64,
+    pub new_z: f64,
+    pub new_yaw: Angle,
+    pub new_pitch: Angle,
     pub on_ground: bool,
+}
+
+impl TeleportEntity {
+    pub fn get_new_pos(&self) -> Point3<f64> {
+        Point3::new(self.new_x, self.new_y, self.new_z)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

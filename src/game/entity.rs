@@ -1,15 +1,20 @@
 pub mod boat;
+pub mod pig;
 
 use anyhow::{Context, ensure};
 use hypercubed_entity_models::EntityRenderQuad;
+use nalgebra::{Point3, Vector3};
 use portable_std::FastHashMap;
 use resources::{RegistryData, RegistryIndex, identifier};
 
 use crate::protocol::basic_types::EntityId;
-use crate::protocol::play::SpawnEntityInfo;
+use crate::protocol::play::{
+    SpawnEntityInfo, TeleportEntity, UpdateEntityPosition, UpdateEntityPositionAndRotation,
+    UpdateEntityRotation,
+};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EntityHandle(usize);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EntityHandle(pub usize);
 
 #[derive(Debug)]
 pub struct ActiveEntity {
@@ -19,6 +24,39 @@ pub struct ActiveEntity {
 
 pub trait EntityTypeManager {
     fn spawn_entity(&mut self, entity_info: &SpawnEntityInfo) -> anyhow::Result<EntityHandle>;
+
+    /// May panic if the provided handle is invalid.
+    fn remove_entity(&mut self, handle: EntityHandle);
+
+    /// May panic if the provided handle is invalid.
+    fn update_entity_pos(&mut self, handle: &EntityHandle, pos_diff: Vector3<f64>);
+
+    /// May panic if the provided handle is invalid.
+    fn update_entity_rot(&mut self, handle: &EntityHandle, new_yaw_deg: f32, new_pitch_deg: f32);
+
+    /// May panic if the provided handle is invalid.
+    fn update_entity_pos_and_rot(
+        &mut self,
+        handle: &EntityHandle,
+        pos_diff: Vector3<f64>,
+        new_yaw_deg: f32,
+        new_pitch_deg: f32,
+    );
+
+    /// May panic if the provided handle is invalid.
+    fn teleport_entity(
+        &mut self,
+        handle: &EntityHandle,
+        new_pos: Point3<f64>,
+        new_yaw_deg: f32,
+        new_pitch_deg: f32,
+    );
+
+    /// Allows the manager to comapact its internal storage, calling the provided function to remap
+    /// old to new entity handles.
+    ///
+    /// Panics if the remapping function is called with an invalid old entity handle.
+    fn compact_if_needed(&mut self, remap: &mut (dyn FnMut(EntityHandle, EntityHandle) + '_));
 
     // TODO: Visibility information.
     fn render_visible(&self, out_quads: &mut Vec<EntityRenderQuad>);
@@ -47,10 +85,98 @@ impl EntityState {
             .get_mut(manager)
             .context("Unknown entity manager")?
             .spawn_entity(entity_info)?;
-        ensure!(!self.entities.contains_key(&entity_info.id));
+        ensure!(
+            !self.entities.contains_key(&entity_info.id),
+            "Entity with ID {} already exists",
+            entity_info.id.0,
+        );
         self.entities
             .insert(entity_info.id, ActiveEntity { manager, handle });
         Ok(())
+    }
+
+    pub fn remove_entity(&mut self, entity_id: EntityId) -> anyhow::Result<()> {
+        let active_entity = self.entities.remove(&entity_id).context("Unknown entity")?;
+        self.manager_registry[active_entity.manager].remove_entity(active_entity.handle);
+        Ok(())
+    }
+
+    pub fn update_entity_pos(&mut self, new_pos_info: &UpdateEntityPosition) -> anyhow::Result<()> {
+        let active_entity = self
+            .entities
+            .get(&new_pos_info.entity_id)
+            .context("Unknown entity")?;
+        self.manager_registry[active_entity.manager]
+            .update_entity_pos(&active_entity.handle, new_pos_info.get_delta_vec());
+        Ok(())
+    }
+
+    pub fn update_entity_rot(&mut self, new_rot_info: &UpdateEntityRotation) -> anyhow::Result<()> {
+        let active_entity = self
+            .entities
+            .get(&new_rot_info.entity_id)
+            .context("Unknown entity")?;
+        self.manager_registry[active_entity.manager].update_entity_rot(
+            &active_entity.handle,
+            new_rot_info.new_yaw.degrees(),
+            new_rot_info.new_pitch.degrees(),
+        );
+        Ok(())
+    }
+
+    pub fn update_entity_pos_and_rot(
+        &mut self,
+        new_pos_and_rot_info: &UpdateEntityPositionAndRotation,
+    ) -> anyhow::Result<()> {
+        let active_entity = self
+            .entities
+            .get(&new_pos_and_rot_info.entity_id)
+            .context("Unknown entity")?;
+        self.manager_registry[active_entity.manager].update_entity_pos_and_rot(
+            &active_entity.handle,
+            new_pos_and_rot_info.get_delta_vec(),
+            new_pos_and_rot_info.new_yaw.degrees(),
+            new_pos_and_rot_info.new_pitch.degrees(),
+        );
+        Ok(())
+    }
+
+    pub fn teleport_entity(&mut self, teleport_info: &TeleportEntity) -> anyhow::Result<()> {
+        let active_entity = self
+            .entities
+            .get(&teleport_info.entity_id)
+            .context("Unknown entity")?;
+        self.manager_registry[active_entity.manager].teleport_entity(
+            &active_entity.handle,
+            teleport_info.get_new_pos(),
+            teleport_info.new_yaw.degrees(),
+            teleport_info.new_pitch.degrees(),
+        );
+        Ok(())
+    }
+
+    pub fn compact_if_needed(&mut self) {
+        for manager in &mut self.manager_registry.entries {
+            manager.compact_if_needed(&mut |old_handle, new_handle| {
+                // FIXME: Switch to using a bidirectional map.
+                let active_entity = self
+                    .entities
+                    .values_mut()
+                    .find(|entity| entity.handle == old_handle)
+                    .unwrap();
+                active_entity.handle = new_handle;
+            });
+        }
+    }
+
+    // TODO: Visibility information.
+    #[tracing::instrument(skip_all)]
+    pub fn render(&self) -> Vec<EntityRenderQuad> {
+        let mut out_quads: Vec<EntityRenderQuad> = Vec::new();
+        for manager in &self.manager_registry.entries {
+            manager.render_visible(&mut out_quads);
+        }
+        out_quads
     }
 }
 
@@ -70,8 +196,10 @@ fn register_vanilla_managers(
     registry.register(identifier!("block_display"), Box::new(DummyManager));
     registry.register(
         identifier!("boat"),
-        Box::new(boat::BoatManager::new(entity_texture_atlas)
-            .context("Error while registering boat manager")?),
+        Box::new(
+            boat::BoatManager::new(entity_texture_atlas)
+                .context("Error while registering boat manager")?,
+        ),
     );
     registry.register(identifier!("bogged"), Box::new(DummyManager));
     registry.register(identifier!("breeze"), Box::new(DummyManager));
@@ -142,7 +270,13 @@ fn register_vanilla_managers(
     registry.register(identifier!("panda"), Box::new(DummyManager));
     registry.register(identifier!("parrot"), Box::new(DummyManager));
     registry.register(identifier!("phantom"), Box::new(DummyManager));
-    registry.register(identifier!("pig"), Box::new(DummyManager));
+    registry.register(
+        identifier!("pig"),
+        Box::new(
+            pig::Manager::new(entity_texture_atlas)
+                .context("Error while registering pig manager")?,
+        ),
+    );
     registry.register(identifier!("piglin"), Box::new(DummyManager));
     registry.register(identifier!("piglin_brute"), Box::new(DummyManager));
     registry.register(identifier!("pillager"), Box::new(DummyManager));
@@ -205,6 +339,38 @@ impl EntityTypeManager for DummyManager {
     fn spawn_entity(&mut self, _entity_info: &SpawnEntityInfo) -> anyhow::Result<EntityHandle> {
         Ok(EntityHandle(0))
     }
+
+    fn remove_entity(&mut self, _handle: EntityHandle) {}
+
+    fn update_entity_pos(&mut self, _handle: &EntityHandle, _pos_diff: Vector3<f64>) {}
+
+    fn update_entity_rot(
+        &mut self,
+        _handle: &EntityHandle,
+        _new_yaw_deg: f32,
+        _new_pitch_deg: f32,
+    ) {
+    }
+
+    fn update_entity_pos_and_rot(
+        &mut self,
+        _handle: &EntityHandle,
+        _pos_diff: Vector3<f64>,
+        _new_yaw_deg: f32,
+        _new_pitch_deg: f32,
+    ) {
+    }
+
+    fn teleport_entity(
+        &mut self,
+        _handle: &EntityHandle,
+        _new_pos: Point3<f64>,
+        _new_yaw_deg: f32,
+        _new_pitch_deg: f32,
+    ) {
+    }
+
+    fn compact_if_needed(&mut self, _remap: &mut (dyn FnMut(EntityHandle, EntityHandle) + '_)) {}
 
     fn render_visible(&self, _out_quads: &mut Vec<EntityRenderQuad>) {}
 }

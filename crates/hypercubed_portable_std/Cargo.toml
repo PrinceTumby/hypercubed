@@ -9,12 +9,10 @@ std = [
     # Dependencies
     "dep:string_cache",
     # Dependency features
-    "ahash/default",
     "foldhash/default",
 ]
 
 [dependencies]
-ahash.workspace = true
 embedded-io.workspace = true
 foldhash.workspace = true
 hashbrown.workspace = true

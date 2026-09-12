@@ -10,8 +10,9 @@ pub use std::borrow::Cow;
 pub use std::collections::{BTreeMap, HashMap, VecDeque};
 pub use std::sync::{Arc, Mutex, mpsc};
 
-// TODO: Switch to using `rapidhash`.
-pub use ahash::{AHashMap as FastHashMap, AHashSet as FastHashSet};
-pub use std::collections::hash_map::Entry as FastHashMapEntry;
+// This currently uses `foldhash` as the hasher, which should be pretty fast.
+// TODO: Consider switching to using `rapidhash`.
+pub use hashbrown::hash_map::Entry as FastHashMapEntry;
+pub use hashbrown::{HashMap as FastHashMap, HashSet as FastHashSet};
 
 pub use string_cache::DefaultAtom as Atom;

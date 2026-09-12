@@ -10,8 +10,6 @@ std = [
     "dep:image",
     "dep:zip",
     # Dependency features
-    "ahash/default",
-    "ahash/serde",
     "anyhow/default",
     "bimap/default",
     "hypercubed_core/default",
@@ -24,7 +22,6 @@ std = [
 use_embedded_cache = []
 
 [dependencies]
-ahash.workspace = true
 anyhow.workspace = true
 bimap.workspace = true
 bitfield.workspace = true
