@@ -2,6 +2,7 @@ pub mod crafting;
 pub mod entity_metadata;
 pub mod particle;
 
+use hypercubed_core::types::UnitAngleU8;
 use nalgebra::{Point3, Vector3};
 use nom::Parser;
 use nom::bytes::complete::take;
@@ -186,9 +187,9 @@ pub struct SpawnEntityInfo {
     pub uuid: Uuid,
     pub entity_type: RegistryIndex,
     pub coords: [f64; 3],
-    pub pitch: Angle,
-    pub yaw: Angle,
-    pub head_yaw: Angle,
+    pub pitch: UnitAngleU8,
+    pub yaw: UnitAngleU8,
+    pub head_yaw: UnitAngleU8,
     pub data: VarInt,
     pub velocity: [i16; 3],
 }
@@ -361,8 +362,8 @@ impl UpdateEntityPosition {
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct UpdateEntityRotation {
     pub entity_id: EntityId,
-    pub new_yaw: Angle,
-    pub new_pitch: Angle,
+    pub new_yaw: UnitAngleU8,
+    pub new_pitch: UnitAngleU8,
     pub on_ground: bool,
 }
 
@@ -372,8 +373,8 @@ pub struct UpdateEntityPositionAndRotation {
     pub delta_x: i16,
     pub delta_y: i16,
     pub delta_z: i16,
-    pub new_yaw: Angle,
-    pub new_pitch: Angle,
+    pub new_yaw: UnitAngleU8,
+    pub new_pitch: UnitAngleU8,
     pub on_ground: bool,
 }
 
@@ -391,8 +392,8 @@ pub struct TeleportEntity {
     pub new_x: f64,
     pub new_y: f64,
     pub new_z: f64,
-    pub new_yaw: Angle,
-    pub new_pitch: Angle,
+    pub new_yaw: UnitAngleU8,
+    pub new_pitch: UnitAngleU8,
     pub on_ground: bool,
 }
 
@@ -844,13 +845,13 @@ impl Deserialize for SynchronizePlayerPosition {
             false => PositionChange::Absolute(z),
             true => PositionChange::Relative(z),
         };
-        let yaw = match flags & 0b01000 != 0 {
-            false => RotationChange::Absolute(yaw),
-            true => RotationChange::Relative(yaw),
-        };
-        let pitch = match flags & 0b10000 != 0 {
+        let pitch = match flags & 0b01000 != 0 {
             false => RotationChange::Absolute(pitch),
             true => RotationChange::Relative(pitch),
+        };
+        let yaw = match flags & 0b10000 != 0 {
+            false => RotationChange::Absolute(yaw),
+            true => RotationChange::Relative(yaw),
         };
         Ok((
             rest,
@@ -972,7 +973,7 @@ impl Deserialize for UpdateRecipeBookAction {
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct SetHeadRotation {
     pub entity_id: VarInt,
-    pub head_yaw: Angle,
+    pub head_yaw: UnitAngleU8,
 }
 
 #[derive(Clone, Debug)]

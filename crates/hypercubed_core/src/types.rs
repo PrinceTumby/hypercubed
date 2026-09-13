@@ -91,3 +91,71 @@ impl PercentageF32 {
         self.0
     }
 }
+
+/// A floating-point value in the range `0.0..360.0`, representing an angle in degrees.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct UnitAngleF32(f32);
+
+impl UnitAngleF32 {
+    #[inline]
+    pub fn from_unwrapped_degrees_f32(x: f32) -> Self {
+        Self(x.rem_euclid(360.0))
+    }
+
+    #[inline]
+    pub const fn as_degrees_f32(&self) -> f32 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn to_degrees_f32(self) -> f32 {
+        self.0
+    }
+}
+
+/// A value in the range `0..=255`, representing an angle as steps of 1/256 of a full turn.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UnitAngleU8(u8);
+
+impl UnitAngleU8 {
+    #[inline]
+    pub const fn from_raw(x: u8) -> Self {
+        Self(x)
+    }
+
+    #[inline]
+    pub const fn as_unit_angle_f32(&self) -> UnitAngleF32 {
+        self.to_unit_angle_f32()
+    }
+
+    #[inline]
+    pub const fn to_unit_angle_f32(self) -> UnitAngleF32 {
+        UnitAngleF32(self.to_degrees_f32())
+    }
+
+    /// Returns an angle in the range `0.0..360.0`.
+    #[inline]
+    pub const fn as_degrees_f32(&self) -> f32 {
+        self.to_degrees_f32()
+    }
+
+    /// Returns an angle in the range `0.0..360.0`.
+    #[inline]
+    pub const fn to_degrees_f32(&self) -> f32 {
+        self.0 as f32 * (360.0 / 256.0)
+    }
+
+    /// Returns an angle in the range `0.0..TAU`.
+    #[inline]
+    pub const fn as_radians_f32(&self) -> f32 {
+        self.to_radians_f32()
+    }
+
+    /// Returns an angle in the range `0.0..TAU`.
+    #[inline]
+    pub const fn to_radians_f32(&self) -> f32 {
+        self.0 as f32 * (core::f32::consts::TAU / 256.0)
+    }
+}

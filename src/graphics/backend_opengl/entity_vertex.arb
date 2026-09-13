@@ -7,7 +7,7 @@ ATTRIB in_normal = vertex.normal;
 
 # `[1.0 / Atlas Width, 1.0 / Atlas Height, 1.0, 1.0]`
 PARAM inv_atlas_texture_dims = program.local[0];
-PARAM light_source_dir = {0.365148, 0.912871, 0.182574};
+PARAM LIGHT_SOURCE_DIR = {0.365148, 0.912871, 0.182574};
 
 OUTPUT out_colour = result.color;
 OUTPUT out_atlas_texcoord = result.texcoord[0];
@@ -27,7 +27,7 @@ RSQ lighting_temp.w, lighting_temp.w;
 MUL lighting_temp.xyz, lighting_temp.w, in_normal;
 
 # Calculate the lighting coefficient.
-DP3 lighting_temp.w, lighting_temp, light_source_dir;
+DP3 lighting_temp.w, lighting_temp, LIGHT_SOURCE_DIR;
 MAD lighting_temp.w, lighting_temp.w, 0.3, 0.7;
 
 # Apply the lighting coefficient to the output colour.

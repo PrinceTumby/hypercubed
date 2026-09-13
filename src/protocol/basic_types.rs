@@ -936,19 +936,13 @@ impl Deserialize for BitSet {
     }
 }
 
-// Angles, represented as steps of 1/256 of a full turn
+// Angles, represented as steps of 1/256 of a full turn.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[repr(transparent)]
-pub struct Angle(u8);
+pub use hypercubed_core::types::UnitAngleU8;
 
-impl Angle {
-    pub const fn degrees(&self) -> f32 {
-        self.0 as f32 * (360.0 / 256.0)
-    }
-
-    pub const fn radians(&self) -> f32 {
-        self.0 as f32 * (core::f32::consts::TAU / 256.0)
+impl Deserialize for UnitAngleU8 {
+    fn deserialize(input: InputSpan) -> IResult<Self> {
+        u8::deserialize(input).map(|(span, raw_angle)| (span, UnitAngleU8::from_raw(raw_angle)))
     }
 }
 

@@ -360,7 +360,7 @@ pub fn process_game_events(
                 // instead of interpolation making it look like we're moving fast
                 // over the span of a tick.
                 play_state.player_last_tick = player.clone();
-                // Let server know we've completed the teleport.
+                // Let the server know we've completed the teleport.
                 server_connection
                     .send_packet(serverbound_packets::ConfirmTeleportation {
                         id: pos_info.teleport_id,

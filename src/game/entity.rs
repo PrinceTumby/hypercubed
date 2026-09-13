@@ -2,10 +2,12 @@ pub mod boat;
 pub mod pig;
 
 use anyhow::{Context, ensure};
+use hypercubed_core::types::UnitAngleU8;
 use hypercubed_entity_models::EntityRenderQuad;
 use nalgebra::{Point3, Vector3};
 use portable_std::FastHashMap;
 use resources::{RegistryData, RegistryIndex, identifier};
+use slab::Slab;
 
 use crate::protocol::basic_types::EntityId;
 use crate::protocol::play::{
@@ -32,15 +34,20 @@ pub trait EntityTypeManager {
     fn update_entity_pos(&mut self, handle: &EntityHandle, pos_diff: Vector3<f64>);
 
     /// May panic if the provided handle is invalid.
-    fn update_entity_rot(&mut self, handle: &EntityHandle, new_yaw_deg: f32, new_pitch_deg: f32);
+    fn update_entity_rot(
+        &mut self,
+        handle: &EntityHandle,
+        new_yaw: UnitAngleU8,
+        new_pitch: UnitAngleU8,
+    );
 
     /// May panic if the provided handle is invalid.
     fn update_entity_pos_and_rot(
         &mut self,
         handle: &EntityHandle,
         pos_diff: Vector3<f64>,
-        new_yaw_deg: f32,
-        new_pitch_deg: f32,
+        new_yaw: UnitAngleU8,
+        new_pitch: UnitAngleU8,
     );
 
     /// May panic if the provided handle is invalid.
@@ -48,8 +55,8 @@ pub trait EntityTypeManager {
         &mut self,
         handle: &EntityHandle,
         new_pos: Point3<f64>,
-        new_yaw_deg: f32,
-        new_pitch_deg: f32,
+        new_yaw: UnitAngleU8,
+        new_pitch: UnitAngleU8,
     );
 
     /// Allows the manager to comapact its internal storage, calling the provided function to remap
@@ -118,8 +125,8 @@ impl EntityState {
             .context("Unknown entity")?;
         self.manager_registry[active_entity.manager].update_entity_rot(
             &active_entity.handle,
-            new_rot_info.new_yaw.degrees(),
-            new_rot_info.new_pitch.degrees(),
+            new_rot_info.new_yaw,
+            new_rot_info.new_pitch,
         );
         Ok(())
     }
@@ -135,8 +142,8 @@ impl EntityState {
         self.manager_registry[active_entity.manager].update_entity_pos_and_rot(
             &active_entity.handle,
             new_pos_and_rot_info.get_delta_vec(),
-            new_pos_and_rot_info.new_yaw.degrees(),
-            new_pos_and_rot_info.new_pitch.degrees(),
+            new_pos_and_rot_info.new_yaw,
+            new_pos_and_rot_info.new_pitch,
         );
         Ok(())
     }
@@ -149,8 +156,8 @@ impl EntityState {
         self.manager_registry[active_entity.manager].teleport_entity(
             &active_entity.handle,
             teleport_info.get_new_pos(),
-            teleport_info.new_yaw.degrees(),
-            teleport_info.new_pitch.degrees(),
+            teleport_info.new_yaw,
+            teleport_info.new_pitch,
         );
         Ok(())
     }
@@ -196,10 +203,8 @@ fn register_vanilla_managers(
     registry.register(identifier!("block_display"), Box::new(DummyManager));
     registry.register(
         identifier!("boat"),
-        Box::new(
-            boat::BoatManager::new(entity_texture_atlas)
-                .context("Error while registering boat manager")?,
-        ),
+        boat::BoatManager::new(entity_texture_atlas)
+            .context("Error while registering boat manager")?,
     );
     registry.register(identifier!("bogged"), Box::new(DummyManager));
     registry.register(identifier!("breeze"), Box::new(DummyManager));
@@ -272,10 +277,7 @@ fn register_vanilla_managers(
     registry.register(identifier!("phantom"), Box::new(DummyManager));
     registry.register(
         identifier!("pig"),
-        Box::new(
-            pig::Manager::new(entity_texture_atlas)
-                .context("Error while registering pig manager")?,
-        ),
+        pig::Manager::new(entity_texture_atlas).context("Error while registering pig manager")?,
     );
     registry.register(identifier!("piglin"), Box::new(DummyManager));
     registry.register(identifier!("piglin_brute"), Box::new(DummyManager));
@@ -332,6 +334,96 @@ fn register_vanilla_managers(
     Ok(())
 }
 
+trait SimpleEntity {
+    fn new(pos: Point3<f64>, yaw: UnitAngleU8, head_yaw: UnitAngleU8, pitch: UnitAngleU8) -> Self;
+
+    fn add_pos(&mut self, pos_diff: Vector3<f64>);
+
+    fn set_pos(&mut self, new_pos: Point3<f64>);
+
+    fn set_rot(&mut self, new_yaw: UnitAngleU8, new_pitch: UnitAngleU8);
+}
+
+trait SimpleEntityTypeManager {
+    type Entity: SimpleEntity;
+
+    fn get_entity_storage_mut(&mut self) -> &mut Slab<Self::Entity>;
+
+    fn render_visible(&self, out_quads: &mut Vec<EntityRenderQuad>);
+}
+
+impl<T: SimpleEntityTypeManager> EntityTypeManager for T {
+    fn spawn_entity(&mut self, entity_info: &SpawnEntityInfo) -> anyhow::Result<EntityHandle> {
+        let entities = self.get_entity_storage_mut();
+        let key = entities.insert(<Self as SimpleEntityTypeManager>::Entity::new(
+            Point3::from(entity_info.coords),
+            entity_info.yaw,
+            entity_info.head_yaw,
+            entity_info.pitch,
+        ));
+        Ok(EntityHandle(key))
+    }
+
+    fn remove_entity(&mut self, handle: EntityHandle) {
+        self.get_entity_storage_mut().remove(handle.0);
+    }
+
+    fn update_entity_pos(&mut self, handle: &EntityHandle, pos_diff: Vector3<f64>) {
+        self.get_entity_storage_mut()[handle.0].add_pos(pos_diff);
+    }
+
+    fn update_entity_rot(
+        &mut self,
+        handle: &EntityHandle,
+        new_yaw: UnitAngleU8,
+        new_pitch: UnitAngleU8,
+    ) {
+        self.get_entity_storage_mut()[handle.0].set_rot(new_yaw, new_pitch);
+    }
+
+    fn update_entity_pos_and_rot(
+        &mut self,
+        handle: &EntityHandle,
+        pos_diff: Vector3<f64>,
+        new_yaw: UnitAngleU8,
+        new_pitch: UnitAngleU8,
+    ) {
+        let entities = self.get_entity_storage_mut();
+        let entity = &mut entities[handle.0];
+        entity.add_pos(pos_diff);
+        entity.set_rot(new_yaw, new_pitch);
+    }
+
+    fn teleport_entity(
+        &mut self,
+        handle: &EntityHandle,
+        new_pos: Point3<f64>,
+        new_yaw: UnitAngleU8,
+        new_pitch: UnitAngleU8,
+    ) {
+        let entities = self.get_entity_storage_mut();
+        let entity = &mut entities[handle.0];
+        entity.set_pos(new_pos);
+        entity.set_rot(new_yaw, new_pitch);
+    }
+
+    fn compact_if_needed(&mut self, remap: &mut (dyn FnMut(EntityHandle, EntityHandle) + '_)) {
+        let entities = self.get_entity_storage_mut();
+        let compaction_needed = entities.len() as f32 * 1.25 <= entities.capacity() as f32;
+        if !compaction_needed {
+            return;
+        }
+        entities.compact(|_value, old_key, new_key| {
+            remap(EntityHandle(old_key), EntityHandle(new_key));
+            true
+        });
+    }
+
+    fn render_visible(&self, out_quads: &mut Vec<EntityRenderQuad>) {
+        SimpleEntityTypeManager::render_visible(self, out_quads)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DummyManager;
 
@@ -347,8 +439,8 @@ impl EntityTypeManager for DummyManager {
     fn update_entity_rot(
         &mut self,
         _handle: &EntityHandle,
-        _new_yaw_deg: f32,
-        _new_pitch_deg: f32,
+        _new_yaw_deg: UnitAngleU8,
+        _new_pitch_deg: UnitAngleU8,
     ) {
     }
 
@@ -356,8 +448,8 @@ impl EntityTypeManager for DummyManager {
         &mut self,
         _handle: &EntityHandle,
         _pos_diff: Vector3<f64>,
-        _new_yaw_deg: f32,
-        _new_pitch_deg: f32,
+        _new_yaw_deg: UnitAngleU8,
+        _new_pitch_deg: UnitAngleU8,
     ) {
     }
 
@@ -365,8 +457,8 @@ impl EntityTypeManager for DummyManager {
         &mut self,
         _handle: &EntityHandle,
         _new_pos: Point3<f64>,
-        _new_yaw_deg: f32,
-        _new_pitch_deg: f32,
+        _new_yaw_deg: UnitAngleU8,
+        _new_pitch_deg: UnitAngleU8,
     ) {
     }
 

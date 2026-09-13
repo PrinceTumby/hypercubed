@@ -1,4 +1,5 @@
 use anyhow::Context;
+use hypercubed_core::types::UnitAngleU8;
 use hypercubed_entity_models::{self as models, EntityRenderQuad};
 use nalgebra::{Point3, Vector3};
 use slab::Slab;
@@ -9,9 +10,7 @@ use crate::protocol::play::SpawnEntityInfo;
 #[derive(Debug)]
 pub struct BoatEntity {
     pub pos: Point3<f64>,
-    /// Yaw direction of the boat, in degrees.
-    // TODO: Make a `DegreesF32` type.
-    pub yaw: f32,
+    pub yaw: UnitAngleU8,
 }
 
 pub struct BoatManager {
@@ -20,12 +19,12 @@ pub struct BoatManager {
 }
 
 impl BoatManager {
-    pub fn new(entity_texture_atlas: &resources::texture::Atlas) -> anyhow::Result<Self> {
-        Ok(Self {
+    pub fn new(entity_texture_atlas: &resources::texture::Atlas) -> anyhow::Result<Box<Self>> {
+        Ok(Box::new(Self {
             boats: Slab::new(),
             oak_uv_storage: models::oak_boat::UvStorage::load_from(entity_texture_atlas)
                 .context("Error while loading oak boat UVs")?,
-        })
+        }))
     }
 }
 
@@ -33,7 +32,7 @@ impl EntityTypeManager for BoatManager {
     fn spawn_entity(&mut self, entity_info: &SpawnEntityInfo) -> anyhow::Result<EntityHandle> {
         let key = self.boats.insert(BoatEntity {
             pos: Point3::from(entity_info.coords),
-            yaw: entity_info.yaw.degrees(),
+            yaw: entity_info.yaw,
         });
         Ok(EntityHandle(key))
     }
@@ -46,32 +45,37 @@ impl EntityTypeManager for BoatManager {
         self.boats[handle.0].pos += pos_diff;
     }
 
-    fn update_entity_rot(&mut self, handle: &EntityHandle, new_yaw_deg: f32, _new_pitch_deg: f32) {
-        self.boats[handle.0].yaw = new_yaw_deg;
+    fn update_entity_rot(
+        &mut self,
+        handle: &EntityHandle,
+        new_yaw: UnitAngleU8,
+        _new_pitch: UnitAngleU8,
+    ) {
+        self.boats[handle.0].yaw = new_yaw;
     }
 
     fn update_entity_pos_and_rot(
         &mut self,
         handle: &EntityHandle,
         pos_diff: Vector3<f64>,
-        new_yaw_deg: f32,
-        _new_pitch_deg: f32,
+        new_yaw: UnitAngleU8,
+        _new_pitch: UnitAngleU8,
     ) {
         let boat = &mut self.boats[handle.0];
         boat.pos += pos_diff;
-        boat.yaw = new_yaw_deg;
+        boat.yaw = new_yaw;
     }
 
     fn teleport_entity(
         &mut self,
         handle: &EntityHandle,
         new_pos: Point3<f64>,
-        new_yaw_deg: f32,
-        _new_pitch_deg: f32,
+        new_yaw: UnitAngleU8,
+        _new_pitch: UnitAngleU8,
     ) {
         let boat = &mut self.boats[handle.0];
         boat.pos = new_pos;
-        boat.yaw = new_yaw_deg;
+        boat.yaw = new_yaw;
     }
 
     fn compact_if_needed(&mut self, remap: &mut (dyn FnMut(EntityHandle, EntityHandle) + '_)) {
@@ -91,7 +95,7 @@ impl EntityTypeManager for BoatManager {
                 out_quads,
                 &self.oak_uv_storage,
                 boat.pos.cast::<f32>(),
-                boat.yaw,
+                boat.yaw.as_radians_f32(),
                 0.0,
                 0.0,
             );

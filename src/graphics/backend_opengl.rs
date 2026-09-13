@@ -26,7 +26,9 @@ use crate::graphics::{DebugOutput, DebugState, GraphicsBackend, GraphicsOptions}
 use crate::platform::libs::winit;
 use crate::portable_prelude::*;
 use crate::{ClientPlayState, MIN_HEIGHT_I32, SUBCHUNK_AXIS_LEN_I32};
-use gl::array::{AttributeNormalisation, AttributeType, ColorType, TextureCoordType, VertexType, NormalType};
+use gl::array::{
+    AttributeNormalisation, AttributeType, ColorType, NormalType, TextureCoordType, VertexType,
+};
 use gl::buffer::BufferType;
 use gl::client_state::ClientArrayType;
 use gl::texture::{
