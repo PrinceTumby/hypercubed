@@ -122,8 +122,8 @@ pub fn render_debug_ui(
                     if old_free_cam && !debug_state.free_cam {
                         let player = &play_state.player;
                         let camera = &mut play_state.camera;
-                        camera.yaw = player.yaw;
-                        camera.pitch = player.pitch;
+                        camera.yaw = player.yaw_deg;
+                        camera.pitch = player.pitch_deg;
                     }
                 }
                 // Debug graphics draw method

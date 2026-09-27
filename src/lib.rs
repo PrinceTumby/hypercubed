@@ -99,20 +99,20 @@ pub struct ClientPlayState {
 pub struct Player {
     pub entity_id: EntityId,
     pub game_mode: GameMode,
-    pub pos: Point3<f32>,
-    pub yaw: f32,
-    pub pitch: f32,
+    pub pos: Point3<f64>,
+    pub yaw_deg: f32,
+    pub pitch_deg: f32,
     pub physics_state: PlayerPhysicsState,
 }
 
 impl Player {
     pub fn get_mc_rot(&self) -> (f32, f32) {
-        ((self.yaw - 180.0) % 360.0, -self.pitch)
+        ((self.yaw_deg - 180.0) % 360.0, -self.pitch_deg)
     }
 
     pub fn set_mc_rot(&mut self, yaw: f32, pitch: f32) {
-        self.yaw = (yaw + 180.0) % 360.0;
-        self.pitch = -pitch.clamp(-90.0, 90.0);
+        self.yaw_deg = (yaw + 180.0) % 360.0;
+        self.pitch_deg = -pitch.clamp(-90.0, 90.0);
     }
 }
 
@@ -178,16 +178,16 @@ impl App {
                 entity_id: EntityId::placeholder(),
                 game_mode: GameMode::Survival,
                 pos: Point3::origin(),
-                yaw: 0.0,
-                pitch: 0.0,
+                yaw_deg: 0.0,
+                pitch_deg: 0.0,
                 physics_state: PlayerPhysicsState::default(),
             },
             player_last_tick: Player {
                 entity_id: EntityId::placeholder(),
                 game_mode: GameMode::Survival,
                 pos: Point3::origin(),
-                yaw: 0.0,
-                pitch: 0.0,
+                yaw_deg: 0.0,
+                pitch_deg: 0.0,
                 physics_state: PlayerPhysicsState::default(),
             },
         };

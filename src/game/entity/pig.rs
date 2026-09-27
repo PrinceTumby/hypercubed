@@ -1,5 +1,5 @@
 use anyhow::Context;
-use hypercubed_core::types::UnitAngleF32;
+use hypercubed_core::types::UnitAngleU8;
 use hypercubed_entity_models::{self as models, EntityRenderQuad};
 use nalgebra::{Point3, Vector3};
 use slab::Slab;
@@ -7,15 +7,14 @@ use slab::Slab;
 #[derive(Debug)]
 pub struct PigEntity {
     pub pos: Point3<f64>,
-    // TODO: Make a `DegreesF32` type.
-    pub yaw: f32,
-    pub head_yaw: f32,
-    pub pitch: f32,
+    pub yaw: UnitAngleU8,
+    pub head_yaw: UnitAngleU8,
+    pub pitch: UnitAngleU8,
 }
 
 impl super::SimpleEntity for PigEntity {
     #[inline]
-    fn new(pos: Point3<f64>, yaw: f32, head_yaw: f32, pitch: f32) -> Self {
+    fn new(pos: Point3<f64>, yaw: UnitAngleU8, head_yaw: UnitAngleU8, pitch: UnitAngleU8) -> Self {
         Self {
             pos,
             yaw,
@@ -35,7 +34,7 @@ impl super::SimpleEntity for PigEntity {
     }
 
     #[inline]
-    fn set_rot(&mut self, new_yaw: f32, new_pitch: f32) {
+    fn set_rot(&mut self, new_yaw: UnitAngleU8, new_pitch: UnitAngleU8) {
         self.yaw = new_yaw;
         self.head_yaw = new_yaw;
         self.pitch = new_pitch;
@@ -62,9 +61,9 @@ impl super::SimpleEntityTypeManager for Manager {
                 out_quads,
                 &self.uv_storage,
                 entity.pos.cast::<f32>(),
-                entity.yaw,
-                entity.head_yaw,
-                entity.pitch,
+                entity.yaw.as_radians_f32(),
+                entity.head_yaw.as_radians_f32(),
+                entity.pitch.as_radians_f32(),
             );
         }
     }

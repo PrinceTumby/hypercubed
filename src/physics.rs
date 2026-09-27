@@ -10,22 +10,22 @@ use resources::block::blockstate::CollisionInfo;
 // Most of this implementation was ported from PrismarineJS's physics implementation.
 
 // FIXME: Running speed is too fast, these constants probably just need fixing.
-const GRAVITY: f32 = 0.08;
-const AIR_DRAG_COEF: f32 = 1.0 - 0.02;
-const BASE_PLAYER_SPEED: f32 = 0.1;
-const SNEAK_SPEED: f32 = 0.3;
-const AIR_ACCELERATION: f32 = 0.02;
-const AIR_INERTIA: f32 = 0.91;
-const STEP_HEIGHT: f32 = 0.6;
-const NEGLIGIBLE_VELOCITY: f32 = 0.003;
+const GRAVITY: f64 = 0.08;
+const AIR_DRAG_COEF: f64 = 1.0 - 0.02;
+const BASE_PLAYER_SPEED: f64 = 0.1;
+const SNEAK_SPEED: f64 = 0.3;
+const AIR_ACCELERATION: f64 = 0.02;
+const AIR_INERTIA: f64 = 0.91;
+const STEP_HEIGHT: f64 = 0.6;
+const NEGLIGIBLE_VELOCITY: f64 = 0.003;
 const AUTO_JUMP_COOLDOWN_TICKS: u32 = 10;
 // TODO: Check this is accurate to vanilla
-const MINOR_COLLISION_ANGLE_THRESHOLD: f32 = 8.0;
+const MINOR_COLLISION_ANGLE_THRESHOLD: f64 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerPhysicsState {
     pub local_aabb: AABB,
-    pub velocity: Vector3<f32>,
+    pub velocity: Vector3<f64>,
     pub on_ground: bool,
     pub jump_queued: bool,
     pub jump_ticks: u32,
@@ -87,8 +87,8 @@ pub fn simulate_player(
             physics.jump_ticks = AUTO_JUMP_COOLDOWN_TICKS;
             velocity.y = 0.42;
             if input.sprint {
-                velocity.x += player.yaw.to_radians().sin() * 0.2;
-                velocity.z -= player.yaw.to_radians().cos() * 0.2;
+                velocity.x += player.yaw_deg.to_radians().sin() * 0.2;
+                velocity.z -= player.yaw_deg.to_radians().cos() * 0.2;
             }
         }
     } else {
@@ -104,8 +104,8 @@ pub fn simulate_player(
     // - If that doesn't collide, then force sneaking.
 
     // Main movement
-    let mut forwards_target = (input.forward as u8 as f32 - input.backward as u8 as f32) * 0.98;
-    let mut sideways_target = (input.right as u8 as f32 - input.left as u8 as f32) * 0.98;
+    let mut forwards_target = (input.forward as u8 as f64 - input.backward as u8 as f64) * 0.98;
+    let mut sideways_target = (input.right as u8 as f64 - input.left as u8 as f64) * 0.98;
     if input.sneak {
         forwards_target *= SNEAK_SPEED;
         sideways_target *= SNEAK_SPEED;
@@ -117,7 +117,7 @@ pub fn simulate_player(
         global_palette,
         raw_chunks,
         pos,
-        player.yaw,
+        player.yaw_deg.into(),
         physics,
         forwards_target,
         sideways_target,
@@ -129,16 +129,16 @@ pub fn simulate_player(
 pub fn move_player_with_heading(
     global_palette: &BlockRegistry,
     raw_chunks: &FastHashMap<[i32; 2], Arc<RawChunk>>,
-    pos: &mut Point3<f32>,
-    yaw: f32,
+    pos: &mut Point3<f64>,
+    yaw: f64,
     physics: &mut PlayerPhysicsState,
-    forwards_target: f32,
-    sideways_target: f32,
+    forwards_target: f64,
+    sideways_target: f64,
     input_sprinting: &mut bool,
 ) {
     let gravity_multiplier = 1.0;
     let (acceleration, inertia) = if physics.on_ground {
-        let inertia: f32 = 0.6 * 0.91;
+        let inertia: f64 = 0.6 * 0.91;
         let sprint_modifier = if physics.sprinting { 2.0 } else { 1.0 };
         let player_speed = BASE_PLAYER_SPEED * sprint_modifier;
         let acceleration = (player_speed * (0.1627714 / (inertia.powi(3)))).max(0.0);
@@ -157,17 +157,17 @@ pub fn move_player_with_heading(
 }
 
 pub fn apply_heading_to_player(
-    yaw: f32,
+    yaw: f64,
     physics: &mut PlayerPhysicsState,
-    forwards_target: f32,
-    sideways_target: f32,
-    acceleration: f32,
+    forwards_target: f64,
+    sideways_target: f64,
+    acceleration: f64,
 ) {
-    let speed = f32::sqrt(sideways_target.powi(2) + forwards_target.powi(2));
+    let speed = f64::sqrt(sideways_target.powi(2) + forwards_target.powi(2));
     if speed < 0.01 {
         return;
     }
-    let accelerated_speed = acceleration / f32::max(speed, 1.0);
+    let accelerated_speed = acceleration / f64::max(speed, 1.0);
     let accelerated_forwards = forwards_target * accelerated_speed;
     let accelerated_sideways = sideways_target * accelerated_speed;
     let (yaw_sin, yaw_cos) = (yaw.to_radians().sin(), yaw.to_radians().cos());
@@ -179,7 +179,7 @@ pub fn apply_heading_to_player(
 pub fn move_player(
     global_palette: &BlockRegistry,
     raw_chunks: &FastHashMap<[i32; 2], Arc<RawChunk>>,
-    pos: &mut Point3<f32>,
+    pos: &mut Point3<f64>,
     physics: &mut PlayerPhysicsState,
     input_sprinting: &mut bool,
 ) {

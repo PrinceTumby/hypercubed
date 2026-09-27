@@ -120,12 +120,9 @@ pub enum StitchError {
 impl AtlasBuilder {
     pub const MAX_DIM: u32 = 32768;
 
-    /// XXX: DEBUG
-    const _MAX_DIM_ASSERT_TEST: () = assert!(Self::MAX_DIM < 4096);
-    const _MAX_DIM_ASSERT_1: () = assert!(Self::MAX_DIM < i32::MAX as u32);
-    const _MAX_DIM_ASSERT_2: () = assert!(Self::MAX_DIM < u16::MAX as u32);
-
     pub fn new(initial_dims: [u32; 2], options: AtlasAllocatorOptions) -> Self {
+        const _MAX_DIM_ASSERT_1: () = assert!(AtlasBuilder::MAX_DIM < i32::MAX as u32);
+        const _MAX_DIM_ASSERT_2: () = assert!(AtlasBuilder::MAX_DIM < u16::MAX as u32);
         let [width, height] = initial_dims;
         assert!(width <= Self::MAX_DIM);
         assert!(height <= Self::MAX_DIM);

@@ -354,8 +354,8 @@ pub fn process_game_events(
                 // Teleport camera back to player position, force free cam off.
                 debug_state.free_cam = false;
                 camera.pos = player.pos + Vector3::new(0.0, 1.62, 0.0);
-                camera.yaw = player.yaw;
-                camera.pitch = player.pitch;
+                camera.yaw = player.yaw_deg;
+                camera.pitch = player.pitch_deg;
                 // Update previous tick position so that teleportation is instant,
                 // instead of interpolation making it look like we're moving fast
                 // over the span of a tick.
@@ -482,8 +482,8 @@ pub fn process_game_events(
         let player_last_tick = &mut play_state.player_last_tick;
         let camera = &mut play_state.camera;
         if !debug_state.free_cam {
-            player.yaw = camera.yaw;
-            player.pitch = camera.pitch;
+            player.yaw_deg = camera.yaw;
+            player.pitch_deg = camera.pitch;
         }
         let num_player_ticks_this_frame = {
             let mut num_ticks: usize = 0;
@@ -597,13 +597,10 @@ pub fn process_game_events(
                 // TODO: Send `PlayerCommand` and `PlayerInput` packets
                 server_connection
                     .send_packet(serverbound_packets::SetPlayerPositionAndRotation {
-                        // x: player.pos.x as f64,
-                        // feet_y: player.pos.y as f64,
-                        // z: player.pos.z as f64,
+                        x: player.pos.x as f64,
+                        feet_y: player.pos.y as f64,
+                        z: player.pos.z as f64,
                         // XXX: DEBUG
-                        x: 15.0,
-                        feet_y: 162.0,
-                        z: -16.0,
                         mc_yaw,
                         mc_pitch,
                         on_ground: false,

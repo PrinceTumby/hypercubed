@@ -153,39 +153,39 @@ impl AABB {
     pub fn get_collision_info(
         &self,
         other: &Self,
-        velocity: Vector3<f32>,
-    ) -> Option<(Vector3<f32>, f32)> {
-        fn entry_exit_times(s1: f32, s2: f32, o1: f32, o2: f32, velocity: f32) -> [f32; 2] {
+        velocity: Vector3<f64>,
+    ) -> Option<(Vector3<f64>, f64)> {
+        fn entry_exit_times(s1: f64, s2: f64, o1: f64, o2: f64, velocity: f64) -> [f64; 2] {
             if velocity > 0.0 {
                 [(o1 - s2) / velocity, (o2 - s1) / velocity]
             } else if velocity == 0.0 {
                 [
-                    f32::copysign(f32::INFINITY, s1 - o2),
-                    f32::copysign(f32::INFINITY, s2 - o1),
+                    f64::copysign(f64::INFINITY, s1 - o2),
+                    f64::copysign(f64::INFINITY, s2 - o1),
                 ]
             } else {
                 [(o2 - s1) / velocity, (o1 - s2) / velocity]
             }
         }
         let [x_entry, x_exit] = entry_exit_times(
-            self.corner_1.x,
-            self.corner_2.x,
-            other.corner_1.x,
-            other.corner_2.x,
+            self.corner_1.x.into(),
+            self.corner_2.x.into(),
+            other.corner_1.x.into(),
+            other.corner_2.x.into(),
             velocity.x,
         );
         let [y_entry, y_exit] = entry_exit_times(
-            self.corner_1.y,
-            self.corner_2.y,
-            other.corner_1.y,
-            other.corner_2.y,
+            self.corner_1.y.into(),
+            self.corner_2.y.into(),
+            other.corner_1.y.into(),
+            other.corner_2.y.into(),
             velocity.y,
         );
         let [z_entry, z_exit] = entry_exit_times(
-            self.corner_1.z,
-            self.corner_2.z,
-            other.corner_1.z,
-            other.corner_2.z,
+            self.corner_1.z.into(),
+            self.corner_2.z.into(),
+            other.corner_1.z.into(),
+            other.corner_2.z.into(),
             velocity.z,
         );
         // Check if collision occured
@@ -209,11 +209,11 @@ impl AABB {
         }
         // Get normal of collision surface
         let normal = if entry == x_entry {
-            Vector3::new((1.0_f32).copysign(-velocity.x), 0.0, 0.0)
+            Vector3::new((1.0_f64).copysign(-velocity.x), 0.0, 0.0)
         } else if entry == y_entry {
-            Vector3::new(0.0, (1.0_f32).copysign(-velocity.y), 0.0)
+            Vector3::new(0.0, (1.0_f64).copysign(-velocity.y), 0.0)
         } else {
-            Vector3::new(0.0, 0.0, (1.0_f32).copysign(-velocity.z))
+            Vector3::new(0.0, 0.0, (1.0_f64).copysign(-velocity.z))
         };
         Some((normal, entry))
     }
