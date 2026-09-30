@@ -33,7 +33,7 @@ pub fn process_game_events(
     clientbound_rx: &sync::mpsc::Receiver<ClientboundPacket>,
     current_time_s: f64,
     last_player_tick_time_s: &mut f64,
-    delta_time: f32,
+    delta_time: f64,
 ) {
     let span = tracing::trace_span!("process_game_events");
     let _enter = span.enter();
@@ -330,16 +330,16 @@ pub fn process_game_events(
                 let player = &mut play_state.player;
                 let camera = &mut play_state.camera;
                 player.pos.x = match pos_info.x {
-                    PositionChange::Absolute(new_x) => new_x as f32,
-                    PositionChange::Relative(x_diff) => player.pos.x + x_diff as f32,
+                    PositionChange::Absolute(new_x) => new_x,
+                    PositionChange::Relative(x_diff) => player.pos.x + x_diff,
                 };
                 player.pos.y = match pos_info.y {
-                    PositionChange::Absolute(new_y) => new_y as f32,
-                    PositionChange::Relative(y_diff) => player.pos.y + y_diff as f32,
+                    PositionChange::Absolute(new_y) => new_y,
+                    PositionChange::Relative(y_diff) => player.pos.y + y_diff,
                 };
                 player.pos.z = match pos_info.z {
-                    PositionChange::Absolute(new_z) => new_z as f32,
-                    PositionChange::Relative(z_diff) => player.pos.z + z_diff as f32,
+                    PositionChange::Absolute(new_z) => new_z,
+                    PositionChange::Relative(z_diff) => player.pos.z + z_diff,
                 };
                 let (raw_yaw, raw_pitch) = player.get_mc_rot();
                 let new_yaw = match pos_info.yaw {
@@ -354,8 +354,8 @@ pub fn process_game_events(
                 // Teleport camera back to player position, force free cam off.
                 debug_state.free_cam = false;
                 camera.pos = player.pos + Vector3::new(0.0, 1.62, 0.0);
-                camera.yaw = player.yaw_deg;
-                camera.pitch = player.pitch_deg;
+                camera.yaw_deg = player.yaw_deg;
+                camera.pitch_deg = player.pitch_deg;
                 // Update previous tick position so that teleportation is instant,
                 // instead of interpolation making it look like we're moving fast
                 // over the span of a tick.
@@ -482,8 +482,8 @@ pub fn process_game_events(
         let player_last_tick = &mut play_state.player_last_tick;
         let camera = &mut play_state.camera;
         if !debug_state.free_cam {
-            player.yaw_deg = camera.yaw;
-            player.pitch_deg = camera.pitch;
+            player.yaw_deg = camera.yaw_deg;
+            player.pitch_deg = camera.pitch_deg;
         }
         let num_player_ticks_this_frame = {
             let mut num_ticks: usize = 0;
@@ -549,10 +549,10 @@ pub fn process_game_events(
             }
             _ => {
                 let (interpolated_camera_pos, interpolated_camera_fov) = {
-                    fn mix<T, U>(last_tick: T, next_tick: T, tick_percentage: f32) -> T
+                    fn mix<T, U>(last_tick: T, next_tick: T, tick_percentage: f64) -> T
                     where
                         T: core::ops::Add<U, Output = T> + core::ops::Sub<T, Output = U> + Clone,
-                        U: core::ops::Mul<f32, Output = U>,
+                        U: core::ops::Mul<f64, Output = U>,
                     {
                         let diff = next_tick - last_tick.clone();
                         last_tick + (diff * tick_percentage)
@@ -560,13 +560,12 @@ pub fn process_game_events(
                     let player_tick_duration = 1.0 / 20.0;
                     let time_since_last_tick = current_time_s - *last_player_tick_time_s;
                     let tick_percentage = time_since_last_tick / player_tick_duration;
-                    let tick_percentage_f32 = tick_percentage as f32;
                     (
                         // Camera pos.
                         mix(
                             player_last_tick.pos + Vector3::new(0.0, 1.62, 0.0),
                             player.pos + Vector3::new(0.0, 1.62, 0.0),
-                            tick_percentage_f32,
+                            tick_percentage,
                         ),
                         // Camera FOV.
                         mix(
@@ -578,14 +577,14 @@ pub fn process_game_events(
                                 false => DEFAULT_FOV,
                                 true => DEFAULT_FOV + 10.0,
                             },
-                            tick_percentage_f32,
+                            tick_percentage,
                         ),
                     )
                 };
                 camera.pos = interpolated_camera_pos;
                 camera
                     .proj_matrix
-                    .set_fovy(interpolated_camera_fov.to_radians());
+                    .set_fovy(interpolated_camera_fov.to_radians() as f32);
             }
         }
         {

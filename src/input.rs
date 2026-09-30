@@ -86,8 +86,8 @@ impl PlayControlState {
         }
     }
 
-    pub fn update_fly_camera_pos(&self, camera: &mut Camera, delta_time: f32) {
-        let camera_rot = camera.get_rot();
+    pub fn update_fly_camera_pos(&self, camera: &mut Camera, delta_time: f64) {
+        let camera_rot = camera.get_rot().cast::<f64>();
         let speed = if self.sprint { 15.0 } else { 2.0 };
         let forward_dir = camera_rot * *Vector3::z_axis() * delta_time * speed;
         let right_dir = camera_rot * *Vector3::x_axis() * delta_time * speed;

@@ -5,12 +5,12 @@ use nalgebra::{Point3, Rotation3, Vector3};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AABB {
-    pub corner_1: Point3<f32>,
-    pub corner_2: Point3<f32>,
+    pub corner_1: Point3<f64>,
+    pub corner_2: Point3<f64>,
 }
 
-impl From<([f32; 3], [f32; 3])> for AABB {
-    fn from((corner_1, corner_2): ([f32; 3], [f32; 3])) -> Self {
+impl From<([f64; 3], [f64; 3])> for AABB {
+    fn from((corner_1, corner_2): ([f64; 3], [f64; 3])) -> Self {
         Self {
             corner_1: corner_1.into(),
             corner_2: corner_2.into(),
@@ -30,19 +30,19 @@ impl AABB {
     pub fn max(&self, other: &Self) -> Self {
         Self {
             corner_1: Point3::new(
-                f32::min(self.corner_1.x, other.corner_1.x),
-                f32::min(self.corner_1.y, other.corner_1.y),
-                f32::min(self.corner_1.z, other.corner_1.z),
+                f64::min(self.corner_1.x, other.corner_1.x),
+                f64::min(self.corner_1.y, other.corner_1.y),
+                f64::min(self.corner_1.z, other.corner_1.z),
             ),
             corner_2: Point3::new(
-                f32::max(self.corner_2.x, other.corner_2.x),
-                f32::max(self.corner_2.y, other.corner_2.y),
-                f32::max(self.corner_2.z, other.corner_2.z),
+                f64::max(self.corner_2.x, other.corner_2.x),
+                f64::max(self.corner_2.y, other.corner_2.y),
+                f64::max(self.corner_2.z, other.corner_2.z),
             ),
         }
     }
 
-    pub fn extended_in_direction(&self, dir: Vector3<f32>) -> Self {
+    pub fn extended_in_direction(&self, dir: Vector3<f64>) -> Self {
         let mut out = *self;
         if dir.x < 0.0 {
             out.corner_1.x += dir.x;
@@ -62,14 +62,14 @@ impl AABB {
         out
     }
 
-    pub fn expanded_by(&self, dims: Vector3<f32>) -> Self {
+    pub fn expanded_by(&self, dims: Vector3<f64>) -> Self {
         Self {
             corner_1: self.corner_1 - dims,
             corner_2: self.corner_2 + dims,
         }
     }
 
-    pub fn contracted_by(&self, dims: Vector3<f32>) -> Self {
+    pub fn contracted_by(&self, dims: Vector3<f64>) -> Self {
         Self {
             corner_1: self.corner_1 + dims,
             corner_2: self.corner_2 - dims,
@@ -85,7 +85,7 @@ impl AABB {
             && self.corner_2.z > other.corner_1.z
     }
 
-    pub fn intersects_sphere(&self, centre: Point3<f32>, radius: f32) -> bool {
+    pub fn intersects_sphere(&self, centre: Point3<f64>, radius: f64) -> bool {
         let mut distance = 0.0;
         if centre.x < self.corner_1.x {
             distance += (centre.x - self.corner_1.x).powi(2);
@@ -118,13 +118,13 @@ impl AABB {
             x_y_axis_angles.map(|(axis, angle)| match angle {
                 RightAngleRotation::Zero => Rotation3::identity(),
                 RightAngleRotation::Ninety => {
-                    Rotation3::from_axis_angle(&axis, -core::f32::consts::FRAC_PI_2)
+                    Rotation3::from_axis_angle(&axis, -core::f64::consts::FRAC_PI_2)
                 }
                 RightAngleRotation::OneEighty => {
-                    Rotation3::from_axis_angle(&axis, core::f32::consts::PI)
+                    Rotation3::from_axis_angle(&axis, core::f64::consts::PI)
                 }
                 RightAngleRotation::TwoSeventy => {
-                    Rotation3::from_axis_angle(&axis, core::f32::consts::FRAC_PI_2)
+                    Rotation3::from_axis_angle(&axis, core::f64::consts::FRAC_PI_2)
                 }
             });
         let xy_blockstate_rot = (y_blockstate_rot * x_blockstate_rot).to_homogeneous();
@@ -132,18 +132,18 @@ impl AABB {
             .prepend_translation(&Vector3::new(-0.5, -0.5, -0.5))
             .append_translation(&Vector3::new(0.5, 0.5, 0.5));
         let [p1, p2] = [self.corner_1, self.corner_2].map(|p| complete_mat.transform_point(&p));
-        fn quantise_256(n: f32) -> f32 {
+        fn quantise_256(n: f64) -> f64 {
             (n * 256.0).round() / 256.0
         }
         self.corner_1 = Point3::new(
-            quantise_256(f32::min(p1.x, p2.x)),
-            quantise_256(f32::min(p1.y, p2.y)),
-            quantise_256(f32::min(p1.z, p2.z)),
+            quantise_256(f64::min(p1.x, p2.x)),
+            quantise_256(f64::min(p1.y, p2.y)),
+            quantise_256(f64::min(p1.z, p2.z)),
         );
         self.corner_2 = Point3::new(
-            quantise_256(f32::max(p1.x, p2.x)),
-            quantise_256(f32::max(p1.y, p2.y)),
-            quantise_256(f32::max(p1.z, p2.z)),
+            quantise_256(f64::max(p1.x, p2.x)),
+            quantise_256(f64::max(p1.y, p2.y)),
+            quantise_256(f64::max(p1.z, p2.z)),
         );
     }
 
@@ -168,24 +168,24 @@ impl AABB {
             }
         }
         let [x_entry, x_exit] = entry_exit_times(
-            self.corner_1.x.into(),
-            self.corner_2.x.into(),
-            other.corner_1.x.into(),
-            other.corner_2.x.into(),
+            self.corner_1.x,
+            self.corner_2.x,
+            other.corner_1.x,
+            other.corner_2.x,
             velocity.x,
         );
         let [y_entry, y_exit] = entry_exit_times(
-            self.corner_1.y.into(),
-            self.corner_2.y.into(),
-            other.corner_1.y.into(),
-            other.corner_2.y.into(),
+            self.corner_1.y,
+            self.corner_2.y,
+            other.corner_1.y,
+            other.corner_2.y,
             velocity.y,
         );
         let [z_entry, z_exit] = entry_exit_times(
-            self.corner_1.z.into(),
-            self.corner_2.z.into(),
-            other.corner_1.z.into(),
-            other.corner_2.z.into(),
+            self.corner_1.z,
+            self.corner_2.z,
+            other.corner_1.z,
+            other.corner_2.z,
             velocity.z,
         );
         // Check if collision occured
@@ -218,7 +218,7 @@ impl AABB {
         Some((normal, entry))
     }
 
-    pub fn compute_x_offset(&self, other: &Self, initial_value: f32) -> f32 {
+    pub fn compute_x_offset(&self, other: &Self, initial_value: f64) -> f64 {
         // Ensure that `self` and `other` intersect in Y and Z axes.
         if other.corner_2.y < self.corner_1.y
             || other.corner_1.y > self.corner_2.y
@@ -236,7 +236,7 @@ impl AABB {
         }
     }
 
-    pub fn compute_y_offset(&self, other: &Self, initial_value: f32) -> f32 {
+    pub fn compute_y_offset(&self, other: &Self, initial_value: f64) -> f64 {
         // Ensure that `self` and `other` intersect in X and Z axes.
         if other.corner_2.x < self.corner_1.x
             || other.corner_1.x > self.corner_2.x
@@ -254,7 +254,7 @@ impl AABB {
         }
     }
 
-    pub fn compute_z_offset(&self, other: &Self, initial_value: f32) -> f32 {
+    pub fn compute_z_offset(&self, other: &Self, initial_value: f64) -> f64 {
         // Ensure that `self` and `other` intersect in X and Y axes.
         if other.corner_2.x < self.corner_1.x
             || other.corner_1.x > self.corner_2.x
@@ -273,10 +273,10 @@ impl AABB {
     }
 }
 
-impl core::ops::Add<Vector3<f32>> for AABB {
+impl core::ops::Add<Vector3<f64>> for AABB {
     type Output = Self;
 
-    fn add(self, offset: Vector3<f32>) -> Self {
+    fn add(self, offset: Vector3<f64>) -> Self {
         Self {
             corner_1: self.corner_1 + offset,
             corner_2: self.corner_2 + offset,
@@ -284,8 +284,8 @@ impl core::ops::Add<Vector3<f32>> for AABB {
     }
 }
 
-impl core::ops::AddAssign<Vector3<f32>> for AABB {
-    fn add_assign(&mut self, offset: Vector3<f32>) {
+impl core::ops::AddAssign<Vector3<f64>> for AABB {
+    fn add_assign(&mut self, offset: Vector3<f64>) {
         self.corner_1 += offset;
         self.corner_2 += offset;
     }

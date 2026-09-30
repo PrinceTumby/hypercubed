@@ -723,7 +723,7 @@ impl GraphicsBackend for GraphicsState {
         // Generate environment info.
         let sky_matrix: [[f32; 4]; 4] = {
             let sky_model_matrix = nalgebra::Isometry3::new(
-                camera.pos.coords,
+                camera.pos.coords.cast::<f32>(),
                 nalgebra::Vector3::new(
                     0.0,
                     0.0,

@@ -426,14 +426,13 @@ impl ApplicationHandler for App {
         let entity_state = self.entity_state.as_mut().unwrap();
         let scale_factor = window.scale_factor();
         let new_time = Instant::now();
-        let delta_time_f64 =
+        let delta_time =
             (new_time - core::mem::replace(&mut self.last_frame_time, new_time)).as_secs_f64();
-        self.previous_frame_times.push_back(delta_time_f64);
+        self.previous_frame_times.push_back(delta_time);
         if self.previous_frame_times.len() > 100 {
             self.previous_frame_times.pop_front();
         }
-        self.current_time_s += delta_time_f64;
-        let delta_time = delta_time_f64 as f32;
+        self.current_time_s += delta_time;
         // Debug GUI.
         #[cfg(feature = "full_std")]
         let debug::DebugRenderOutput {
@@ -453,7 +452,6 @@ impl ApplicationHandler for App {
             &self.previous_frame_times,
             scale_factor,
             self.current_time_s,
-            delta_time_f64,
             delta_time,
         );
         // Reset cursor to middle if locked.
@@ -522,14 +520,14 @@ impl ApplicationHandler for App {
             DeviceEvent::MouseMotion { delta } if self.input_state.mouse_locked => {
                 const MOUSE_SENSITIVITY: f32 = 0.1;
                 let camera = &mut self.play_state.camera;
-                camera.yaw += delta.0 as f32 * MOUSE_SENSITIVITY;
-                camera.pitch -= delta.1 as f32 * MOUSE_SENSITIVITY;
-                camera.pitch = camera.pitch.clamp(-90.0, 90.0);
-                while camera.yaw < 0.0 {
-                    camera.yaw += 360.0;
+                camera.yaw_deg += delta.0 as f32 * MOUSE_SENSITIVITY;
+                camera.pitch_deg -= delta.1 as f32 * MOUSE_SENSITIVITY;
+                camera.pitch_deg = camera.pitch_deg.clamp(-90.0, 90.0);
+                while camera.yaw_deg < 0.0 {
+                    camera.yaw_deg += 360.0;
                 }
-                while camera.yaw > 360.0 {
-                    camera.yaw -= 360.0;
+                while camera.yaw_deg > 360.0 {
+                    camera.yaw_deg -= 360.0;
                 }
             }
             _ => {}

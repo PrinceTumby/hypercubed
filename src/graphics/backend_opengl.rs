@@ -875,7 +875,7 @@ impl GraphicsBackend for GraphicsState {
                 gl::matrix::load_identity();
                 gl::matrix::switch_mode(gl::matrix::MatrixMode::ModelView);
                 let sky_matrix = Isometry3::new(
-                    camera.pos.coords,
+                    camera.pos.coords.cast::<f32>(),
                     Vector3::new(
                         0.0,
                         0.0,

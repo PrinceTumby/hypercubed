@@ -30,9 +30,9 @@ pub fn render_debug_ui(
     previous_frame_times: &VecDeque<f64>,
     scale_factor: f64,
     current_time_s: f64,
-    delta_time_f64: f64,
-    delta_time: f32,
+    delta_time: f64,
 ) -> DebugRenderOutput {
+    let camera_pos_f32 = play_state.camera.pos.cast::<f32>();
     let subchunks = graphics_backend.get_subchunks_data();
     let graphics_size = graphics_backend.get_size();
     let raw_input = egui::RawInput {
@@ -52,7 +52,7 @@ pub fn render_debug_ui(
             ),
         }),
         time: Some(current_time_s),
-        predicted_dt: delta_time,
+        predicted_dt: delta_time as f32,
         events: core::mem::take(events),
         ..Default::default()
     };
@@ -70,7 +70,7 @@ pub fn render_debug_ui(
         Window::new("Debug Info")
             .resizable(false)
             .show(ui.ctx(), |ui| {
-                ui.label(format!("FPS: {:.2}", 1.0 / delta_time_f64));
+                ui.label(format!("FPS: {:.2}", 1.0 / delta_time));
                 // Quit button.
                 // Useful for fullscreen mode and embedded platforms.
                 if ui.button("Quit").clicked() {
@@ -94,7 +94,7 @@ pub fn render_debug_ui(
                         graphics_backend.apply_new_graphics_options(new_graphics_options);
                     }
                 }
-                ui.label(format!("Position: {:.2?}", play_state.camera.pos));
+                ui.label(format!("Position: {:.2?}", camera_pos_f32));
                 ui.label(format!(
                     "Subchunks Culled: {}",
                     debug_output.subchunks_culled
@@ -122,8 +122,8 @@ pub fn render_debug_ui(
                     if old_free_cam && !debug_state.free_cam {
                         let player = &play_state.player;
                         let camera = &mut play_state.camera;
-                        camera.yaw = player.yaw_deg;
-                        camera.pitch = player.pitch_deg;
+                        camera.yaw_deg = player.yaw_deg;
+                        camera.pitch_deg = player.pitch_deg;
                     }
                 }
                 // Debug graphics draw method
@@ -191,7 +191,7 @@ pub fn render_debug_ui(
                 ui.collapsing("Block Info", |ui| {
                     let block_registry = graphics_backend.get_block_registry();
                     let raw_chunks = &play_state.raw_chunks;
-                    let pos = play_state.camera.pos.coords;
+                    let pos = camera_pos_f32.coords;
                     let chunk_x = (pos.x.floor() as i32).div_euclid(16);
                     let chunk_z = (pos.z.floor() as i32).div_euclid(16);
                     let section_i = ((pos.y.floor() + 64.0).div_euclid(16.0)) as usize;
@@ -322,7 +322,7 @@ pub fn render_debug_ui(
         }
         if debug_state.cave_cull_render_connectivity {
             use nalgebra::{Point3, Vector3};
-            let graphics_camera = &play_state.camera;
+            let camera = &play_state.camera;
             let colours = [
                 Color32::GRAY,
                 Color32::LIGHT_GRAY,
@@ -409,15 +409,15 @@ pub fn render_debug_ui(
                     ];
                     for line in lines {
                         let max_dist = debug_state.cave_cull_debug_render_dist;
-                        let end_1_dist = (graphics_camera.pos - line[0]).magnitude();
-                        let end_2_dist = (graphics_camera.pos - line[1]).magnitude();
+                        let end_1_dist = (camera_pos_f32 - line[0]).magnitude();
+                        let end_2_dist = (camera_pos_f32 - line[1]).magnitude();
                         if end_1_dist > max_dist || end_2_dist > max_dist {
                             continue;
                         }
-                        let Some(line) = debug_clip_and_project_line(line, graphics_camera) else {
+                        let Some(line) = debug_clip_and_project_line(line, camera) else {
                             continue;
                         };
-                        let centre_dist = (graphics_camera.pos - subchunk_centre).magnitude();
+                        let centre_dist = (camera_pos_f32 - subchunk_centre).magnitude();
                         let alpha = (1.0 - (centre_dist / max_dist.max(0.01))).max(0.0);
                         debug_lines.push(DebugLine {
                             p1: line[0].into(),
@@ -440,8 +440,8 @@ pub fn render_debug_ui(
                     let max_dist = debug_state.cave_cull_debug_render_dist;
                     let end_1 = pair_centre + dir_1.as_vector() * 8.0;
                     let end_2 = pair_centre + dir_2.as_vector() * 8.0;
-                    let end_1_dist = (graphics_camera.pos - end_1).magnitude();
-                    let end_2_dist = (graphics_camera.pos - end_2).magnitude();
+                    let end_1_dist = (camera_pos_f32 - end_1).magnitude();
+                    let end_2_dist = (camera_pos_f32 - end_2).magnitude();
                     if end_1_dist > max_dist || end_2_dist > max_dist {
                         continue;
                     }
@@ -466,7 +466,6 @@ pub fn render_debug_ui(
         }
         if debug_state.cave_cull_render_traversal_graph {
             use nalgebra::Point3;
-            let graphics_camera = &play_state.camera;
             for (from_chunk, to_chunk) in &debug_output.subchunk_traversal_graph {
                 let chunks = [from_chunk, to_chunk];
                 let chunk_centres = chunks.map(|chunk_coords| {
@@ -477,8 +476,8 @@ pub fn render_debug_ui(
                     )
                 });
                 let max_dist = debug_state.cave_cull_debug_render_dist;
-                let from_centre_dist = (graphics_camera.pos - chunk_centres[0]).magnitude();
-                let to_centre_dist = (graphics_camera.pos - chunk_centres[1]).magnitude();
+                let from_centre_dist = (camera_pos_f32 - chunk_centres[0]).magnitude();
+                let to_centre_dist = (camera_pos_f32 - chunk_centres[1]).magnitude();
                 if from_centre_dist > max_dist || to_centre_dist > max_dist {
                     continue;
                 }
@@ -501,11 +500,11 @@ pub fn render_debug_ui(
         // Draw world debug visuals with egui, or pass through for GPU rendering.
         match debug_state.visualisation_draw_method {
             DebugVisualisationDrawMethod::Egui => {
-                let graphics_camera = &play_state.camera;
+                let camera = &play_state.camera;
                 // TODO: Points and triangles
                 for line in debug_lines.drain(..) {
                     let points = [line.p1, line.p2].map(Point3::from);
-                    if let Some(screen_line) = debug_clip_and_project_line(points, graphics_camera)
+                    if let Some(screen_line) = debug_clip_and_project_line(points, camera)
                     {
                         let [r, g, b, a] = line.colour;
                         painter.add(Shape::line_segment(
@@ -560,11 +559,12 @@ fn debug_clip_and_project_points(points: &[Point3<f32>], camera: &Camera) -> Vec
             edge,
         )
     }
+    let camera_pos_f32 = camera.pos.cast::<f32>();
     let mut vec1: Vec<Point3<f32>> = points
         .iter()
         .copied()
         .map(|p| {
-            let translated = nalgebra::Isometry3::new(camera.pos.coords, nalgebra::zero())
+            let translated = nalgebra::Isometry3::new(camera_pos_f32.coords, nalgebra::zero())
                 .inverse()
                 .transform_point(&p);
             camera.get_rot().inverse().transform_point(&translated)
@@ -641,8 +641,9 @@ fn debug_clip_and_project_line(
             edge,
         )
     }
+    let camera_pos_f32 = camera.pos.cast::<f32>();
     let mut line = line.map(|p| {
-        let translated = nalgebra::Isometry3::new(camera.pos.coords, nalgebra::zero())
+        let translated = nalgebra::Isometry3::new(camera_pos_f32.coords, nalgebra::zero())
             .inverse()
             .transform_point(&p);
         camera.get_rot().inverse().transform_point(&translated)

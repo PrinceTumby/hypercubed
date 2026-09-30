@@ -87,8 +87,8 @@ pub fn simulate_player(
             physics.jump_ticks = AUTO_JUMP_COOLDOWN_TICKS;
             velocity.y = 0.42;
             if input.sprint {
-                velocity.x += player.yaw_deg.to_radians().sin() * 0.2;
-                velocity.z -= player.yaw_deg.to_radians().cos() * 0.2;
+                velocity.x += (player.yaw_deg as f64).to_radians().sin() * 0.2;
+                velocity.z -= (player.yaw_deg as f64).to_radians().cos() * 0.2;
             }
         }
     } else {
@@ -206,7 +206,7 @@ pub fn move_player(
             break;
         };
         let safe_entry_time = entry_time - 0.001;
-        fn height_difference(player_aabb: &AABB, world_aabb: &AABB) -> f32 {
+        fn height_difference(player_aabb: &AABB, world_aabb: &AABB) -> f64 {
             world_aabb.corner_2.y - player_aabb.corner_1.y
         }
         if normal.x != 0.0 {
@@ -230,7 +230,7 @@ pub fn move_player(
             // Check if collision stops us sprinting
             let old_vel_xz = old_velocity.xz();
             let old_vel_yaw =
-                core::f32::consts::PI - f32::atan2(old_vel_xz[0].abs(), -old_vel_xz[1].abs());
+                core::f64::consts::PI - f64::atan2(old_vel_xz[0].abs(), -old_vel_xz[1].abs());
             let minor_collision_angle_threshold_radians =
                 MINOR_COLLISION_ANGLE_THRESHOLD.to_radians();
             if old_vel_yaw >= minor_collision_angle_threshold_radians {
@@ -262,7 +262,7 @@ pub fn move_player(
             velocity.z = 0.0;
             // Check if collision stops us sprinting
             let old_vel_xz = old_velocity.xz();
-            let old_vel_yaw = f32::atan2(old_vel_xz[1].abs(), old_vel_xz[0].abs());
+            let old_vel_yaw = f64::atan2(old_vel_xz[1].abs(), old_vel_xz[0].abs());
             let minor_collision_angle_threshold_radians =
                 MINOR_COLLISION_ANGLE_THRESHOLD.to_radians();
             if old_vel_yaw >= minor_collision_angle_threshold_radians {
@@ -385,7 +385,7 @@ pub fn move_player(
     // }
 }
 
-fn set_player_pos_to_aabb(pos: &mut Point3<f32>, aabb: AABB, local_aabb: AABB) {
+fn set_player_pos_to_aabb(pos: &mut Point3<f64>, aabb: AABB, local_aabb: AABB) {
     pos.x = aabb.corner_1.x + ((local_aabb.corner_2.x - local_aabb.corner_1.x) / 2.0);
     pos.y = aabb.corner_1.y;
     pos.z = aabb.corner_1.z + ((local_aabb.corner_2.z - local_aabb.corner_1.z) / 2.0);
@@ -406,20 +406,20 @@ fn aabb_collides_with_world(
                 };
                 let global_palette_index = chunk_section.block_states.get(x, y, z);
                 let blockstate_info = &global_palette[global_palette_index];
-                let global_pos_vec_f32 = Vector3::from(global_pos.map(|n| n as f32));
+                let global_pos_vec_f64 = Vector3::from(global_pos.map(|n| n as f64));
                 match &blockstate_info.extra_info.collision_info {
                     CollisionInfo::Empty => {}
                     CollisionInfo::FullBlock => {
                         let corner_1 = Point3::new(0.0, 0.0, 0.0);
                         let corner_2 = Point3::new(1.0, 1.0, 1.0);
-                        let block_aabb = AABB { corner_1, corner_2 } + global_pos_vec_f32;
+                        let block_aabb = AABB { corner_1, corner_2 } + global_pos_vec_f64;
                         if aabb.intersects(&block_aabb) {
                             return true;
                         }
                     }
                     CollisionInfo::Complex(aabbs) => {
                         for base_aabb in aabbs {
-                            let global_aabb = *base_aabb + global_pos_vec_f32;
+                            let global_aabb = *base_aabb + global_pos_vec_f64;
                             if aabb.intersects(&global_aabb) {
                                 return true;
                             }
@@ -461,20 +461,20 @@ fn get_block_aabbs(
     };
     let global_palette_index = chunk_section.block_states.get(x, y, z);
     let blockstate_info = &global_palette[global_palette_index];
-    let global_pos_vec_f32 = Vector3::from(global_pos.map(|n| n as f32));
+    let global_pos_vec_f64 = Vector3::from(global_pos.map(|n| n as f64));
     match &blockstate_info.extra_info.collision_info {
         CollisionInfo::Empty => {}
         CollisionInfo::FullBlock => {
             let corner_1 = Point3::new(0.0, 0.0, 0.0);
             let corner_2 = Point3::new(1.0, 1.0, 1.0);
             let base_aabb = AABB { corner_1, corner_2 };
-            output.push(base_aabb + global_pos_vec_f32)
+            output.push(base_aabb + global_pos_vec_f64)
         }
         CollisionInfo::Complex(aabbs) => output.extend(
             aabbs
                 .iter()
                 .copied()
-                .map(|base_aabb| base_aabb + global_pos_vec_f32),
+                .map(|base_aabb| base_aabb + global_pos_vec_f64),
         ),
     }
 }

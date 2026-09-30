@@ -174,20 +174,20 @@ pub trait GraphicsBackend {
     }
 }
 
-pub const DEFAULT_FOV: f32 = 80.0;
+pub const DEFAULT_FOV: f64 = 80.0;
 pub const DEFAULT_ZNEAR: f32 = 0.01;
 pub const DEFAULT_ZFAR: f32 = 1024.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
-    pub pos: Point3<f32>,
+    pub pos: Point3<f64>,
     pub proj_matrix: Perspective3<f32>,
     /// Represented in degrees.
-    pub yaw: f32,
+    pub yaw_deg: f32,
     /// Represented in degrees.
-    pub pitch: f32,
+    pub pitch_deg: f32,
     /// Represented in degrees.
-    pub roll: f32,
+    pub roll_deg: f32,
 }
 
 impl Camera {
@@ -196,13 +196,13 @@ impl Camera {
             pos: Point3::origin(),
             proj_matrix: Perspective3::new(
                 800.0 / 600.0,
-                f32::to_radians(DEFAULT_FOV),
+                f32::to_radians(DEFAULT_FOV as f32),
                 DEFAULT_ZNEAR,
                 DEFAULT_ZFAR,
             ),
-            yaw: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
+            roll_deg: 0.0,
         }
     }
 
@@ -212,14 +212,14 @@ impl Camera {
 
     pub fn get_rot(&self) -> UnitQuaternion<f32> {
         UnitQuaternion::from_euler_angles(
-            self.pitch.to_radians(),
-            -self.yaw.to_radians(),
-            -self.roll.to_radians(),
+            self.pitch_deg.to_radians(),
+            -self.yaw_deg.to_radians(),
+            -self.roll_deg.to_radians(),
         )
     }
 
     pub fn generate_view_matrix(&self) -> Matrix4<f32> {
-        let translate = Isometry3::new(self.pos.coords, nalgebra::zero())
+        let translate = Isometry3::new(self.pos.coords.cast::<f32>(), nalgebra::zero())
             .inverse()
             .to_matrix();
         let rotate = self.get_rot().inverse().to_homogeneous();
