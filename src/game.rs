@@ -596,9 +596,9 @@ pub fn process_game_events(
                 // TODO: Send `PlayerCommand` and `PlayerInput` packets
                 server_connection
                     .send_packet(serverbound_packets::SetPlayerPositionAndRotation {
-                        x: player.pos.x as f64,
-                        feet_y: player.pos.y as f64,
-                        z: player.pos.z as f64,
+                        x: player.pos.x,
+                        feet_y: player.pos.y,
+                        z: player.pos.z,
                         // XXX: DEBUG
                         mc_yaw,
                         mc_pitch,

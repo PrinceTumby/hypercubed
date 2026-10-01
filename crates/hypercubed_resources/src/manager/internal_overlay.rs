@@ -93,10 +93,10 @@ pub static MODELS: Lazy<FastHashMap<Identifier, &[u8]>> = Lazy::new(|| {
 });
 
 pub static TEXTURES: Lazy<FastHashMap<Identifier, &'static [u8]>> =
-    Lazy::new(|| FastHashMap::default());
+    Lazy::new(FastHashMap::default);
 
 pub static TEXTURE_METAS: Lazy<FastHashMap<Identifier, &'static [u8]>> =
-    Lazy::new(|| FastHashMap::default());
+    Lazy::new(FastHashMap::default);
 
 pub struct InternalOverlayFilesystem;
 
